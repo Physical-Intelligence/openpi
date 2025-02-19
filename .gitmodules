@@ -1,6 +1,6 @@
 [submodule "third_party/aloha"]
 	path = third_party/aloha
-	url = git@github.com:Physical-Intelligence/aloha.git
+	url = https://github.com/Physical-Intelligence/aloha.git
 [submodule "third_party/libero"]
 	path = third_party/libero
-	url = git@github.com:Lifelong-Robot-Learning/LIBERO.git
+	url = https://github.com/Lifelong-Robot-Learning/LIBERO.git
