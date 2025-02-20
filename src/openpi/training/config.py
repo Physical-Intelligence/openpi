@@ -274,12 +274,6 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             inputs=[libero_policy.LiberoInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
             outputs=[libero_policy.LiberoOutputs()],
         )
-        # Use delta actions (not for gripper)
-        delta_action_mask = _transforms.make_bool_mask(6, -1)
-        data_transforms = data_transforms.push(
-            inputs=[_transforms.DeltaActions(delta_action_mask)],
-            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        )
 
         # Model transforms include things like tokenizing the prompt and action targets
         model_transforms = ModelTransformFactory()(model_config)
