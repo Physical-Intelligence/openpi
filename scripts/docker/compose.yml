@@ -1,10 +1,10 @@
 # Run with:
-# docker compose -f scripts/compose.yml up --build
+# docker compose -f scripts/docker/compose.yml up --build
 services:
   openpi_server:
     image: openpi_server
     build:
-      context: ..
+      context: ../..
       dockerfile: scripts/docker/serve_policy.Dockerfile
     init: true
     tty: true
