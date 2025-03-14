@@ -28,13 +28,13 @@ uv pip sync examples/aloha_real/requirements.txt
 uv pip install -e packages/openpi-client
 
 # Run the robot
-python examples/aloha_real/main.py
+python -m examples.aloha_real.main
 ```
 
 Terminal window 2:
 
 ```bash
-roslaunch --wait aloha ros_nodes.launch
+roslaunch aloha ros_nodes.launch
 ```
 
 Terminal window 3:
