@@ -13,7 +13,7 @@ import openpi.shared.normalize as normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
-
+import jax 
 
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:
@@ -51,6 +51,7 @@ def main(config_name: str, max_frames: int | None = None):
     data_loader = _data_loader.TorchDataLoader(
         dataset,
         local_batch_size=1,
+        sharding=jax.sharding.SingleDeviceSharding(jax.devices()[0]),
         num_workers=8,
         shuffle=shuffle,
         num_batches=num_frames,
