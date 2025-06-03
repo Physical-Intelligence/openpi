@@ -240,15 +240,22 @@ class AbsoluteActions(DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TokenizePrompt(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
+    pi05: bool = False
 
     def __call__(self, data: DataDict) -> DataDict:
         if (prompt := data.pop("prompt", None)) is None:
             raise ValueError("Prompt is required")
 
+        if self.pi05:
+            if (state := data.pop("state", None)) is None:
+                raise ValueError("State is required for Pi05 tokenization")
+        else:
+            state = None
+
         if not isinstance(prompt, str):
             prompt = prompt.item()
 
-        tokens, token_masks = self.tokenizer.tokenize(prompt)
+        tokens, token_masks = self.tokenizer.tokenize(prompt, state)
         return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
 
 

@@ -112,6 +112,16 @@ class ModelTransformFactory(GroupFactory):
                         ),
                     ],
                 )
+            case _model.ModelType.PI05:
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len), pi05=True
+                        ),
+                    ],
+                )
             case _model.ModelType.PI0_FAST:
                 return _transforms.Group(
                     inputs=[
@@ -632,6 +642,16 @@ _CONFIGS = [
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="debug_pi05",
+        model=pi0.Pi0Config(pi05=True, max_token_len=200),
+        data=FakeDataConfig(),
+        batch_size=2,
+        num_train_steps=10,
+        overwrite=True,
+        exp_name="debug_pi05",
         wandb_enabled=False,
     ),
 ]
