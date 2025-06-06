@@ -81,8 +81,133 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
-def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseModelConfig) -> Dataset:
+class MixtureDataset(Dataset[T_co]):
+    """Dataset that samples from multiple datasets with weights similar to TensorFlow's sample_from_datasets.
+
+    For each element, a dataset is selected based on weight[i], and the next unused element
+    from that dataset is returned. Sampling is done without replacement.
+    """
+
+    def __init__(
+        self,
+        datasets: Sequence[Dataset],
+        weights: Sequence[float] | None = None,
+        *,
+        stop_on_empty_dataset: bool = False,
+        seed: int | None = None,
+    ):
+        """Create a dataset that samples from multiple datasets with given weights.
+
+        Args:
+            datasets: A sequence of datasets to sample from.
+            weights: Optional weights for each dataset. If not provided, uniform weights are used.
+            stop_on_empty_dataset: If True, stop when any dataset is exhausted.
+                If False, continue with the remaining datasets.
+            seed: Optional seed for reproducibility.
+        """
+        if not datasets:
+            raise ValueError("At least one dataset must be provided.")
+
+        self._datasets = datasets
+
+        if weights is None:
+            weights = [1.0] * len(datasets)
+
+        if len(weights) != len(datasets):
+            raise ValueError(f"Number of weights ({len(weights)}) must match number of datasets ({len(datasets)}).")
+
+        self._weights = np.array(weights, dtype=np.float64)
+        self._stop_on_empty_dataset = stop_on_empty_dataset
+        self._rng = np.random.RandomState(seed)
+
+        self._length = sum(len(dataset) for dataset in datasets)
+        self._sampling_order = self._calculate_sampling_order()
+
+    @property
+    def datasets(self) -> Sequence[Dataset]:
+        """Get the datasets in this mixture."""
+        return self._datasets
+
+    @datasets.setter
+    def datasets(self, new_datasets: Sequence[Dataset]) -> None:
+        """Set new datasets for this mixture.
+
+        Args:
+            new_datasets: A sequence of datasets to sample from.
+
+        Raises:
+            ValueError: If the number of weights doesn't match the number of datasets.
+        """
+        if not new_datasets:
+            raise ValueError("At least one dataset must be provided.")
+
+        if len(new_datasets) != len(self._weights):
+            raise ValueError(
+                f"Number of weights ({len(self._weights)}) must match number of datasets ({len(new_datasets)})."
+            )
+
+        self._datasets = new_datasets
+        self._length = sum(len(dataset) for dataset in new_datasets)
+        self._sampling_order = self._calculate_sampling_order()
+
+    def _calculate_sampling_order(self):
+        """Calculate the sampling order for this dataset mixture."""
+        remaining_indices = [list(range(len(dataset))) for dataset in self._datasets]
+        active_datasets = list(range(len(self._datasets)))
+        weights = self._weights.copy()
+
+        sampling_order = []
+
+        while active_datasets and len(sampling_order) < self._length:
+            active_weights = weights[active_datasets]
+            total_weight = np.sum(active_weights)
+
+            if total_weight <= 0:
+                active_weights = np.ones(len(active_datasets)) / len(active_datasets)
+            else:
+                active_weights = active_weights / total_weight
+
+            dataset_idx = self._rng.choice(active_datasets, p=active_weights)
+
+            if remaining_indices[dataset_idx]:
+                element_idx = remaining_indices[dataset_idx].pop(0)
+                sampling_order.append((dataset_idx, element_idx))
+            else:
+                active_datasets.remove(dataset_idx)
+
+                if self._stop_on_empty_dataset:
+                    break
+
+        return sampling_order
+
+    def __len__(self) -> int:
+        return len(self._sampling_order)
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        idx = index.__index__()
+
+        if idx >= len(self._sampling_order):
+            raise IndexError(f"Index {idx} out of range for dataset of length {len(self._sampling_order)}")
+
+        dataset_idx, element_idx = self._sampling_order[idx]
+
+        return self._datasets[dataset_idx][element_idx]
+
+
+def create_dataset(data_config: _config.DataConfigBase, model_config: _model.BaseModelConfig) -> Dataset:
     """Create a dataset for training."""
+    if isinstance(data_config, _config.DataMixtureConfig):
+        datasets = []
+        for config in data_config.dataset_configs:
+            dataset = create_dataset(config, model_config)
+            datasets.append(dataset)
+
+        return MixtureDataset(
+            datasets,
+            weights=data_config.weights,
+            stop_on_empty_dataset=data_config.stop_on_empty_dataset,
+        )
+
     repo_id = data_config.repo_id
     if repo_id is None:
         raise ValueError("Repo ID is not set. Cannot create dataset.")
@@ -104,8 +229,17 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
     return dataset
 
 
-def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
+def transform_dataset(
+    dataset: Dataset, data_config: _config.DataConfigBase, *, skip_norm_stats: bool = False
+) -> Dataset:
     """Transform the dataset by applying the data transforms."""
+    if isinstance(dataset, MixtureDataset):
+        dataset.datasets = [
+            transform_dataset(d, cfg, skip_norm_stats=skip_norm_stats)
+            for d, cfg in zip(dataset.datasets, data_config.dataset_configs, strict=True)
+        ]
+        return dataset
+
     norm_stats = {}
     if data_config.repo_id != "fake" and not skip_norm_stats:
         if data_config.norm_stats is None:
@@ -150,7 +284,6 @@ def create_data_loader(
             execute in the main process.
     """
     data_config = config.data.create(config.assets_dirs, config.model)
-
     dataset = create_dataset(data_config, config.model)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 

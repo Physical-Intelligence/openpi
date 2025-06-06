@@ -71,6 +71,7 @@ class AdamW(OptimizerConfig):
     eps: float = 1e-8
     weight_decay: float = 1e-10
     clip_gradient_norm: float = 1.0
+    accumulation_steps: int = 1
 
     def create(
         self,
@@ -80,6 +81,8 @@ class AdamW(OptimizerConfig):
         tx = optax.adamw(
             lr, b1=self.b1, b2=self.b2, eps=self.eps, weight_decay=self.weight_decay, mask=weight_decay_mask
         )
+        if self.accumulation_steps > 1:
+            tx = optax.MultiSteps(tx, self.accumulation_steps)
 
         return optax.chain(optax.clip_by_global_norm(self.clip_gradient_norm), tx)
 

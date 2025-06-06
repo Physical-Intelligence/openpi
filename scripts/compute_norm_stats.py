@@ -5,6 +5,8 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+from collections.abc import Sequence
+
 import numpy as np
 import tqdm
 import tyro
@@ -20,12 +22,8 @@ class RemoveStrings(transforms.DataTransformFn):
         return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
 
 
-def create_dataset(config: _config.TrainConfig) -> tuple[_config.DataConfig, _data_loader.Dataset]:
-    data_config = config.data.create(config.assets_dirs, config.model)
-    if data_config.repo_id is None:
-        raise ValueError("Data config must have a repo_id")
-    dataset = _data_loader.create_dataset(data_config, config.model)
-    dataset = _data_loader.TransformedDataset(
+def transform_dataset(dataset, data_config):
+    return _data_loader.TransformedDataset(
         dataset,
         [
             *data_config.repack_transforms.inputs,
@@ -34,41 +32,56 @@ def create_dataset(config: _config.TrainConfig) -> tuple[_config.DataConfig, _da
             RemoveStrings(),
         ],
     )
-    return data_config, dataset
+
+
+def create_dataset(config: _config.TrainConfig) -> tuple[Sequence[_config.DataConfig], Sequence[_data_loader.Dataset]]:
+    data_config = config.data.create(config.assets_dirs, config.model)
+    if data_config.repo_id is None:
+        raise ValueError("Data config must have a repo_id")
+    if data_config.dataset_configs:
+        datasets = [_data_loader.create_dataset(cfg, config.model) for cfg in data_config.dataset_configs]
+        transformed_datasets = [
+            transform_dataset(dataset, cfg) for dataset, cfg in zip(datasets, data_config.dataset_configs, strict=True)
+        ]
+        return data_config.dataset_configs, transformed_datasets
+    dataset = _data_loader.create_dataset(data_config, config.model)
+    dataset = transform_dataset(dataset, data_config)
+    return [data_config], [dataset]
 
 
 def main(config_name: str, max_frames: int | None = None):
     config = _config.get_config(config_name)
-    data_config, dataset = create_dataset(config)
+    data_configs, datasets = create_dataset(config)
 
-    num_frames = len(dataset)
-    shuffle = False
+    for data_config, dataset in zip(data_configs, datasets, strict=True):
+        num_frames = len(dataset)
+        shuffle = False
 
-    if max_frames is not None and max_frames < num_frames:
-        num_frames = max_frames
-        shuffle = True
+        if max_frames is not None and max_frames < num_frames:
+            num_frames = max_frames
+            shuffle = True
 
-    data_loader = _data_loader.TorchDataLoader(
-        dataset,
-        local_batch_size=1,
-        num_workers=8,
-        shuffle=shuffle,
-        num_batches=num_frames,
-    )
+        data_loader = _data_loader.TorchDataLoader(
+            dataset,
+            local_batch_size=1,
+            num_workers=8,
+            shuffle=shuffle,
+            num_batches=num_frames,
+        )
 
-    keys = ["state", "actions"]
-    stats = {key: normalize.RunningStats() for key in keys}
+        keys = ["state", "actions"]
+        stats = {key: normalize.RunningStats() for key in keys}
 
-    for batch in tqdm.tqdm(data_loader, total=num_frames, desc="Computing stats"):
-        for key in keys:
-            values = np.asarray(batch[key][0])
-            stats[key].update(values.reshape(-1, values.shape[-1]))
+        for batch in tqdm.tqdm(data_loader, total=num_frames, desc="Computing stats"):
+            for key in keys:
+                values = np.asarray(batch[key][0])
+                stats[key].update(values.reshape(-1, values.shape[-1]))
 
-    norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
+        norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
-    print(f"Writing stats to: {output_path}")
-    normalize.save(output_path, norm_stats)
+        output_path = config.assets_dirs / data_config.repo_id
+        print(f"Writing stats to: {output_path}")
+        normalize.save(output_path, norm_stats)
 
 
 if __name__ == "__main__":

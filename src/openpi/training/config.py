@@ -58,8 +58,19 @@ class AssetsConfig:
     asset_id: str | None = None
 
 
+class DataConfigBase(Protocol):
+    """Interface for all data configurations."""
+
+    @property
+    def repo_id(self) -> str | None: ...
+    @property
+    def asset_id(self) -> str | None: ...
+    @property
+    def norm_stats(self) -> dict[str, _transforms.NormStats] | None: ...
+
+
 @dataclasses.dataclass(frozen=True)
-class DataConfig:
+class DataConfig(DataConfigBase):
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
     # Directory within the assets directory containing the data assets.
@@ -86,6 +97,24 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class DataMixtureConfig(DataConfigBase):
+    """Configuration for a weighted mixture of datasets."""
+
+    dataset_configs: Sequence[DataConfig] = dataclasses.field(default_factory=tuple)
+
+    # Weights for each dataset
+    weights: Sequence[float] = dataclasses.field(default_factory=tuple)
+
+    # Whether to stop sampling when any dataset is exhausted
+    stop_on_empty_dataset: bool = False
+
+    # See DataConfig for the meaning of these fields
+    repo_id: str = "mixture"
+    asset_id: str | None = None
+    norm_stats: dict[str, _transforms.NormStats] | None = None
 
 
 class GroupFactory(Protocol):
@@ -132,17 +161,25 @@ class ModelTransformFactory(GroupFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class DataConfigFactory(abc.ABC):
+class BaseDataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
-    # Base config that will be updated by the factory.
-    base_config: tyro.conf.Suppress[DataConfig | None] = None
 
     @abc.abstractmethod
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfigBase:
         """Create a data config."""
+
+    @abc.abstractmethod
+    def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
+        """Load normalization statistics for this dataset."""
+
+
+@dataclasses.dataclass(frozen=True)
+class DataConfigFactory(BaseDataConfigFactory):
+    # Base config that will be updated by the factory.
+    base_config: tyro.conf.Suppress[DataConfig | None] = None
 
     def create_base_config(self, assets_dirs: pathlib.Path) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
@@ -191,6 +228,88 @@ class SimpleDataConfig(DataConfigFactory):
             model_transforms=self.model_transforms(model_config),
             use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class DataMixtureConfigFactory(BaseDataConfigFactory):
+    """Factory for creating a data config that samples from multiple datasets with weighted probabilities."""
+
+    repo_id: str = "mixture"
+
+    data_config_factories: Sequence[DataConfigFactory] = dataclasses.field(default_factory=tuple)
+
+    weights: Sequence[float] = dataclasses.field(default_factory=tuple)
+
+    stop_on_empty_dataset: bool = False
+
+    primary_dataset_id: str = None
+
+    @property
+    def mixture_asset_id(self) -> str:
+        """Generate a consistent asset ID for this mixture dataset."""
+        if self.assets.asset_id:
+            return self.assets.asset_id
+
+        import hashlib
+
+        repo_ids = [
+            str(config.repo_id)
+            for config in self.data_config_factories
+            if hasattr(config, "repo_id") and config.repo_id is not tyro.MISSING
+        ]
+
+        weights_str = ",".join(str(w) for w in self.weights) if self.weights else ""
+        mixture_str = f"{'-'.join(repo_ids)}_{weights_str}"
+
+        hash_obj = hashlib.md5(mixture_str.encode())
+        hash_str = hash_obj.hexdigest()[:8]  # Use first 8 chars of hash
+
+        return f"mixture_{hash_str}"
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataMixtureConfig:
+        """Create a data config for mixing multiple datasets."""
+        if not self.data_config_factories:
+            raise ValueError("At least one data config factory must be provided.")
+
+        if self.weights and len(self.weights) != len(self.data_config_factories):
+            raise ValueError(
+                f"Number of weights ({len(self.weights)}) must match number of data config factories ({len(self.data_config_factories)})."
+            )
+
+        configs = [config.create(assets_dirs, model_config) for config in self.data_config_factories]
+        repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
+        asset_id = self.assets.asset_id or self.mixture_asset_id
+
+        return dataclasses.replace(
+            DataMixtureConfig(),
+            repo_id=repo_id,
+            asset_id=asset_id,
+            dataset_configs=configs,
+            weights=self.weights,
+            stop_on_empty_dataset=self.stop_on_empty_dataset,
+            norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
+        )
+
+    @override
+    def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
+        """Load normalization statistics from the primary dataset."""
+        if self.primary_dataset_id not in [cfg.assets.asset_id or cfg.repo_id for cfg in self.data_config_factories]:
+            logging.warning(
+                f"Primary dataset ID {self.primary_dataset_id} not found in data configs. Using first dataset."
+            )
+            primary_dataset_id = self.data_config_factories[0].assets.asset_id or self.data_config_factories[0].repo_id
+        else:
+            primary_dataset_id = self.primary_dataset_id
+
+        try:
+            data_assets_dir = str(assets_dir / primary_dataset_id)
+            norm_stats = _normalize.load(data_assets_dir)
+            logging.info(f"Loaded norm stats from {data_assets_dir}")
+            return norm_stats
+        except FileNotFoundError:
+            logging.warning(f"Norm stats for {primary_dataset_id} not found at {data_assets_dir}")
+            return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -345,7 +464,7 @@ class TrainConfig:
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
 
     # Determines the data to be trained on.
-    data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
+    data: DataConfigFactory | DataMixtureConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
@@ -631,6 +750,28 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/debug/debug/9/params"),
         overwrite=True,
         exp_name="debug",
+        num_train_steps=10,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="debug_mixture",
+        model=pi0.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
+        data=DataMixtureConfigFactory(
+            data_config_factories=[
+                LeRobotAlohaDataConfig(
+                    repo_id="lerobot/aloha_sim_transfer_cube_human",
+                    default_prompt="Transfer cube",
+                    use_delta_joint_actions=False,
+                ),
+                LeRobotAlohaDataConfig(
+                    repo_id="lerobot/aloha_sim_transfer_cube_human",
+                    default_prompt="Transfer cube",
+                    use_delta_joint_actions=False,
+                ),
+            ],
+            weights=[0.5, 0.5],
+        ),
+        batch_size=2,
         num_train_steps=10,
         wandb_enabled=False,
     ),
