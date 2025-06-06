@@ -300,15 +300,11 @@ class PromptFromLeRobotTask(DataTransformFn):
     tasks: dict[int, str]
 
     def __call__(self, data: DataDict) -> DataDict:
-        if "task_index" not in data:
-            raise ValueError('Cannot extract prompt without "task_index"')
-
-        task_index = int(data["task_index"])
-        if (prompt := self.tasks.get(task_index)) is None:
-            raise ValueError(f"{task_index=} not found in task mapping: {self.tasks}")
+        if "task" not in data:
+            raise ValueError('Cannot extract prompt: "task" key not found in data')
+        prompt = data["task"]
 
         return {**data, "prompt": prompt}
-
 
 def flatten_dict(tree: at.PyTree) -> dict:
     """Flatten a nested dictionary. Uses '/' as the separator."""

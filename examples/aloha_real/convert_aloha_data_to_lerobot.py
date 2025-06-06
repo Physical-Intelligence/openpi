@@ -10,7 +10,7 @@ import shutil
 from typing import Literal
 
 import h5py
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
 import numpy as np
@@ -109,8 +109,8 @@ def create_empty_dataset(
             ],
         }
 
-    if Path(LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    if Path(HF_LEROBOT_HOME / repo_id).exists():
+        shutil.rmtree(HF_LEROBOT_HOME / repo_id)
 
     return LeRobotDataset.create(
         repo_id=repo_id,
@@ -209,6 +209,7 @@ def populate_dataset(
             frame = {
                 "observation.state": state[i],
                 "action": action[i],
+                "task": task,
             }
 
             for camera, img_array in imgs_per_cam.items():
@@ -221,7 +222,7 @@ def populate_dataset(
 
             dataset.add_frame(frame)
 
-        dataset.save_episode(task=task)
+        dataset.save_episode()
 
     return dataset
 
@@ -229,7 +230,6 @@ def populate_dataset(
 def port_aloha(
     raw_dir: Path,
     repo_id: str,
-    raw_repo_id: str | None = None,
     task: str = "DEBUG",
     *,
     episodes: list[int] | None = None,
@@ -238,13 +238,12 @@ def port_aloha(
     mode: Literal["video", "image"] = "image",
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ):
-    if (LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    if (HF_LEROBOT_HOME / repo_id).exists():
+        shutil.rmtree(HF_LEROBOT_HOME / repo_id)
 
     if not raw_dir.exists():
-        if raw_repo_id is None:
-            raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        download_raw(raw_dir, repo_id=raw_repo_id)
+        raise ValueError("In the latest LeRobot codebase, the _download_raw script has been removed,\
+                         and as a result, the raw_repo_id parameter is no longer used.")
 
     hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
 
@@ -262,7 +261,6 @@ def port_aloha(
         task=task,
         episodes=episodes,
     )
-    dataset.consolidate()
 
     if push_to_hub:
         dataset.push_to_hub()
