@@ -22,6 +22,7 @@ import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
+import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
@@ -86,6 +87,11 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # Only used for RLDS data loader (ie currently only used for DROID).
+    rlds_data_dir: str | None = None
+    # Action space for DROID dataset.
+    action_space: droid_rlds_dataset.DroidActionSpace | None = None
 
 
 class GroupFactory(Protocol):
@@ -329,6 +335,60 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class RLDSDroidDataConfig(DataConfigFactory):
+    """
+    Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
+    """
+
+    rlds_data_dir: str | None = None
+    action_space: droid_rlds_dataset.DroidActionSpace | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/exterior_image_1_left": "observation/image",
+                        "observation/wrist_image_left": "observation/wrist_image",
+                        "observation/joint_position": "observation/joint_position",
+                        "observation/gripper_position": "observation/gripper_position",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[droid_policy.DroidInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[droid_policy.DroidOutputs()],
+        )
+
+        if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
+            # Data loader returns absolute joint position actions -- convert to delta actions for training.
+            delta_action_mask = _transforms.make_bool_mask(7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
+            rlds_data_dir=self.rlds_data_dir,
+            action_space=self.action_space,
         )
 
 
@@ -609,7 +669,39 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
     ),
-    # This config is used to demonstrate how to train on a simple simulated environment.
+    #
+    # Fine-tuning DROID configs.
+    #
+    TrainConfig(
+        name="pi0_fast_droid_finetune",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8,
+            action_horizon=16,
+            max_token_len=180,
+        ),
+        data=RLDSDroidDataConfig(
+            repo_id="droid",
+            # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
+            rlds_data_dir="<path_to_droid_rlds_dataset>",
+            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        num_train_steps=100_000,  # 100k steps should be sufficient, takes ~2 days on 8x H100s
+        batch_size=256,
+        log_interval=100,
+        save_interval=5000,
+        keep_period=20_000,
+        num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
+    ),
+    #
+    # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
+    #
     TrainConfig(
         name="pi0_aloha_sim",
         model=pi0.Pi0Config(),

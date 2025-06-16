@@ -60,9 +60,11 @@ class DroidInputs(transforms.DataTransformFn):
         }
 
         if "actions" in data:
-            inputs["actions"] = data["actions"]
+            inputs["actions"] = np.array(data["actions"])
 
         if "prompt" in data:
+            if isinstance(data["prompt"], bytes):
+                data["prompt"] = data["prompt"].decode("utf-8")
             inputs["prompt"] = data["prompt"]
 
         return inputs
