@@ -121,7 +121,7 @@ TrainConfig(
         # Reloading normalization stats can help transfer pre-trained models to new environments.
         # See the [norm_stats.md](../docs/norm_stats.md) file for more details.
         assets=AssetsConfig(
-            assets_dir="s3://openpi-assets/checkpoints/pi0_base/assets",
+            assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
             asset_id="ur5e",
         ),
         base_config=DataConfig(
@@ -131,7 +131,7 @@ TrainConfig(
         ),
     ),
     # Load the pi0 base model checkpoint.
-    weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
+    weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
     num_train_steps=30_000,
 )
 ```

@@ -14,7 +14,7 @@ TrainConfig(
     data=LeRobotAlohaDataConfig(
         ...
         assets=AssetsConfig(
-            assets_dir="s3://openpi-assets/checkpoints/pi0_base/assets",
+            assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
             asset_id="trossen",
         ),
     ),
@@ -30,7 +30,7 @@ For an example of a full training config that reloads normalization statistics, 
 
 ## Provided Pre-training Normalization Statistics
 
-Below is a list of all the pre-training normalization statistics we provide. We provide them for both, the `pi0_base` and `pi0_fast_base` models. For `pi0_base`, set the `assets_dir` to `s3://openpi-assets/checkpoints/pi0_base/assets` and for `pi0_fast_base`, set the `assets_dir` to `s3://openpi-assets/checkpoints/pi0_fast_base/assets`.
+Below is a list of all the pre-training normalization statistics we provide. We provide them for both, the `pi0_base` and `pi0_fast_base` models. For `pi0_base`, set the `assets_dir` to `gs://openpi-assets/checkpoints/pi0_base/assets` and for `pi0_fast_base`, set the `assets_dir` to `gs://openpi-assets/checkpoints/pi0_fast_base/assets`.
 | Robot | Description | Asset ID |
 |-------|-------------|----------|
 | ALOHA | 6-DoF dual arm robot with parallel grippers | trossen |
@@ -59,7 +59,7 @@ Out of the box, both the `pi0_base` and `pi0_fast_base` use the following action
 
 The proprioceptive state uses the same definitions as the action space, except for the base x-y position (the last two dimensions) for mobile robots, which we don't include in the proprioceptive state.
 
-For 7-DoF robots (e.g. Franka), we use the first 7 dimensions of the action space for the joint actions, and the 8th dimension for the gripper action. 
+For 7-DoF robots (e.g. Franka), we use the first 7 dimensions of the action space for the joint actions, and the 8th dimension for the gripper action.
 
 General info for Pi robots:
 - Joint angles are expressed in radians, with position zero corresponding to the zero position reported by each robot's interface library, except for ALOHA, where the standard ALOHA code uses a slightly different convention (see the [ALOHA example code](../examples/aloha_real/README.md) for details).

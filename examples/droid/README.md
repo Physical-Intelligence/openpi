@@ -11,7 +11,7 @@ Since the DROID control laptop does not have a powerful GPU, we will start a rem
 2. Start the OpenPI server via the following command:
 
 ```bash
-uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_droid --policy.dir=s3://openpi-assets/checkpoints/pi0_fast_droid
+uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_droid --policy.dir=gs://openpi-assets/checkpoints/pi0_fast_droid
 ```
 
 You can also run the equivalent command below:

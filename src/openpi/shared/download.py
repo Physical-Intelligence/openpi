@@ -10,15 +10,10 @@ import stat
 import time
 import urllib.parse
 
-import boto3
-import boto3.s3.transfer as s3_transfer
-import botocore
 import filelock
 import fsspec
 import fsspec.generic
-import s3transfer.futures as s3_transfer_futures
 import tqdm_loggable.auto as tqdm
-from types_boto3_s3.service_resource import ObjectSummary
 
 # Environment variable to control cache directory path, ~/.cache/openpi will be used by default.
 _OPENPI_DATA_HOME = "OPENPI_DATA_HOME"
@@ -92,22 +87,7 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
             # Download the data to a local cache.
             logger.info(f"Downloading {url} to {local_path}")
             scratch_path = local_path.with_suffix(".partial")
-
-            if _is_openpi_url(url):
-                # Download without credentials.
-                _download_boto3(
-                    url,
-                    scratch_path,
-                    boto_session=boto3.Session(
-                        region_name="us-west-1",
-                    ),
-                    botocore_config=botocore.config.Config(signature_version=botocore.UNSIGNED),
-                )
-            elif url.startswith("s3://"):
-                # Download with default boto3 credentials.
-                _download_boto3(url, scratch_path)
-            else:
-                _download_fsspec(url, scratch_path, **kwargs)
+            _download_fsspec(url, scratch_path, **kwargs)
 
             shutil.move(scratch_path, local_path)
             _ensure_permissions(local_path)
@@ -126,7 +106,8 @@ def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
     """Download a file from a remote filesystem to the local cache, and return the local path."""
     fs, _ = fsspec.core.url_to_fs(url, **kwargs)
     info = fs.info(url)
-    if is_dir := (info["type"] == "directory"):  # noqa: SIM108
+    # Folders are represented by 0-byte objects with a trailing forward slash.
+    if is_dir := (info["type"] == "directory" or (info["size"] == 0 and info["name"].endswith("/"))):
         total_size = fs.du(url)
     else:
         total_size = info["size"]
@@ -138,114 +119,6 @@ def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
             pbar.update(current_size - pbar.n)
             time.sleep(1)
         pbar.update(total_size - pbar.n)
-
-
-def _download_boto3(
-    url: str,
-    local_path: pathlib.Path,
-    *,
-    boto_session: boto3.Session | None = None,
-    botocore_config: botocore.config.Config | None = None,
-    workers: int = 16,
-) -> None:
-    """Download a file from the OpenPI S3 bucket using boto3. This is a more performant version of download but can
-    only handle s3 urls. In openpi repo, this is mainly used to access assets in S3 with higher throughput.
-
-    Input:
-        url: URL to openpi checkpoint path.
-        local_path: local path to the downloaded file.
-        boto_session: Optional boto3 session, will create by default if not provided.
-        botocore_config: Optional botocore config.
-        workers: number of workers for downloading.
-    """
-
-    def validate_and_parse_url(maybe_s3_url: str) -> tuple[str, str]:
-        parsed = urllib.parse.urlparse(maybe_s3_url)
-        if parsed.scheme != "s3":
-            raise ValueError(f"URL must be an S3 URL (s3://), got: {maybe_s3_url}")
-        bucket_name = parsed.netloc
-        prefix = parsed.path.strip("/")
-        return bucket_name, prefix
-
-    bucket_name, prefix = validate_and_parse_url(url)
-    session = boto_session or boto3.Session()
-
-    s3api = session.resource("s3", config=botocore_config)
-    bucket = s3api.Bucket(bucket_name)
-
-    # Check if prefix points to an object and if not, assume that it's a directory and add a trailing slash.
-    try:
-        bucket.Object(prefix).load()
-    except botocore.exceptions.ClientError:
-        # Make sure to append a "/" to prevent getting objects from a different directory that shares the same prefix.
-        # For example, if we are downloading from s3://bucket/foo, we don't want to also download from s3://bucket/foobar.
-        if not prefix.endswith("/"):
-            prefix = prefix + "/"
-
-    # Get all candidate objects, filter out directories.
-    objects = [x for x in bucket.objects.filter(Prefix=prefix) if not x.key.endswith("/")]
-    if not objects:
-        raise FileNotFoundError(f"No objects found at {url}")
-
-    total_size = sum(obj.size for obj in objects)
-
-    s3t = _get_s3_transfer_manager(session, workers, botocore_config=botocore_config)
-
-    def transfer(
-        s3obj: ObjectSummary, dest_path: pathlib.Path, progress_func
-    ) -> s3_transfer_futures.TransferFuture | None:
-        if dest_path.exists():
-            dest_stat = dest_path.stat()
-            if s3obj.size == dest_stat.st_size:
-                progress_func(s3obj.size)
-                return None
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        return s3t.download(
-            bucket_name,
-            s3obj.key,
-            str(dest_path),
-            subscribers=[
-                s3_transfer.ProgressCallbackInvoker(progress_func),
-            ],
-        )
-
-    try:
-        with tqdm.tqdm(total=total_size, unit="iB", unit_scale=True, unit_divisor=1024) as pbar:
-            if os.getenv("IS_DOCKER", "false").lower() == "true":
-                # tqdm is bugged when using docker-compose. See https://github.com/tqdm/tqdm/issues/771
-                def update_progress(size: int) -> None:
-                    pbar.update(size)
-                    print(pbar)
-            else:
-
-                def update_progress(size: int) -> None:
-                    pbar.update(size)
-
-            futures = []
-            for obj in objects:
-                relative_path = pathlib.Path(obj.key).relative_to(prefix)
-                dest_path = local_path / relative_path
-                if future := transfer(obj, dest_path, update_progress):
-                    futures.append(future)
-            for future in futures:
-                future.result()
-    finally:
-        s3t.shutdown()
-
-
-def _get_s3_transfer_manager(
-    session: boto3.Session, workers: int, botocore_config: botocore.config.Config | None = None
-) -> s3_transfer.TransferManager:
-    # Add a few extra connections to prevent exceeding the pool size.
-    config = botocore.config.Config(max_pool_connections=workers + 2)
-    if botocore_config is not None:
-        config = config.merge(botocore_config)
-    s3client = session.client("s3", config=config)
-    transfer_config = s3_transfer.TransferConfig(
-        use_threads=True,
-        max_concurrency=workers,
-    )
-    return s3_transfer.create_transfer_manager(s3client, transfer_config)
 
 
 def _set_permission(path: pathlib.Path, target_permission: int):
@@ -293,11 +166,6 @@ def _ensure_permissions(path: pathlib.Path) -> None:
         for dir in dirs:
             dir_path = root_path / dir
             _set_folder_permission(dir_path)
-
-
-def _is_openpi_url(url: str) -> bool:
-    """Check if the url is an OpenPI S3 bucket url."""
-    return url.startswith("s3://openpi-assets/")
 
 
 def _get_mtime(year: int, month: int, day: int) -> float:

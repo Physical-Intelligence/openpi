@@ -42,7 +42,7 @@ class CheckpointWeightLoader(WeightLoader):
       trained checkpoints:
         example: "./checkpoints/<config>/<exp>/<step>/params"
       released checkpoints:
-        example: "s3://openpi-assets/checkpoints/<model>/params"
+        example: "gs://openpi-assets/checkpoints/<model>/params"
     """
 
     params_path: str

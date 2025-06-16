@@ -84,7 +84,7 @@ def test_model_restore():
     obs, act = config.fake_obs(batch_size), config.fake_act(batch_size)
 
     model = config.load(
-        _model.restore_params(download.maybe_download("s3://openpi-assets/checkpoints/pi0_base/params"))
+        _model.restore_params(download.maybe_download("gs://openpi-assets/checkpoints/pi0_base/params"))
     )
 
     loss = model.compute_loss(key, obs, act)

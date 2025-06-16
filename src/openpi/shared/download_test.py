@@ -24,8 +24,8 @@ def test_download_local(tmp_path: pathlib.Path):
         download.maybe_download("bogus")
 
 
-def test_download_s3_dir():
-    remote_path = "s3://openpi-assets/testdata/random"
+def test_download_gs_dir():
+    remote_path = "gs://openpi-assets/testdata/random"
 
     local_path = download.maybe_download(remote_path)
     assert local_path.exists()
@@ -34,8 +34,8 @@ def test_download_s3_dir():
     assert new_local_path == local_path
 
 
-def test_download_s3():
-    remote_path = "s3://openpi-assets/testdata/random/random_512kb.bin"
+def test_download_gs():
+    remote_path = "gs://openpi-assets/testdata/random/random_512kb.bin"
 
     local_path = download.maybe_download(remote_path)
     assert local_path.exists()
