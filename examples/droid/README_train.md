@@ -21,7 +21,7 @@ gsutil -m cp -r gs://gresearch/robotics/droid <your_download_path>
 ```
 
 Note that this version of DROID is slightly outdated: it only contains a partial set of language annotations (~30k episodes).
-Please email (mailto:karl.pertsch@gmail.com)[karl.pertsch@gmail.com] to get access to the most up-to-date version of the DROID RLDS dataset (with language annotations on 75k episodes)!
+Please email [karl.pertsch@gmail.com](mailto:karl.pertsch@gmail.com) to get access to the most up-to-date version of the DROID RLDS dataset (with language annotations on 75k episodes)!
 (sorry, we are working on updating the version on the official bucket).
 
 You will need 1.8TB of disk storage to download the DROID RLDS dataset.
