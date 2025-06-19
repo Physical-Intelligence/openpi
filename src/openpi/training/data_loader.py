@@ -91,6 +91,9 @@ class IterableTransformedDataset(IterableDataset[T_co]):
             else:
                 yield self._transform(sample)
 
+    def __len__(self) -> int:
+        return len(self._dataset)
+
 
 class FakeDataset(Dataset):
     def __init__(self, model_config: _model.BaseModelConfig, num_samples: int):

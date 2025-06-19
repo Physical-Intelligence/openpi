@@ -63,7 +63,7 @@ def create_rlds_dataloader(
     max_frames: int | None = None,
 ) -> tuple[_data_loader.Dataset, int]:
     dataset = _data_loader.create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=False)
-    dataset = _data_loader.transform_iterable_dataset(
+    dataset = _data_loader.IterableTransformedDataset(
         dataset,
         [
             *data_config.repack_transforms.inputs,
