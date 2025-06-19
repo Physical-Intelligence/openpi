@@ -18,6 +18,9 @@ sudo xhost +local:docker
 
 export SERVER_ARGS="--env LIBERO"
 docker compose -f examples/libero/compose.yml up --build
+
+# To run with glx for Mujoco instead (use this if you have egl errors):
+MUJOCO_GL=glx docker compose -f examples/libero/compose.yml up --build
 ```
 
 ## Without Docker
@@ -35,6 +38,9 @@ export PYTHONPATH=$PYTHONPATH:$PWD/third_party/libero
 
 # Run the simulation
 python examples/libero/main.py
+
+# To run with glx for Mujoco instead (use this if you have egl errors):
+MUJOCO_GL=glx python examples/libero/main.py
 ```
 
 Terminal window 2:
