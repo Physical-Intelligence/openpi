@@ -30,7 +30,13 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             self._last_results = self._policy.infer(obs)
             self._cur_step = 0
 
-        results = tree.map_structure(lambda x: x[self._cur_step, ...], self._last_results)
+        results: Dict = {}
+        for key, val in self._last_results.items():
+            if isinstance(val, np.ndarray):
+                results[key] = val[self._cur_step, ...]
+            else:
+                results[key] = val
+
         self._cur_step += 1
 
         if self._cur_step >= self._action_horizon:
