@@ -18,7 +18,6 @@ class ActionChunkBroker(_base_policy.BasePolicy):
 
     def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int):
         self._policy = policy
-
         self._action_horizon = action_horizon
         self._cur_step: int = 0
 
@@ -30,13 +29,13 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             self._last_results = self._policy.infer(obs)
             self._cur_step = 0
 
-        results: Dict = {}
-        for key, val in self._last_results.items():
-            if isinstance(val, np.ndarray):
-                results[key] = val[self._cur_step, ...]
+        def slicer(x):
+            if isinstance(x, np.ndarray):
+                return x[self._cur_step, ...]
             else:
-                results[key] = val
+                return x
 
+        results = tree.map_structure(slicer, self._last_results)
         self._cur_step += 1
 
         if self._cur_step >= self._action_horizon:
