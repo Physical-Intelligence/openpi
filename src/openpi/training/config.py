@@ -437,6 +437,9 @@ class TrainConfig:
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
 
+    # If true, will enable mlflow logging.
+    mlflow_enabled: bool = False
+
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
 
@@ -714,6 +717,7 @@ _CONFIGS = [
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
+        mlflow_enabled=False,
     ),
     TrainConfig(
         name="debug_restore",
@@ -725,6 +729,7 @@ _CONFIGS = [
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
+        mlflow_enabled=False,
     ),
 ]
 
