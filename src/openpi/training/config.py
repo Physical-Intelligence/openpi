@@ -539,6 +539,20 @@ _CONFIGS = [
             ),
         ),
     ),
+    TrainConfig(
+        name="pi05_droid",
+        model=pi0.Pi0Config(action_horizon=15, pi05=True, max_token_len=200),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(model_type=ModelType.PI05)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
     #
     # Fine-tuning Libero configs.
     #
