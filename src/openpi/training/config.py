@@ -649,6 +649,19 @@ _CONFIGS = [
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
+    TrainConfig(
+        # Change the name to reflect your model and dataset.
+        name="pi05_libero",
+        model=pi0.Pi0Config(pi05=True, max_token_len=200),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
     #
     # Fine-tuning Aloha configs.
     #
