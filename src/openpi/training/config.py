@@ -541,7 +541,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_droid",
-        model=pi0.Pi0Config(action_horizon=15, pi05=True, max_token_len=200),
+        model=pi0.Pi0Config(action_horizon=15, pi05=True),
         data=SimpleDataConfig(
             assets=AssetsConfig(asset_id="droid"),
             data_transforms=lambda model: _transforms.Group(
@@ -652,7 +652,7 @@ _CONFIGS = [
     TrainConfig(
         # Change the name to reflect your model and dataset.
         name="pi05_libero",
-        model=pi0.Pi0Config(pi05=True, max_token_len=200),
+        model=pi0.Pi0Config(pi05=True),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(
@@ -767,7 +767,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="debug_pi05",
-        model=pi0.Pi0Config(pi05=True, max_token_len=200, paligemma_variant="dummy", action_expert_variant="dummy"),
+        model=pi0.Pi0Config(pi05=True, paligemma_variant="dummy", action_expert_variant="dummy"),
         data=FakeDataConfig(),
         batch_size=2,
         num_train_steps=10,
