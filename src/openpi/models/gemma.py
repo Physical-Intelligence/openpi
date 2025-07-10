@@ -112,15 +112,23 @@ def get_config(variant: Variant) -> Config:
 @at.typecheck
 class RMSNorm(nn.Module):
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, cond):
         dtype = x.dtype  # original dtype, could be half-precision
-        scale = self.param("scale", nn.initializers.zeros_init(), (x.shape[-1]))
         var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)  # compute variance in float32
         normed_inputs = jnp.asarray(x * jnp.reciprocal(jnp.sqrt(var + 1e-06)))  # compute normalization in float32
-        normed_inputs = normed_inputs * (
-            1 + scale
-        )  # scale by learned parameter in float32 (matches Flax implementation)
-        return normed_inputs.astype(dtype)  # return in original dtype
+        if cond is None:
+            # regular RMSNorm
+            scale = self.param("scale", nn.initializers.zeros_init(), (x.shape[-1]))
+            normed_inputs = normed_inputs * (
+                1 + scale
+            )  # scale by learned parameter in float32 (matches Flax implementation)
+            return normed_inputs.astype(dtype), None  # return in original dtype
+
+        # adaptive RMSNorm
+        modulation = nn.Dense(x.shape[-1] * 3, kernel_init=nn.initializers.zeros, dtype=dtype)(cond)
+        scale, shift, gate = jnp.split(modulation[:, None, :], 3, axis=-1)
+        normed_inputs = normed_inputs * (1 + scale) + shift  # scale and shift in float32
+        return normed_inputs.astype(dtype), gate
 
 
 @at.typecheck
@@ -276,47 +284,49 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     """Transformer block."""
 
-    configs: Sequence[Config]
+    configs: tuple[Config, ...]
 
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
 
     @nn.compact
-    def __call__(self, xs, kv_cache, positions, attn_mask, decode, deterministic=True):  # noqa: FBT002
+    def __call__(self, xs, kv_cache, positions, attn_mask, adarms_cond, deterministic=True):  # noqa: FBT002
         xs = sharding.activation_sharding_constraint(xs)
         drop = nn.Dropout(self.dropout, self.dropout_bdims) if self.dropout else lambda x, _: x
 
         attn = Attention(configs=self.configs, name="attn")
 
         pre_attn = []
+        gates = []
         for i, x in enumerate(xs):
             if x is not None:
-                x = RMSNorm(name=_name("pre_attention_norm", i))(x)  # noqa: PLW2901
+                x, gate = RMSNorm(name=_name("pre_attention_norm", i))(x, adarms_cond[i])  # noqa: PLW2901
             pre_attn.append(x)
+            gates.append(gate if x is not None else None)
 
         pre_attn = sharding.activation_sharding_constraint(pre_attn)
         post_attn, kv_cache = attn(pre_attn, positions, attn_mask, kv_cache)
         post_attn = jax.tree.map(lambda x: drop(x, deterministic), post_attn)
         post_attn = sharding.activation_sharding_constraint(post_attn)
-        xs = jax.tree.map(lambda x, y: x + y, xs, post_attn)
+        xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, post_attn, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
 
         out = []
+        gates = []
         for i, (x, config) in enumerate(zip(xs, self.configs, strict=True)):
             if x is not None:
-                x = RMSNorm(name=_name("pre_ffw_norm", i))(x)  # noqa: PLW2901
-                x = lora.FeedForward(  # noqa: PLW2901
+                x, gate = RMSNorm(name=_name("pre_ffw_norm", i))(x, adarms_cond[i])  # noqa: PLW2901
+                x = FeedForward(  # noqa: PLW2901
                     features=config.width,
                     hidden_dim=config.mlp_dim,
                     name=_name("mlp", i),
-                    lora_config=config.lora_configs.get("ffn"),
                 )(x)
             out.append(x)
+            gates.append(gate if x is not None else None)
 
         out = sharding.activation_sharding_constraint(out)
-
         out = jax.tree.map(lambda x: drop(x, deterministic), out)
-        xs = jax.tree.map(lambda x, y: x + y, xs, out)
+        xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
 
         return xs, kv_cache
@@ -334,6 +344,7 @@ class Module(nn.Module):
 
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
+    adarms: bool = False
 
     def setup(self):
         # all experts must have the same depth
@@ -347,14 +358,20 @@ class Module(nn.Module):
         block_cls = nn.remat(
             Block,
             prevent_cse=False,
-            static_argnums=(5,),  # 0=self, 5=deterministic
+            static_argnums=(5,),  # 0=self, 6=deterministic
             policy=jax.checkpoint_policies.nothing_saveable,
         )
         self.layers = nn.scan(
             block_cls,
             variable_axes={"params": 0},
             split_rngs={"params": True, "dropout": True},
-            in_axes=(0, nn.broadcast, nn.broadcast, nn.broadcast),  # 0=kv_cache, 1=positions, 2=mask, 3=decode
+            in_axes=(
+                0,
+                nn.broadcast,
+                nn.broadcast,
+                nn.broadcast,
+                nn.broadcast,
+            ),  # 0=kv_cache, 1=positions, 2=mask, 3=adarms_cond, 4=deterministic
             length=self.configs[0].depth,
         )(
             configs=self.configs,
@@ -374,26 +391,32 @@ class Module(nn.Module):
         embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
         positions: at.Int[at.Array, "b t"],
         mask: at.Bool[at.Array, "b t s"],
+        adarms_cond: Sequence[at.Float[at.Array, "b _d"] | None] | None = None,
         *,
         kv_cache: KVCache | None = None,
         deterministic: bool = True,
     ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
         embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype), embedded)
         mask = jnp.asarray(mask)[:, None, :, :]
+        if adarms_cond is None:
+            adarms_cond = [None] * len(self.configs)
 
-        embedded, kv_cache = self.layers(embedded, kv_cache, positions, mask, deterministic)
+        embedded, kv_cache = self.layers(embedded, kv_cache, positions, mask, adarms_cond, deterministic)
 
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
 
-        return [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)], kv_cache
+        return [
+            f(e, a)[0] if e is not None else e for f, e, a in zip(self.final_norms, embedded, adarms_cond, strict=True)
+        ], kv_cache
 
-    def init(self):
+    def init(self, use_adarms: Sequence[bool]):
         """Convenience method for initializing all parameters, necessary due to the quirks of linen."""
         self.embed(jnp.zeros((1, 1), dtype=jnp.int32))
         self(
             [jnp.zeros((1, 1, c.width)) for c in self.configs],
             jnp.zeros((1, len(self.configs)), dtype=jnp.int32),
             jnp.zeros((1, len(self.configs), len(self.configs)), dtype=bool),
+            adarms_cond=[jnp.zeros((1, c.width)) if u else None for u, c in zip(use_adarms, self.configs, strict=True)],
         )
 
 
@@ -424,3 +447,12 @@ def _name(name, i):
     if i == 0:
         return name
     return f"{name}_{i}"
+
+
+def _gated_residual(x, y, gate):
+    assert (x is None) == (y is None)
+    if x is None:
+        return None
+    if gate is None:
+        return x + y
+    return x + y * gate
