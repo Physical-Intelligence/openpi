@@ -116,6 +116,20 @@ class ModelTransformFactory(GroupFactory):
                         _transforms.TokenizePrompt(
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                         ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                )
+            case _model.ModelType.PI05:
+                assert isinstance(model_config, pi0.Pi0Config)
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            discrete_state_input=model_config.discrete_state_input,
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
                 )
             case _model.ModelType.PI0_FAST:
@@ -150,7 +164,7 @@ class DataConfigFactory(abc.ABC):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         """Create a data config."""
 
-    def create_base_config(self, assets_dirs: pathlib.Path) -> DataConfig:
+    def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
         asset_id = self.assets.asset_id or repo_id
         return dataclasses.replace(
@@ -158,6 +172,7 @@ class DataConfigFactory(abc.ABC):
             repo_id=repo_id,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
+            use_quantile_norm=model_config.model_type != ModelType.PI0,
         )
 
     def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
@@ -192,10 +207,9 @@ class SimpleDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         return dataclasses.replace(
-            self.create_base_config(assets_dirs),
+            self.create_base_config(assets_dirs, model_config),
             data_transforms=self.data_transforms(model_config),
             model_transforms=self.model_transforms(model_config),
-            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
         )
 
 
@@ -231,7 +245,7 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
-            inputs=[aloha_policy.AlohaInputs(action_dim=model_config.action_dim, adapt_to_pi=self.adapt_to_pi)],
+            inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
             outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
         )
         if self.use_delta_joint_actions:
@@ -244,7 +258,7 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
         return dataclasses.replace(
-            self.create_base_config(assets_dirs),
+            self.create_base_config(assets_dirs, model_config),
             repack_transforms=self.repack_transforms,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
@@ -259,6 +273,8 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     For your own dataset, you can copy this class and modify the transforms to match your dataset based on the
     comments below.
     """
+
+    extra_delta_transform: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -291,7 +307,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # how to modify the transforms to match your dataset. Once you created your own transforms, you can
         # replace the transforms below with your own.
         data_transforms = _transforms.Group(
-            inputs=[libero_policy.LiberoInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            inputs=[libero_policy.LiberoInputs(model_type=model_config.model_type)],
             outputs=[libero_policy.LiberoOutputs()],
         )
 
@@ -305,13 +321,14 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # apply a separate delta conversion (that's why it's commented out). Choose whether to apply this
         # transform based on whether your dataset uses ``absolute`` or ``delta`` actions out of the box.
 
-        # TODO(karl): comment this out once we have updated the Libero checkpoints to not use
-        # the delta action transform
-        delta_action_mask = _transforms.make_bool_mask(6, -1)
-        data_transforms = data_transforms.push(
-            inputs=[_transforms.DeltaActions(delta_action_mask)],
-            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        )
+        # LIBERO already represents actions as deltas, but we have some old Pi0 checkpoints that are trained with this
+        # extra delta transform.
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
 
         # Model transforms include things like tokenizing the prompt and action targets
         # You do not need to change anything here for your own dataset.
@@ -319,7 +336,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
         # We return all data transforms for training and inference. No need to change anything here.
         return dataclasses.replace(
-            self.create_base_config(assets_dirs),
+            self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
@@ -370,11 +387,10 @@ class RLDSDroidDataConfig(DataConfigFactory):
         assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
 
         return dataclasses.replace(
-            self.create_base_config(assets_dirs),
+            self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
         )
@@ -508,7 +524,7 @@ _CONFIGS = [
         data=SimpleDataConfig(
             assets=AssetsConfig(asset_id="droid"),
             data_transforms=lambda model: _transforms.Group(
-                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim)],
+                inputs=[droid_policy.DroidInputs(model_type=ModelType.PI0)],
                 outputs=[droid_policy.DroidOutputs()],
             ),
             base_config=DataConfig(
@@ -522,7 +538,21 @@ _CONFIGS = [
         data=SimpleDataConfig(
             assets=AssetsConfig(asset_id="droid"),
             data_transforms=lambda model: _transforms.Group(
-                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                inputs=[droid_policy.DroidInputs(model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
+    TrainConfig(
+        name="pi05_droid",
+        model=pi0.Pi0Config(action_horizon=15, pi05=True),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(model_type=ModelType.PI05)],
                 outputs=[droid_policy.DroidOutputs()],
             ),
             base_config=DataConfig(
@@ -556,6 +586,7 @@ _CONFIGS = [
                 # a field called ``prompt`` in the input dict. The recommended setting is True.
                 prompt_from_task=True,
             ),
+            extra_delta_transform=True,
         ),
         # Here you define which pre-trained checkpoint you want to load to initialize the model.
         # This should match the model config you chose above -- i.e. in this case we use the pi0 base model.
@@ -571,6 +602,7 @@ _CONFIGS = [
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=30_000,
@@ -600,6 +632,7 @@ _CONFIGS = [
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
         ),
         # Note that we load the pi0-FAST base model checkpoint here.
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
@@ -615,6 +648,7 @@ _CONFIGS = [
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
@@ -625,6 +659,29 @@ _CONFIGS = [
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_paligemma",
+        model=pi0.Pi0Config(pi05=True, action_horizon=10, action_dim=7, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=256,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(
+            weight_decay=0.0,
+            clip_gradient_norm=1.0,
+        ),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
     ),
     #
     # Fine-tuning Aloha configs.
@@ -727,6 +784,16 @@ _CONFIGS = [
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="debug_pi05",
+        model=pi0.Pi0Config(pi05=True, paligemma_variant="dummy", action_expert_variant="dummy"),
+        data=FakeDataConfig(),
+        batch_size=2,
+        num_train_steps=10,
+        overwrite=True,
+        exp_name="debug_pi05",
         wandb_enabled=False,
     ),
 ]
