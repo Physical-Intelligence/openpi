@@ -119,17 +119,25 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI0_FAST:
+                tokenizer_cls = (
+                    _tokenizer.FASTTokenizer
+                    if model_config.fast_model_tokenizer is None
+                    else model_config.fast_model_tokenizer
+                )
+                tokenizer_kwargs = (
+                    {} if model_config.fast_model_tokenizer_kwargs is None else model_config.fast_model_tokenizer_kwargs
+                )
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizeFASTInputs(
-                            _tokenizer.FASTTokenizer(model_config.max_token_len),
+                            tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
                         ),
                     ],
                     outputs=[
                         _transforms.ExtractFASTActions(
-                            _tokenizer.FASTTokenizer(model_config.max_token_len),
+                            tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
                             action_horizon=model_config.action_horizon,
                             action_dim=model_config.action_dim,
                         )
@@ -703,6 +711,99 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # RoboArena DROID baseline inference configs.
+    #
+    TrainConfig(
+        # Trained from PaliGemma, using RT-2 / OpenVLA style binning tokenizer.
+        name="paligemma_binning_droid",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8,
+            action_horizon=15,
+            max_token_len=400,
+            fast_model_tokenizer=_tokenizer.BinningTokenizer,
+        ),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
+    TrainConfig(
+        # Trained from PaliGemma, using FAST tokenizer (using universal FAST+ tokenizer).
+        name="paligemma_fast_droid",
+        model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=15),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
+    TrainConfig(
+        # Trained from PaliGemma, using FAST tokenizer (tokenizer trained on DROID dataset).
+        name="paligemma_fast_specialist_droid",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8,
+            action_horizon=15,
+            fast_model_tokenizer=_tokenizer.FASTTokenizer,
+            fast_model_tokenizer_kwargs={"fast_tokenizer_path": "KarlP/fast_droid_specialist"},
+        ),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
+    TrainConfig(
+        # Trained from PaliGemma, using FSQ tokenizer.
+        name="paligemma_vq_droid",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8,
+            action_horizon=15,
+            fast_model_tokenizer=_tokenizer.FSQTokenizer,
+            fast_model_tokenizer_kwargs={"fsq_tokenizer_path": "gs://openpi-assets/tokenizers/droid_fsq_tokenizer"},
+        ),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
+    TrainConfig(
+        # pi0-style diffusion / flow VLA, trained on DROID from PaliGemma.
+        name="paligemma_diffusion_droid",
+        model=pi0.Pi0Config(action_horizon=10, action_dim=8),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="droid"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[droid_policy.DroidInputs(action_dim=model.action_dim)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
     ),
     #
     # Debugging configs.
