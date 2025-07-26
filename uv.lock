@@ -3251,7 +3251,7 @@ requires-dist = [
     { name = "numpydantic", specifier = ">=1.6.6" },
     { name = "opencv-python", specifier = ">=4.10.0.84" },
     { name = "openpi-client", editable = "packages/openpi-client" },
-    { name = "orbax-checkpoint", specifier = "==0.11.13" },
+    { name = "orbax-checkpoint", specifier = "==0.11.1" },
     { name = "pillow", specifier = ">=11.0.0" },
     { name = "polars", specifier = ">=1.30.0" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -3341,7 +3341,7 @@ wheels = [
 
 [[package]]
 name = "orbax-checkpoint"
-version = "0.11.13"
+version = "0.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -3357,9 +3357,9 @@ dependencies = [
     { name = "tensorstore" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/cb/e122160888cb922caabfd67582d402e6202fc7383c64f2e05a81727cef6a/orbax_checkpoint-0.11.13.tar.gz", hash = "sha256:6ce6f4458d0755a7ae556d4da3b2e3a943d4a830aeec2f98881643f1997e11bc", size = 316151, upload-time = "2025-05-01T15:51:22.016Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/3a/60a08a16997b1e4e097d03b8b9135eec44c88cb8547822efe46d2e97eb09/orbax_checkpoint-0.11.1.tar.gz", hash = "sha256:e303f4f4441ba0367a14c692d6c73070bba954205de89df608f21823dd86eaee", size = 277832, upload-time = "2025-01-28T23:09:21.658Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/57/700709ca012b8595230dd2a004fbe284a57e6838f966d58c956d4529a2db/orbax_checkpoint-0.11.13-py3-none-any.whl", hash = "sha256:096eb6f475857d7aa73235989cdfe5d34c425628d24be881686dfbc3b566f495", size = 442700, upload-time = "2025-05-01T15:51:20.662Z" },
+    { url = "https://files.pythonhosted.org/packages/00/06/90f972344350d12ed77b6cf28f8e06215eff9d8ca4da95679e8d0369d697/orbax_checkpoint-0.11.1-py3-none-any.whl", hash = "sha256:9cfbe49331ffdef4aedfec337da683eb8fc65221dc43924cf6daea6c27d6dc06", size = 394885, upload-time = "2025-01-28T23:09:18.688Z" },
 ]
 
 [[package]]
