@@ -10,20 +10,31 @@ This example requires git submodules to be initialized. Don't forget to run:
 git submodule update --init --recursive
 ```
 
-## With Docker
+## With Docker (recommended)
 
 ```bash
 # Grant access to the X11 server:
 sudo xhost +local:docker
 
-export SERVER_ARGS="--env LIBERO"
-docker compose -f examples/libero/compose.yml up --build
+# To run with the default checkpoint and task suite:
+SERVER_ARGS="--env LIBERO" docker compose -f examples/libero/compose.yml up --build
 
 # To run with glx for Mujoco instead (use this if you have egl errors):
-MUJOCO_GL=glx docker compose -f examples/libero/compose.yml up --build
+MUJOCO_GL=glx SERVER_ARGS="--env LIBERO" docker compose -f examples/libero/compose.yml up --build
 ```
 
-## Without Docker
+You can customize the loaded checkpoint by providing additional `SERVER_ARGS` (see `scripts/serve_policy.py`), and the LIBERO task suite by providing additional `CLIENT_ARGS` (see `examples/libero/main.py`).
+For example:
+
+```bash
+# To load a custom checkpoint (located in the top-level openpi/ directory):
+export SERVER_ARGS="--env LIBERO policy:checkpoint --policy.config pi05_libero --policy.dir ./my_custom_checkpoint"
+
+# To run the libero_10 task suite:
+export CLIENT_ARGS="--args.task-suite-name libero_10"
+```
+
+## Without Docker (not recommended)
 
 Terminal window 1:
 
