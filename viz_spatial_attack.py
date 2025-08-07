@@ -1,14 +1,12 @@
 import pickle as pkl
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-sys.path.insert(0, '/project/shihanzh/openpi/third_party/libero/scripts')
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, dcc, html, no_update
-from qd_spatial import evaluate
 from ribs.visualize import grid_archive_heatmap
+
+from qd_spatial import evaluate
 
 
 def show_interactive_archive(archive):
@@ -102,7 +100,8 @@ def host_interactive_archive(archive, port=8050):
 
 if __name__ == "__main__":
     with open(
-        file="test_logs/scheduler_00000200.pkl",
+        # Enter the scheduler checkpoint you want to visualize here
+        file="scheduler_00000200.pkl",
         mode="rb",
     ) as f:
         archive = pkl.load(f).result_archive
