@@ -32,10 +32,10 @@ class Args:
     # LIBERO environment-specific parameters
     #################################################################################################################
     task_suite_name: str = (
-        "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+        "custom"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, custom
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
-    num_trials_per_task: int = 50  # Number of rollouts per task
+    num_trials_per_task: int = 5  # Number of rollouts per task
 
     #################################################################################################################
     # Utils
@@ -57,7 +57,7 @@ def eval_libero(args: Args) -> None:
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
-    if args.task_suite_name == "libero_spatial":
+    if args.task_suite_name in ["libero_spatial", "custom"]:
         max_steps = 220  # longest training demo has 193 steps
     elif args.task_suite_name == "libero_object":
         max_steps = 280  # longest training demo has 254 steps
@@ -94,7 +94,10 @@ def eval_libero(args: Args) -> None:
             action_plan = collections.deque()
 
             # Set initial states
-            obs = env.set_init_state(initial_states[episode_idx])
+            if initial_states is None:
+                obs = env.env._get_observations()
+            else:
+                obs = env.set_init_state(initial_states[episode_idx])
 
             # Setup
             t = 0
@@ -168,7 +171,7 @@ def eval_libero(args: Args) -> None:
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
             imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+                pathlib.Path(args.video_out_path) / f"rollout_{task_id}_{episode_idx}.mp4",
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
