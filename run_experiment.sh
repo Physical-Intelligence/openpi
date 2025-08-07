@@ -15,7 +15,7 @@ tmux send-keys -t $SESSION "
 cd \"$(pwd)\"
 source examples/libero/.venv/bin/activate
 export PYTHONPATH=\$PYTHONPATH:\$PWD/third_party/libero
-python third_party/libero/scripts/qd_spatial.py
+python qd_spatial.py
 " C-m
 
 # Pane 1: Terminal 2
