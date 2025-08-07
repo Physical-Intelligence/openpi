@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+from typing import Any
 
 import einops
 import flax.nnx as nnx
@@ -81,6 +82,11 @@ class Pi0FASTConfig(_model.BaseModelConfig):
     action_dim: int = 32
     action_horizon: int = 32
     max_token_len: int = 250
+
+    # Tokenizer for the fast model.
+    fast_model_tokenizer: Any | None = None
+    # Keyword arguments for the fast model tokenizer.
+    fast_model_tokenizer_kwargs: dict[str, Any] | None = None
 
     @property
     @override
