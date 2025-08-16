@@ -101,7 +101,7 @@ def host_interactive_archive(archive, port=8050):
 if __name__ == "__main__":
     with open(
         # Enter the scheduler checkpoint you want to visualize here
-        file="scheduler_00000200.pkl",
+        file="scheduler_00001000.pkl",
         mode="rb",
     ) as f:
         archive = pkl.load(f).result_archive
