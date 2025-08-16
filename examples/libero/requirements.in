@@ -12,3 +12,4 @@ robosuite==1.4.1
 matplotlib==3.5.3
 ribs==0.7.1
 fire
+shapely

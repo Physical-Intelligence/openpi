@@ -64,6 +64,7 @@ numpy==1.22.4
     #   robosuite
     #   scikit-learn
     #   scipy
+    #   shapely
     #   torchvision
 numpy-groupies==0.9.22
     # via ribs
@@ -120,6 +121,8 @@ setuptools==75.3.0
     # via
     #   imageio-ffmpeg
     #   numba
+shapely==2.0.7
+    # via -r examples/libero/requirements.in
 shtab==1.7.1
     # via tyro
 six==1.17.0
