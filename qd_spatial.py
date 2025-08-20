@@ -11,6 +11,7 @@ import fire
 import imageio
 import matplotlib.pyplot as plt
 import numpy as np
+from dask.distributed import Client, LocalCluster
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from openpi_client import websocket_client_policy as _websocket_client_policy
@@ -35,7 +36,6 @@ max_steps = 220
 num_steps_wait = 10
 host = "0.0.0.0"
 port = 8000
-client = _websocket_client_policy.WebsocketClientPolicy(host, port)
 replan_steps = 5
 
 def _quat2axisangle(quat):
@@ -74,123 +74,178 @@ def _extract_scheduler_itr(filename):
     return None
 
 def evaluate(params, ntrials, seed, video_logdir=None):
-    """Evaluates params by creating LIBERO environments and computing
+    """Evaluates param by creating LIBERO environments and computing
     objective and measure values from the environments' features and VLA
     rollout.
 
     Args:
-        params (array-like): Array of shape (batch_size, solution_dim)
-            containing params to be evaluated.
+        params (np.ndarray): Array of shape (solution_dim,) containing a single 
+            solution to be evaluated.
         ntrials (int): Number of rollouts for each solution.
         seed (int): Seed.
         video_logdir (str): Folder for saving rollout videos. If None no video 
             is saved.
 
     Return:
-        objective (np.ndarray): Array of shape (batch_size,) containing VLA's
-            success rates on environments created from each row of ``params``.
-            Invalid rows get np.nan.
-        measures (np.ndarray): Array of shape (batch_size, measure_dim)
-            containing measure values computed from the environments' features.
-            Invalid rows get [np.nan] * measure_dim.
+        objective (float): Entropy of VLA's success rate on the environment 
+            created from ``params``.
+        measures (float, float): Spread and similarity of the environment 
+            created from ``params``.
     """
-    # NOTE: Ideally this should be parallelized, but we may have to evaluate
-    # solutions one at a time due to VLA's high GPU memory requirement.
     np.random.seed(seed)
+    openpi_client = _websocket_client_policy.WebsocketClientPolicy(host, port)
 
-    objectives = []
-    measures = []
-    for sol_id, sol in enumerate(params):
-        env = TASK_ENV(params=sol, repair_env=True, repair_config={'time_limit':1500, 'seed':seed})
+    env = TASK_ENV(
+        params=params, 
+        repair_env=True, 
+        repair_config={
+            'time_limit':1500, 
+            'seed':seed
+        }
+    )
 
-        env.seed(seed)
+    env.seed(seed)
+    obs = env.reset()
+    if obs is None:
+        # TODO: How to handle solutions that fail to evaluate
+        return 1e-6, 0, 0
+
+    if video_logdir is not None:
+        # ID each sol with datetime to prevent overwriting
+        sol_logdir = Path(video_logdir) / f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sol_logdir.mkdir(parents=True)
+    
+    # compute_spread_similarity must be called at the start before any 
+    # action since actions might change objects' locations
+    spread, similarity = env.env.compute_spread_similarity()
+
+    # Get success rates by running openpi on env
+    success_rate = 0
+    for trial_id in range(ntrials):
         obs = env.reset()
-        if obs is None:
-            # TODO: How to handle solutions that fail to generate
-            objectives.append(1e-6)
-            measures.append([0, 0])
-            continue
+        action_plan = collections.deque()
 
-        if video_logdir is not None:
-            # ID each sol with datetime to prevent overwriting
-            sol_logdir = Path(video_logdir) / f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            sol_logdir.mkdir(parents=True)
-        
-        # compute_spread_similarity must be called at the start before any 
-        # action since actions might change objects' locations
-        spread, similarity = env.env.compute_spread_similarity()
-        measures.append([spread, similarity])
+        replay_images = []
 
-        # Get success rates by running openpi on env
-        print(f"------------------ Rolling out solution{sol_id}")
-        success_rate = 0
-        for trial_id in range(ntrials):
-            obs = env.reset()
-            action_plan = collections.deque()
+        success = False
+        for t in range(max_steps + num_steps_wait):
+            try:
+                if t < num_steps_wait:
+                    # Do nothing at the start to wait for env to settle
+                    obs, reward, done, info = env.step([0.0] * 6 + [-1.0])
+                    continue
 
-            replay_images = []
+                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
-            success = False
-            for t in range(max_steps + num_steps_wait):
-                try:
-                    if t < num_steps_wait:
-                        # Do nothing at the start to wait for env to settle
-                        obs, reward, done, info = env.step([0.0] * 6 + [-1.0])
-                        continue
+                replay_images.append(img)
 
-                    img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                    wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                if not action_plan:
+                    element = {
+                        "observation/image": img,
+                        "observation/wrist_image": wrist_img,
+                        "observation/state": np.concatenate(
+                            (
+                                obs["robot0_eef_pos"],
+                                _quat2axisangle(obs["robot0_eef_quat"]),
+                                obs["robot0_gripper_qpos"],
+                            )
+                        ),
+                        "prompt": env.language_instruction,
+                    }
 
-                    replay_images.append(img)
+                    action_chunk = openpi_client.infer(element)["actions"]
+                    assert (
+                        len(action_chunk) >= replan_steps
+                    ), f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
+                    action_plan.extend(action_chunk[: replan_steps])
 
-                    if not action_plan:
-                        element = {
-                            "observation/image": img,
-                            "observation/wrist_image": wrist_img,
-                            "observation/state": np.concatenate(
-                                (
-                                    obs["robot0_eef_pos"],
-                                    _quat2axisangle(obs["robot0_eef_quat"]),
-                                    obs["robot0_gripper_qpos"],
-                                )
-                            ),
-                            "prompt": env.language_instruction,
-                        }
+                action = action_plan.popleft()
 
-                        action_chunk = client.infer(element)["actions"]
-                        assert (
-                            len(action_chunk) >= replan_steps
-                        ), f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
-                        action_plan.extend(action_chunk[: replan_steps])
-
-                    action = action_plan.popleft()
-
-                    obs, reward, done, info = env.step(action.tolist())
-                    if done:
-                        success_rate += 1 / ntrials
-                        success = True
-                        break
-
-                except Exception as e:
-                    print(e)
+                obs, reward, done, info = env.step(action.tolist())
+                if done:
+                    success_rate += 1 / ntrials
+                    success = True
                     break
 
-            print(f"\t trial{trial_id}: {'success' if success else 'fail'}")
-            
-            if video_logdir is not None:
-                imageio.mimwrite(
-                    sol_logdir / f"trial{trial_id}_{'success' if success else 'fail'}.mp4",
-                    [np.asarray(x) for x in replay_images],
-                    fps=10,
-                )
-            
-        # Maximizes entropy as objective, i.e. we want more uncertain 
-        # success rates
-        success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
-        objectives.append(-success_rate*math.log2(success_rate) - (1-success_rate)*math.log2(1-success_rate))
+            except Exception as e:
+                print(e)
+                # TODO: How to handle solutions that fail to evaluate
+                return 1e-6, 0, 0
 
-    return np.asarray(objectives), np.asarray(measures)
+        print(f"\t trial{trial_id}: {'success' if success else 'fail'}")
+        
+        if video_logdir is not None:
+            imageio.mimwrite(
+                sol_logdir / f"trial{trial_id}_{'success' if success else 'fail'}.mp4",
+                [np.asarray(x) for x in replay_images],
+                fps=10,
+            )
+            
+    # Maximizes entropy as objective, i.e. we want more uncertain 
+    # success rates
+    success_rate = np.clip(success_rate, 1e-6, 1 - 1e-6)
+    entropy = -success_rate*math.log2(success_rate) - (1-success_rate)*math.log2(1-success_rate)
 
+    openpi_client._ws.close()
+
+    return entropy, spread, similarity
+
+# def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
+#     objs = []
+#     meas = []
+#     for sol_id, sol in enumerate(params):
+#         entropy, spread, similarity = evaluate(sol, ntrials, seed+sol_id, video_logdir)
+#         objs.append(entropy)
+#         meas.append([spread, similarity])
+    
+#     return np.asarray(objs), np.asarray(meas)
+
+def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
+    """Parallelized version of :func:`evaluate`.
+
+    Args:
+        params (np.ndarray): Array of shape (batch_size, solution_dim) 
+            containing solutions to be evaluated.
+        ntrials (int): Number of rollouts for each solution.
+        seed (int): Seed.
+        video_logdir (str): Folder for saving rollout videos. If None no video 
+            is saved.
+
+    Return:
+        objective (np.ndarray): Array of shape (batch_size,). Entropies of 
+            VLA's success rates on the environments created from ``params``.
+        measures (np.ndarray): Array of shape (batch_size, measure_dim). 
+            Spread and similarity of environments created from ``params``.
+    """
+    batch_size = params.shape[0]
+    nworkers = len(client.scheduler_info()['workers'])
+    assert nworkers >= batch_size, (
+        f"batch_size={batch_size} exceeds the number of workers "
+        f"{nworkers}"
+    )
+
+    futures = [
+        client.submit(
+            evaluate,
+            params=sol,
+            ntrials=ntrials,
+            seed=seed+sol_id,
+            video_logdir=video_logdir,
+            pure=False,
+        )
+        for sol_id, sol in enumerate(params)
+    ]
+    results = client.gather(futures)
+
+    objs, meas = [], []
+
+    # Process the results.
+    for entropy, spread, similarity in results:
+        objs.append(entropy)
+        meas.append([spread, similarity])
+
+    return np.asarray(objs), np.asarray(meas)
 
 def save_heatmap(archive, heatmap_path):
     """Saves a heatmap of the archive to the given path.
@@ -275,11 +330,18 @@ def main(
         with open(file=reload_from, mode="rb") as f:
             scheduler = pkl.load(f)
 
+    cluster = LocalCluster(
+        processes=True, 
+        n_workers=batch_size, 
+        threads_per_worker=1, 
+    )
+    client = Client(cluster)
+    
     start = 1 if reload_from is None else reload_itr + 1
     end = start + iterations
     for i in range(start, end):
         solutions = scheduler.ask()
-        objectives, measures = evaluate(params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
+        objectives, measures = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
         scheduler.tell(objectives, measures)
 
         print(

@@ -13,3 +13,4 @@ matplotlib==3.5.3
 ribs==0.7.1
 fire
 shapely
+dask[distributed]
