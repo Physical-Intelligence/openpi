@@ -101,7 +101,7 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     objectives = []
     measures = []
     for sol_id, sol in enumerate(params):
-        env = TASK_ENV(params=sol)
+        env = TASK_ENV(params=sol, repair_env=True, repair_config={'time_limit':1500, 'seed':seed})
 
         env.seed(seed)
         obs = env.reset()
