@@ -6,7 +6,7 @@
 # Run the container:
 # docker run --rm -it --network=host -v /dev:/dev -v .:/app --privileged aloha_real /bin/bash
 
-FROM ros:noetic-robot@sha256:0e12e4db836e78c74c4b04c6d16f185d9a18d2b13cf5580747efa075eb6dc6e0
+FROM ros:noetic-robot@sha256:7cf0b9f6546abeba308ea42cb7ad3453f3e520e1af57cdf179fe915c939674bc
 SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive

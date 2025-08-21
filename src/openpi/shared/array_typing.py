@@ -31,7 +31,7 @@ _original_check_dataclass_annotations = jaxtyping._decorator._check_dataclass_an
 
 def _check_dataclass_annotations(self, typechecker):
     if not any(
-        frame.frame.f_globals["__name__"] in {"jax._src.tree_util", "flax.nnx.transforms.compilation"}
+        frame.frame.f_globals.get("__name__") in {"jax._src.tree_util", "flax.nnx.transforms.compilation"}
         for frame in inspect.stack()
     ):
         return _original_check_dataclass_annotations(self, typechecker)

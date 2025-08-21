@@ -112,12 +112,17 @@ class RealEnv:
         )
 
     def _reset_gripper(self):
-        """Set to position mode and do position resets: first open then close. Then change back to PWM mode"""
-        robot_utils.move_grippers(
-            [self.puppet_bot_left, self.puppet_bot_right], [constants.PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5
-        )
+        """Set to position mode and do position resets: first close then open. Then change back to PWM mode
+
+        NOTE: This diverges from the original Aloha code which first opens then closes the gripper. Pi internal aloha data
+        was collected with the gripper starting in the open position. Leaving the grippers fully closed was also found to
+        increase the frequency of motor faults.
+        """
         robot_utils.move_grippers(
             [self.puppet_bot_left, self.puppet_bot_right], [constants.PUPPET_GRIPPER_JOINT_CLOSE] * 2, move_time=1
+        )
+        robot_utils.move_grippers(
+            [self.puppet_bot_left, self.puppet_bot_right], [constants.PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5
         )
 
     def get_observation(self):

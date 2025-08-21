@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+from typing import Any
 
 import einops
 import flax.nnx as nnx
@@ -81,6 +82,11 @@ class Pi0FASTConfig(_model.BaseModelConfig):
     action_dim: int = 32
     action_horizon: int = 32
     max_token_len: int = 250
+
+    # Tokenizer for the fast model.
+    fast_model_tokenizer: Any | None = None
+    # Keyword arguments for the fast model tokenizer.
+    fast_model_tokenizer_kwargs: dict[str, Any] | None = None
 
     @property
     @override
@@ -265,14 +271,17 @@ class Pi0FAST(_model.BaseModel):
         output_tokens = jnp.zeros((last_logit.shape[0], max_decoding_steps))
 
         def step(carry):
-            last_logit, output_tokens, cache, _, step = carry
+            rng, last_logit, output_tokens, cache, _, step = carry
 
             # Sample token from last logit
-            if temperature > 0.0:
-                last_logit = last_logit / temperature
-                token = jax.random.categorical(rng, last_logit, axis=-1)
-            else:
-                token = jnp.argmax(last_logit, axis=-1)
+            # Split RNG for this step
+            rng, rng_step = jax.random.split(rng)
+            token = jax.lax.cond(
+                temperature > 0.0,
+                lambda _: jax.random.categorical(rng_step, last_logit / temperature, axis=-1),
+                lambda _: jnp.argmax(last_logit, axis=-1),
+                operand=None,
+            )
             output_tokens = put_along_last_axis(output_tokens, jnp.broadcast_to(step, (token.shape[0], 1)), token)
 
             # Check for early stopping --> stop if all batch elements have EOS token
@@ -291,12 +300,14 @@ class Pi0FAST(_model.BaseModel):
                 embedded_prefix=token_embedding, mask=mask, positions=positions, decode=True, kv_cache=cache
             )
 
-            return last_logit, output_tokens, kv_cache, all_eos, step + 1
+            return rng, last_logit, output_tokens, kv_cache, all_eos, step + 1
 
         def cond(carry):
-            _, _, _, all_eos, step = carry
+            _, _, _, _, all_eos, step = carry
             return (~all_eos) & (step < max_decoding_steps)
 
         # Use lax.while_loop so we can jit the full decoding loop.
-        _, output_tokens, _, _, _ = jax.lax.while_loop(cond, step, (last_logit, output_tokens, kv_cache, False, 0))
+        _, _, output_tokens, _, _, _ = jax.lax.while_loop(
+            cond, step, (rng, last_logit, output_tokens, kv_cache, False, 0)
+        )
         return output_tokens

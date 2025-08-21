@@ -23,6 +23,7 @@ import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
+import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
@@ -119,17 +120,25 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI0_FAST:
+                tokenizer_cls = (
+                    _tokenizer.FASTTokenizer
+                    if model_config.fast_model_tokenizer is None
+                    else model_config.fast_model_tokenizer
+                )
+                tokenizer_kwargs = (
+                    {} if model_config.fast_model_tokenizer_kwargs is None else model_config.fast_model_tokenizer_kwargs
+                )
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizeFASTInputs(
-                            _tokenizer.FASTTokenizer(model_config.max_token_len),
+                            tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
                         ),
                     ],
                     outputs=[
                         _transforms.ExtractFASTActions(
-                            _tokenizer.FASTTokenizer(model_config.max_token_len),
+                            tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
                             action_horizon=model_config.action_horizon,
                             action_dim=model_config.action_dim,
                         )
@@ -479,6 +488,7 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             assets=AssetsConfig(asset_id="trossen"),
         ),
+        policy_metadata={"reset_pose": [0, -1.5, 1.5, 0, 0, 0]},
     ),
     TrainConfig(
         name="pi0_aloha_towel",
@@ -487,6 +497,7 @@ _CONFIGS = [
             assets=AssetsConfig(asset_id="trossen"),
             default_prompt="fold the towel",
         ),
+        policy_metadata={"reset_pose": [0, -1.5, 1.5, 0, 0, 0]},
     ),
     TrainConfig(
         name="pi0_aloha_tupperware",
@@ -495,6 +506,7 @@ _CONFIGS = [
             assets=AssetsConfig(asset_id="trossen"),
             default_prompt="open the tupperware and put the food on the plate",
         ),
+        policy_metadata={"reset_pose": [0, -1.5, 1.5, 0, 0, 0]},
     ),
     #
     # Inference DROID configs.
@@ -726,6 +738,10 @@ _CONFIGS = [
         num_train_steps=10,
         wandb_enabled=False,
     ),
+    #
+    # RoboArena configs.
+    #
+    *roboarena_config.get_roboarena_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
