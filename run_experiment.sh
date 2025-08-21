@@ -13,8 +13,9 @@ tmux new-session -d -s "$SESSION"
 # Pane 0: Terminal 1
 tmux send-keys -t $SESSION "
 cd \"$(pwd)\"
-source examples/libero/.venv/bin/activate
-export PYTHONPATH=\$PYTHONPATH:\$PWD/third_party/libero
+
+conda activate libero
+export PYTHONPATH=$PYTHONPATH:$PWD/third_party/libero
 python qd_spatial.py
 " C-m
 
@@ -22,6 +23,9 @@ python qd_spatial.py
 tmux split-window -h -t "$SESSION"
 tmux send-keys -t "$SESSION:0.1" "
 cd \"$(pwd)\"
+
+conda activate openpi
+
 uv run scripts/serve_policy.py --env LIBERO
 " C-m
 
