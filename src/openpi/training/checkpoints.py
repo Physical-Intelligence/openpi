@@ -23,10 +23,12 @@ def initialize_checkpoint_dir(
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
     resuming = False
     if checkpoint_dir.exists():
-        if overwrite:
+        if overwrite and jax.process_index() == 0:
             checkpoint_dir.rmtree()
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
+        elif overwrite and jax.process_index() != 0:
+            pass
         elif resume:
             resuming = True
         else:
