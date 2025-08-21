@@ -89,8 +89,21 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     Return:
         objective (float): Entropy of VLA's success rate on the environment 
             created from ``params``.
-        measures (float, float): Spread and similarity of the environment 
-            created from ``params``.
+        spread (float): In the environment created from ``params``, how well do 
+            objects cover the table.
+        similarity (float): In the environment created from ``params``, how 
+            tightly are objects clustered.
+        trajectories (np.ndarray): Array of shape (ntrials,) containing all 
+            rollout trajectories. Each rollout trajectory is a dictionary of 
+            the following format:
+            {
+                "success": bool, 
+                "prompt": str, 
+                "image": List, 
+                "wrist_image": List, 
+                "state": List, 
+                "action_plan": List
+            }
     """
     np.random.seed(seed)
     openpi_client = _websocket_client_policy.WebsocketClientPolicy(host, port)
@@ -108,7 +121,7 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     obs = env.reset()
     if obs is None:
         # TODO: How to handle solutions that fail to evaluate
-        return 1e-6, 0, 0
+        return 1e-6, 0, 0, None
 
     if video_logdir is not None:
         # ID each sol with datetime to prevent overwriting
@@ -119,15 +132,21 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     # action since actions might change objects' locations
     spread, similarity = env.env.compute_spread_similarity()
 
+    trajectories = []
     # Get success rates by running openpi on env
     success_rate = 0
     for trial_id in range(ntrials):
         obs = env.reset()
         action_plan = collections.deque()
 
-        replay_images = []
-
-        success = False
+        new_trajectory = {
+            "success": False,
+            "prompt": env.language_instruction,
+            "image": [],
+            "wrist_image": [],
+            "state": [],
+            "action_plan": []
+        }
         for t in range(max_steps + num_steps_wait):
             try:
                 if t < num_steps_wait:
@@ -137,8 +156,6 @@ def evaluate(params, ntrials, seed, video_logdir=None):
 
                 img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                 wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
-
-                replay_images.append(img)
 
                 if not action_plan:
                     element = {
@@ -160,25 +177,32 @@ def evaluate(params, ntrials, seed, video_logdir=None):
                     ), f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                     action_plan.extend(action_chunk[: replan_steps])
 
+                    # store in trajectory list
+                    new_trajectory["image"].append(img)
+                    new_trajectory["wrist_image"].append(wrist_img)
+                    new_trajectory["state"].append(element["observation/state"]) 
+                    new_trajectory["action_plan"].append(list(action_plan)) # (?) is this correct
+
                 action = action_plan.popleft()
 
                 obs, reward, done, info = env.step(action.tolist())
                 if done:
                     success_rate += 1 / ntrials
-                    success = True
+                    new_trajectory['success'] = True
                     break
 
             except Exception as e:
                 print(e)
                 # TODO: How to handle solutions that fail to evaluate
-                return 1e-6, 0, 0
+                return 1e-6, 0, 0, None
 
-        print(f"\t trial{trial_id}: {'success' if success else 'fail'}")
+        trajectories.append(new_trajectory)
+        print(f"\t trial{trial_id}: {'success' if new_trajectory['success'] else 'fail'}")
         
         if video_logdir is not None:
             imageio.mimwrite(
-                sol_logdir / f"trial{trial_id}_{'success' if success else 'fail'}.mp4",
-                [np.asarray(x) for x in replay_images],
+                sol_logdir / f"trial{trial_id}_{'success' if new_trajectory['success'] else 'fail'}.mp4",
+                [np.asarray(x) for x in new_trajectory["image"]],
                 fps=10,
             )
             
@@ -189,17 +213,19 @@ def evaluate(params, ntrials, seed, video_logdir=None):
 
     openpi_client._ws.close()
 
-    return entropy, spread, similarity
+    return entropy, spread, similarity, np.array(trajectories)
 
 # def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
 #     objs = []
 #     meas = []
+#     trajs = []
 #     for sol_id, sol in enumerate(params):
-#         entropy, spread, similarity = evaluate(sol, ntrials, seed+sol_id, video_logdir)
+#         entropy, spread, similarity, trajectoris = evaluate(sol, ntrials, seed+sol_id, video_logdir)
 #         objs.append(entropy)
 #         meas.append([spread, similarity])
+#         trajs.append(trajectoris)
     
-#     return np.asarray(objs), np.asarray(meas)
+#     return np.array(objs), np.array(meas), np.array(trajs)
 
 def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
     """Parallelized version of :func:`evaluate`.
@@ -217,6 +243,8 @@ def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
             VLA's success rates on the environments created from ``params``.
         measures (np.ndarray): Array of shape (batch_size, measure_dim). 
             Spread and similarity of environments created from ``params``.
+        trajectories (np.ndarray): Array of shape (batch_size, ntrials). 
+            Rollout trajectories.
     """
     batch_size = params.shape[0]
     nworkers = len(client.scheduler_info()['workers'])
@@ -238,14 +266,15 @@ def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
     ]
     results = client.gather(futures)
 
-    objs, meas = [], []
+    objs, meas, trajs = [], [], []
 
     # Process the results.
-    for entropy, spread, similarity in results:
+    for entropy, spread, similarity, trajectoris in results:
         objs.append(entropy)
         meas.append([spread, similarity])
+        trajs.append(trajectoris)
 
-    return np.asarray(objs), np.asarray(meas)
+    return np.array(objs), np.array(meas), np.array(trajs)
 
 def save_heatmap(archive, heatmap_path):
     """Saves a heatmap of the archive to the given path.
@@ -259,7 +288,6 @@ def save_heatmap(archive, heatmap_path):
     plt.tight_layout()
     plt.savefig(heatmap_path)
     plt.close(plt.gcf())
-
 
 def main(
     iterations=1000,
@@ -294,12 +322,18 @@ def main(
             # learning_rate=0.1,
             # threshold_min=0,
             seed=seed,
+            extra_fields={
+                "trajectories": ((num_trials_per_sol,), object)
+            }
         )
         passive_archive = GridArchive(
             solution_dim=10,
             dims=archive_resolution,
             ranges=[(0, 1)] * 2,
             seed=seed,
+            extra_fields={
+                "trajectories": ((num_trials_per_sol,), object)
+            }
         )
 
         emitters = [
@@ -341,8 +375,8 @@ def main(
     end = start + iterations
     for i in range(start, end):
         solutions = scheduler.ask()
-        objectives, measures = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
-        scheduler.tell(objectives, measures)
+        objectives, measures, trajectories = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
+        scheduler.tell(objectives, measures, trajectories=trajectories)
 
         print(
             f"\n------------------ Iteration{i} ------------------\n"
