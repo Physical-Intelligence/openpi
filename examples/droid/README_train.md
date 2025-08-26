@@ -15,14 +15,10 @@ uv sync --group rlds
 
 ## Download DROID dataset
 
-You can download a (slightly outdated) version of DROID with the following command (after installing the `gsutil` google cloud CLI):
+You can download the DROID dataset with the following command (after installing the `gsutil` google cloud CLI):
 ```
-gsutil -m cp -r gs://gresearch/robotics/droid <your_download_path>
+gsutil -m cp -r gs://gresearch/robotics/droid/1.0.1 <your_download_path>
 ```
-
-Note that this version of DROID is slightly outdated: it only contains a partial set of language annotations (~30k episodes).
-Please email [karl.pertsch@gmail.com](mailto:karl.pertsch@gmail.com) to get access to the most up-to-date version of the DROID RLDS dataset (with language annotations on 75k episodes)!
-(sorry, we are working on updating the version on the official bucket).
 
 You will need 1.8TB of disk storage to download the DROID RLDS dataset.
 
