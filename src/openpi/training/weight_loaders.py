@@ -91,7 +91,9 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     result = {}
     for k, v in flat_loaded.items():
         if k in flat_ref:
-            result[k] = v.astype(flat_ref[k].dtype)
+            result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
+
+    flat_loaded.clear()
 
     # Then, merge any missing weights as defined by the missing regex.
     pattern = re.compile(missing_regex)

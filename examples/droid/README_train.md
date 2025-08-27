@@ -15,14 +15,12 @@ uv sync --group rlds
 
 ## Download DROID dataset
 
-You can download a (slightly outdated) version of DROID with the following command (after installing the `gsutil` google cloud CLI):
+You can download the DROID dataset with the following command (after installing the `gsutil` google cloud CLI):
 ```
-gsutil -m cp -r gs://gresearch/robotics/droid <your_download_path>
+gsutil -m cp -r gs://gresearch/robotics/droid/1.0.1 <your_download_path>/droid/1.0.1
 ```
 
-Note that this version of DROID is slightly outdated: it only contains a partial set of language annotations (~30k episodes).
-Please email [karl.pertsch@gmail.com](mailto:karl.pertsch@gmail.com) to get access to the most up-to-date version of the DROID RLDS dataset (with language annotations on 75k episodes)!
-(sorry, we are working on updating the version on the official bucket).
+Note that downloading version 1.0.1 is important (not v1.0.0): it contains the complete set of language annotations (~75k episodes) while v1.0.0 only has annotations for 30k episodes.
 
 You will need 1.8TB of disk storage to download the DROID RLDS dataset.
 
@@ -51,3 +49,10 @@ Our DROID training config requires approximately 2 days on 8x H100 GPUs for conv
 If you start from PaliGemma instead of pi0 initialization, plan with ~5 days on 8x H100s (240k iterations, i.e. 3 epochs).
 
 We have experimented with LoRA for cheaper finetuning, but haven't found the policies to perform well so far.
+
+
+## RoboArena
+
+Consider submitting your DROID policies to the [RoboArena benchmark](https://robo-arena.github.io/), which allows you to evaluate your policies on diverse tasks & scenes, **in the real world**! :)
+
+If you have questions about RoboArena, please email [karl.pertsch@gmail.com](mailto:karl.pertsch@gmail.com).
