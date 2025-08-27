@@ -164,8 +164,6 @@ def create_rlds_dataset(
         shuffle=shuffle,
         action_chunk_size=action_horizon,
         action_space=data_config.action_space,
-        world_size=jax.process_count(),
-        rank=jax.process_index(),
     )
 
 

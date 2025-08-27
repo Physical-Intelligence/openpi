@@ -4,7 +4,6 @@ While openpi typically uses LeRobot's data loader, it is not currently scalable 
 Thus, we provide a data loader example here that uses the RLDS data format.
 The data loader also applies a few DROID-specific data filters / transformations.
 """
-
 from enum import Enum
 from enum import auto
 
@@ -31,8 +30,6 @@ class DroidRldsDataset:
         shuffle_buffer_size: int = 250_000,
         num_parallel_reads: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
         num_parallel_calls: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
-        world_size: int = 1,
-        rank: int = 0,
     ):
         # Import tensorflow here to not make it mandatory in case RLDS data loader is not used.
         import dlimp as dl
@@ -42,8 +39,9 @@ class DroidRldsDataset:
         # Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch / JAX)
         tf.config.set_visible_devices([], "GPU")
 
-        builder = tfds.builder("droid", data_dir=data_dir, read_config=tfds.ReadConfig())
-        dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+        builder = tfds.builder("droid", data_dir=data_dir)
+        split = tfds.split_for_jax_process(split="train")
+        dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
         # Filter out any unsuccessful trajectories -- we use the file name to check this
         dataset = dataset.filter(
@@ -51,9 +49,6 @@ class DroidRldsDataset:
                 traj["traj_metadata"]["episode_metadata"]["file_path"][0], ".*success.*"
             )
         )
-
-        if world_size > 1:
-            dataset = dataset.shard(num_shards=world_size, index=rank)
 
         # Repeat dataset so we never run out of data.
         dataset = dataset.repeat()
