@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
 from typing import Any
 
@@ -9,6 +10,15 @@ import flax.nnx as nnx
 from flax.training import common_utils
 import flax.traverse_util as traverse_util
 import jax
+
+if "MASTER_ADDR" in os.environ:
+    jax.distributed.initialize(
+        coordinator_address=f"{os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}",
+        process_id=int(os.environ["RANK"]),
+        num_processes=int(os.environ["WORLD_SIZE"]),
+        local_device_ids=[int(device_id) for device_id in os.environ["CUDA_VISIBLE_DEVICES"].split(",")],
+    )
+
 import jax.experimental
 import jax.numpy as jnp
 import numpy as np
@@ -151,6 +161,7 @@ def train_step(
         return jnp.mean(chunked_loss)
 
     train_rng = jax.random.fold_in(rng, state.step)
+    train_rng = jax.random.fold_in(train_rng, jax.process_index())
     observation, actions = batch
 
     # Filter out frozen params.
@@ -215,7 +226,8 @@ def main(config: _config.TrainConfig):
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
+    if jax.process_index() == 0:
+        init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
     data_loader = _data_loader.create_data_loader(
         config,
@@ -260,7 +272,7 @@ def main(config: _config.TrainConfig):
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
         infos.append(info)
-        if step % config.log_interval == 0:
+        if step % config.log_interval == 0 and jax.process_index() == 0:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())

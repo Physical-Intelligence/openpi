@@ -4,7 +4,6 @@ While openpi typically uses LeRobot's data loader, it is not currently scalable 
 Thus, we provide a data loader example here that uses the RLDS data format.
 The data loader also applies a few DROID-specific data filters / transformations.
 """
-
 from enum import Enum
 from enum import auto
 
@@ -41,7 +40,8 @@ class DroidRldsDataset:
         tf.config.set_visible_devices([], "GPU")
 
         builder = tfds.builder("droid", data_dir=data_dir)
-        dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+        split = tfds.split_for_jax_process(split="train")
+        dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
         # Filter out any unsuccessful trajectories -- we use the file name to check this
         dataset = dataset.filter(

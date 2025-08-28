@@ -160,7 +160,7 @@ def create_rlds_dataset(
     # At the moment, we only support DROID for RLDS datasets.
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
-        batch_size=batch_size,
+        batch_size=batch_size // jax.process_count(),
         shuffle=shuffle,
         action_chunk_size=action_horizon,
         action_space=data_config.action_space,
@@ -365,7 +365,9 @@ class TorchDataLoader:
             seed: The seed to use for shuffling the data.
         """
         if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
+            dataset = torch.utils.data.Subset(
+                dataset, list(range(jax.process_index(), len(dataset), jax.process_count()))
+            )
 
         if len(dataset) < local_batch_size:
             raise ValueError(f"Local batch size ({local_batch_size}) is larger than the dataset size ({len(dataset)}).")
@@ -448,9 +450,6 @@ class RLDSDataLoader:
     ):
         self._dataset = dataset
         self._num_batches = num_batches
-
-        if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
 
         if sharding is None:
             # Use data parallel sharding by default.
