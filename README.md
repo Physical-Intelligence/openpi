@@ -202,8 +202,9 @@ openpi now provides PyTorch implementations of π₀ and π₀.₅ models alongs
 To convert a JAX model checkpoint to PyTorch format:
 
 ```bash
-python examples/convert_jax_model_to_pytorch.py \
+uv run examples/convert_jax_model_to_pytorch.py \
     --checkpoint_dir /path/to/jax/checkpoint/params \
+    --config_name <config_name> \
     --output_path /path/to/converted/pytorch/checkpoint
 ```
 
@@ -242,8 +243,9 @@ To finetune a model in PyTorch:
 
 1. Convert the JAX base model to PyTorch format:
    ```bash
-   python examples/convert_jax_model_to_pytorch.py \
+   uv run examples/convert_jax_model_to_pytorch.py \
        --checkpoint_dir /path/to/jax/base/model \
+       --config_name <config_name> \
        --output_path /path/to/pytorch/base/model
    ```
 
@@ -260,14 +262,14 @@ uv run scripts/train_pytorch.py debug --exp_name pytorch_test
 uv run scripts/train_pytorch.py debug --exp_name pytorch_test --resume  # Resume from latest checkpoint
 
 # Multi-GPU training (single node):
-torchrun --standalone --nnodes=1 --nproc_per_node=<num_gpus> scripts/train_pytorch.py <config_name> --exp_name <run_name>
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=<num_gpus> scripts/train_pytorch.py <config_name> --exp_name <run_name>
 
 # Example:
-torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test
-torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test --resume
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test
+uv runtorchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test --resume
 
 # Multi-Node Training:
-torchrun \
+uv run torchrun \
     --nnodes=<num_nodes> \
     --nproc_per_node=<gpus_per_node> \
     --node_rank=<rank_of_node> \
@@ -281,12 +283,12 @@ torchrun \
 JAX and PyTorch implementations handle precision as follows:
 
 **JAX:**
-1. Inference: weights and activations are bfloat16 except for selected layers in float32
+1. Inference: weights and activations are bfloat16 except for selected activations in float32
 2. Training: weights and gradients are float32, activations are bfloat16
 
 **PyTorch:**
-1. Inference: matches JAX - weights and activations are bfloat16 except for selected layers in float32
-2. Training: supports either all float32 or the same mixed precision as inference (default) You can change it by setting `pytorch_training_precision` in the config. Per GPU batch size can be 64 with mixed precision but 16 with float32 on a 80GB memory A100 or H100. Further optimizations to reduce memory consumption can be done in the future.
+1. Inference: matches JAX - weights and activations are bfloat16 except for selected activations in float32
+2. Training: supports either all float32 all bfloat16. You can change it by setting `pytorch_training_precision` in the config. Per GPU batch size can be 64 with bfloat16 but 16 with float32 on an 80GB memory A100 or H100. Further optimizations and mixed precision training are TODO.
 
 ### Validation Results
 
@@ -301,7 +303,7 @@ We have validated the PyTorch implementation against JAX:
    - Using bfloat16: (convert JAX ckpt to pytorch in bfloat16) Loss curves match after 10k steps (in 30k total steps)
    - Final performance: 91.4% on Libero-10
 
-3. We comapred inference speed between JAX and PyTorch and they are comparable.
+3. We compared inference speed between JAX and PyTorch and they are comparable.
 
 ## Troubleshooting
 

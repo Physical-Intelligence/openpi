@@ -21,6 +21,8 @@ class PaligemmaTokenizer:
 
     def tokenize(self, prompt: str, state: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
+        if cleaned_text == "":
+            cleaned_text = "be a good robot"
         if state is not None:
             # This is the Pi05 format, where the state is part of the discrete language input.
             discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1

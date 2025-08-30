@@ -35,7 +35,7 @@ class Policy(BasePolicy):
         is_pytorch: bool = False,
     ):
         """Initialize the Policy.
-        
+
         Args:
             model: The model to use for action sampling.
             rng: Random number generator key for JAX models. Ignored for PyTorch models.
@@ -43,7 +43,7 @@ class Policy(BasePolicy):
             output_transforms: Output data transformations to apply after inference.
             sample_kwargs: Additional keyword arguments to pass to model.sample_actions.
             metadata: Additional metadata to store with the policy.
-            pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda:0"). 
+            pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda:0").
                           Only relevant when is_pytorch=True.
             is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
         """
@@ -81,10 +81,7 @@ class Policy(BasePolicy):
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
         if noise is not None:
-            if self._is_pytorch_model:
-                noise = torch.from_numpy(noise).to(self._pytorch_device)
-            else:
-                noise = jnp.asarray(noise)
+            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
 
             if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
                 noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)

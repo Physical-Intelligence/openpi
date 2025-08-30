@@ -7,7 +7,6 @@ import beartype
 import jax
 import jax._src.tree_util as private_tree_util
 import jax.core
-from jaxtyping import Array  # noqa: F401
 from jaxtyping import ArrayLike
 from jaxtyping import Bool  # noqa: F401
 from jaxtyping import DTypeLike  # noqa: F401
@@ -30,6 +29,7 @@ import torch
 _original_check_dataclass_annotations = jaxtyping._decorator._check_dataclass_annotations  # noqa: SLF001
 # Redefine Array to include both JAX arrays and PyTorch tensors
 Array = jax.Array | torch.Tensor
+
 
 def _check_dataclass_annotations(self, typechecker):
     if not any(
