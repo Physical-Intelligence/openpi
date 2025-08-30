@@ -20,7 +20,7 @@ You can download the DROID dataset with the following command (after installing 
 gsutil -m cp -r gs://gresearch/robotics/droid/1.0.1 <your_download_path>/droid/1.0.1
 ```
 
-Note that downloading version 1.0.1 is important (not v1.0.0): it contains the complete set of language annotations (~75k episodes) while v1.0.0 only has annotations for 30k episodes.
+Note that downloading version 1.0.1 is important (not v1.0.0): it contains the complete set of language annotations (~75k episodes) while v1.0.0 only has annotations for 30k episodes. If for some reason you would like to use another version, modify the line `version="1.0.1"` in the `DroidRldsDataset` object [here](src/openpi/training/droid_rlds_dataset.py).
 
 You will need 1.8TB of disk storage to download the DROID RLDS dataset.
 
@@ -37,6 +37,12 @@ Run training:
 ```bash
 uv run --group rlds scripts/train.py pi0_fast_droid_finetune --exp-name=my_experiment --overwrite
 ```
+
+By default, training uses a simple filtering scheme that removes any frames that have little-to-no movement in the first half of the action chunk. Alternatively, you can use a custom filtering scheme by providing a json that maps from episode keys to a list of time step ranges (denoted as a tuple of start and end time step indicies) in that episode you wish to keep. The episode key is a unique ID defined as `f"{recording_folderpath}--{file_path}"`. We choose this convention because both paths are easily accessible in the DROID RLDS episodes' metadata.
+
+We provide an example of such a filtering scheme in [filtering/compute_droid_nonidle_ranges.py](examples/droid/filtering/compute_droid_nonidle_ranges.py), which is significantly more aggressive than the default (and thus leads to policies that take significantly fewer idle actions). We recommend using the filter produced by this script, and have also provided a copy of the filter [here](https://huggingface.co/KarlP/droid#filtering-data) specifically for `droid/1.0.1`.
+
+The filter json you wish to use can be specified by modifying the line `filter_dict_path="<path_to_filter_dict>"` in [src/openpi/training/config.py](src/openpi/training/config.py).
 
 **Note**: The original pi0-FAST-DROID model was trained with joint velocity actions.
 Joint velocity actions are not compatible with simulated evaluation environments (much harder to simulate). 
