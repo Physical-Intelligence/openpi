@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.ur5e_policy as ur5e_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -390,6 +391,61 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotUR5DataConfig(DataConfigFactory):
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Boilerplate for remapping keys from the LeRobot dataset. We assume no renaming needed here.
+        repack_transform = _transforms.Group(
+            inputs=[
+                # _transforms.RepackTransform(
+                #     {
+                #         "observation.images.external_cam": "image",
+                #         "observation.images.wrist_cam": "wrist_image",
+                #         # TODO: joint & gripper _state_
+                #         "observation.state": "state",
+                #         "actions": "actions",  # actions includes gripper, so combine
+                #         "prompt": "prompt",
+                #     }
+                # )
+                _transforms.RepackTransform(
+                    {
+                        "base_camera": "observation.images.external_cam",
+                        "wrist_camera": "observation.images.wrist_cam",
+                        "state": "observation.state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        # These transforms are the ones we wrote earlier.
+        data_transforms = _transforms.Group(
+            inputs=[ur5e_policy.UR5Inputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[ur5e_policy.UR5Outputs()],
+        )
+
+        # Convert absolute actions to delta actions.
+        # By convention, we do not convert the gripper action (7th dimension).
+        delta_action_mask = _transforms.make_bool_mask(6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        # Model transforms include things like tokenizing the prompt and action targets
+        # You do not need to change anything here for your own dataset.
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -714,6 +770,32 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     #
+    # UR5E configs.
+    #
+    TrainConfig(
+        name="pi0_ur5",
+        model=pi0.Pi0Config(),
+        data=LeRobotUR5DataConfig(
+            # repo_id="xuningy/ur5_dataset",
+            repo_id="ur5",
+            # This config lets us reload the UR5 normalization stats from the base model checkpoint.
+            # Reloading normalization stats can help transfer pre-trained models to new environments.
+            # See the [norm_stats.md](../docs/norm_stats.md) file for more details.
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
+                asset_id="ur5e",
+            ),
+            base_config=DataConfig(
+                # local_files_only=True,  # True, if dataset is saved locally.
+                # This flag determines whether we load the prompt (i.e. the task instruction) from the
+                # ``task`` field in the LeRobot dataset. The recommended setting is True.
+                prompt_from_task=True,
+            ),
+        ),
+        # Load the pi0 base model checkpoint.
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
     # Debugging configs.
     #
     TrainConfig(
