@@ -772,6 +772,8 @@ _CONFIGS = [
     #
     # UR5E configs.
     #
+    # NOTE: below is a script that can train on an L40. needs tuning.
+    #   XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py pi0_ur5 --exp-name ur5 --overwrite --batch-size 1 --model.paligemma-variant gemma_300m --model.action-dim 32 --model.action-horizon 8 --ema-decay None
     TrainConfig(
         name="pi0_ur5",
         model=pi0.Pi0Config(),
@@ -793,7 +795,10 @@ _CONFIGS = [
             ),
         ),
         # Load the pi0 base model checkpoint.
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        #   NOTE: the base checkpoint loader blows up memory at the moment.
+        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        #   NOTE: the fast checkpoint loader hits some bug in configuration
+        weight_loader=weight_loaders.NoOpWeightLoader(),  # TODO: how finetune?
         num_train_steps=30_000,
     ),
     # Debugging configs.
