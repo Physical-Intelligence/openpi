@@ -56,4 +56,4 @@ datasets: /app/third_party/libero/libero/datasets
 assets: /app/third_party/libero/libero/libero/assets
 EOF
 
-CMD ["/bin/bash", "-c", "source /.venv/bin/activate && python examples/libero/main.py"]
+CMD ["/bin/bash", "-c", "source /.venv/bin/activate && python examples/libero/main.py $CLIENT_ARGS"]
