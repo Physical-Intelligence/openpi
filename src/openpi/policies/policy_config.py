@@ -1,6 +1,6 @@
 import logging
-import pathlib
 import os
+import pathlib
 from typing import Any
 
 import jax.numpy as jnp
@@ -35,9 +35,9 @@ def create_trained_policy(
             data if it doesn't already exist.
         norm_stats: The norm stats to use for the policy. If not provided, the norm stats will be loaded
             from the checkpoint directory.
-        pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda", "cuda:0"). 
+        pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda", "cuda:0").
                       If None and is_pytorch=True, will use "cuda" if available, otherwise "cpu".
-            
+
     Note:
         The function automatically detects whether the model is PyTorch-based by checking for the
         presence of "model.safensors" in the checkpoint directory.
@@ -52,7 +52,7 @@ def create_trained_policy(
     logging.info("Loading model...")
     if is_pytorch:
         model = train_config.model.load_pytorch(train_config, weight_path)
-        model.paligemma_with_expert.to_bfloat16_for_selected_params('bfloat16')
+        model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
@@ -67,13 +67,11 @@ def create_trained_policy(
     if is_pytorch and pytorch_device is None:
         try:
             import torch
-            if torch.cuda.is_available():
-                pytorch_device = "cuda"
-            else:
-                pytorch_device = "cpu"
+
+            pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
             pytorch_device = "cpu"
-    
+
     return _policy.Policy(
         model,
         transforms=[

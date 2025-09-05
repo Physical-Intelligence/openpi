@@ -277,7 +277,7 @@ class RecordedMultiCameraWrapper:
         self.camera_kwargs = camera_kwargs
 
         # Open Camera Readers #
-        mp4_filepaths = glob.glob(recording_folderpath + "/*.mp4")  # noqa: PTH207
+        mp4_filepaths = glob.glob(recording_folderpath + "/*.mp4")
         all_filepaths = mp4_filepaths
 
         self.camera_dict = {}

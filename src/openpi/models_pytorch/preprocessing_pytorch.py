@@ -1,5 +1,6 @@
-import logging
 from collections.abc import Sequence
+import logging
+
 import torch
 
 from openpi.shared import image_tools
@@ -15,6 +16,7 @@ IMAGE_KEYS = (
 
 IMAGE_RESOLUTION = (224, 224)
 
+
 def preprocess_observation_pytorch(
     observation,
     *,
@@ -23,7 +25,7 @@ def preprocess_observation_pytorch(
     image_resolution: tuple[int, int] = IMAGE_RESOLUTION,
 ):
     """Torch.compile-compatible version of preprocess_observation_pytorch with simplified type annotations.
-    
+
     This function avoids complex type annotations that can cause torch.compile issues.
     """
     if not set(image_keys).issubset(observation.images):
@@ -67,14 +69,14 @@ def preprocess_observation_pytorch(
                     # Use tensor operations instead of .item() for torch.compile compatibility
                     start_h = torch.randint(0, max_h + 1, (1,), device=image.device)
                     start_w = torch.randint(0, max_w + 1, (1,), device=image.device)
-                    image = image[:, start_h:start_h + crop_height, start_w:start_w + crop_width, :]
+                    image = image[:, start_h : start_h + crop_height, start_w : start_w + crop_width, :]
 
                 # Resize back to original size
                 image = torch.nn.functional.interpolate(
                     image.permute(0, 3, 1, 2),  # [b, h, w, c] -> [b, c, h, w]
                     size=(height, width),
-                    mode='bilinear',
-                    align_corners=False
+                    mode="bilinear",
+                    align_corners=False,
                 ).permute(0, 2, 3, 1)  # [b, c, h, w] -> [b, h, w, c]
 
                 # Random rotation (small angles)
@@ -93,7 +95,7 @@ def preprocess_observation_pytorch(
                     grid_y = torch.linspace(-1, 1, height, device=image.device)
 
                     # Create meshgrid
-                    grid_y, grid_x = torch.meshgrid(grid_y, grid_x, indexing='ij')
+                    grid_y, grid_x = torch.meshgrid(grid_y, grid_x, indexing="ij")
 
                     # Expand to batch dimension
                     grid_x = grid_x.unsqueeze(0).expand(image.shape[0], -1, -1)
@@ -109,9 +111,9 @@ def preprocess_observation_pytorch(
                     image = torch.nn.functional.grid_sample(
                         image.permute(0, 3, 1, 2),  # [b, h, w, c] -> [b, c, h, w]
                         grid,
-                        mode='bilinear',
-                        padding_mode='zeros',
-                        align_corners=False
+                        mode="bilinear",
+                        padding_mode="zeros",
+                        align_corners=False,
                     ).permute(0, 2, 3, 1)  # [b, c, h, w] -> [b, h, w, c]
 
             # Color augmentations for all cameras
@@ -159,7 +161,7 @@ def preprocess_observation_pytorch(
         def __init__(self, **kwargs):
             for key, value in kwargs.items():
                 setattr(self, key, value)
-    
+
     return SimpleProcessedObservation(
         images=out_images,
         image_masks=out_masks,

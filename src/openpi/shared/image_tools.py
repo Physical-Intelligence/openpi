@@ -3,7 +3,7 @@ import functools
 import jax
 import jax.numpy as jnp
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 
 import openpi.shared.array_typing as at
 
@@ -60,13 +60,13 @@ def resize_with_pad_torch(
 ) -> torch.Tensor:
     """PyTorch version of resize_with_pad. Resizes an image to a target height and width without distortion
     by padding with black. If the image is float32, it must be in the range [-1, 1].
-    
+
     Args:
         images: Tensor of shape [*b, h, w, c] or [*b, c, h, w]
         height: Target height
         width: Target width
         mode: Interpolation mode ('bilinear', 'nearest', etc.)
-    
+
     Returns:
         Resized and padded tensor with same shape format as input
     """
@@ -91,10 +91,7 @@ def resize_with_pad_torch(
 
     # Resize
     resized_images = F.interpolate(
-        images, 
-        size=(resized_height, resized_width), 
-        mode=mode, 
-        align_corners=False if mode == "bilinear" else None
+        images, size=(resized_height, resized_width), mode=mode, align_corners=False if mode == "bilinear" else None
     )
 
     # Handle dtype-specific clipping
@@ -116,8 +113,8 @@ def resize_with_pad_torch(
     padded_images = F.pad(
         resized_images,
         (pad_w0, pad_w1, pad_h0, pad_h1),  # left, right, top, bottom
-        mode='constant',
-        value=constant_value
+        mode="constant",
+        value=constant_value,
     )
 
     # Convert back to original format if needed

@@ -1,14 +1,13 @@
 from collections.abc import Iterator, Sequence
-from typing import Literal
+import logging
 import multiprocessing
 import os
 import typing
-from typing import Protocol, SupportsIndex, TypeVar
+from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
-import logging
 import numpy as np
 import torch
 
@@ -231,7 +230,7 @@ def create_data_loader(
     framework: Literal["jax", "pytorch"],
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
-    
+
     Args:
         config: The training configuration.
         sharding: The sharding to use for the data loader (JAX only).
@@ -367,22 +366,21 @@ def create_rlds_data_loader(
     """
     if framework == "pytorch":
         raise NotImplementedError("PyTorch RLDS data loader is not supported yet")
-    else:
-        dataset = create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=shuffle)
-        dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
+    dataset = create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=shuffle)
+    dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
 
-        data_loader = RLDSDataLoader(
-            dataset,
-            sharding=sharding,
-            num_batches=num_batches,
-        )
+    data_loader = RLDSDataLoader(
+        dataset,
+        sharding=sharding,
+        num_batches=num_batches,
+    )
 
     return DataLoaderImpl(data_config, data_loader)
 
 
 class TorchDataLoader:
     """Torch data loader implementation."""
-    
+
     def __init__(
         self,
         dataset,

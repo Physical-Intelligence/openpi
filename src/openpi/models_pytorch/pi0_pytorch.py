@@ -1,10 +1,10 @@
-import math
 import logging
+import math
 
 import torch
 from torch import Tensor
 from torch import nn
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
@@ -17,7 +17,7 @@ def get_safe_dtype(target_dtype, device_type):
         # CPU doesn't support bfloat16, use float32 instead
         if target_dtype == torch.bfloat16:
             return torch.float32
-        elif target_dtype == torch.float64:
+        if target_dtype == torch.float64:
             return torch.float64
     return target_dtype
 
@@ -39,16 +39,14 @@ def create_sinusoidal_pos_embedding(
     # Compute the outer product
     scaling_factor = 1.0 / period * 2 * math.pi
     sin_input = scaling_factor[None, :] * time[:, None]
-    pos_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
-    return pos_emb
+    return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
 
 
 def sample_beta(alpha, beta, bsize, device):
     alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
     beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
     dist = torch.distributions.Beta(alpha_t, beta_t)
-    samples = dist.sample((bsize,))
-    return samples
+    return dist.sample((bsize,))
 
 
 def make_att_2d_masks(pad_masks, att_masks):
@@ -80,8 +78,7 @@ def make_att_2d_masks(pad_masks, att_masks):
     cumsum = torch.cumsum(att_masks, dim=1)
     att_2d_masks = cumsum[:, None, :] <= cumsum[:, :, None]
     pad_2d_masks = pad_masks[:, None, :] * pad_masks[:, :, None]
-    att_2d_masks = att_2d_masks & pad_2d_masks
-    return att_2d_masks
+    return att_2d_masks & pad_2d_masks
 
 
 class PI0Pytorch(nn.Module):
@@ -93,7 +90,12 @@ class PI0Pytorch(nn.Module):
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
 
-        self.paligemma_with_expert = PaliGemmaWithExpertModel(paligemma_config, action_expert_config, use_adarms=[False, True] if self.pi05 else [False, False], precision=config.dtype)
+        self.paligemma_with_expert = PaliGemmaWithExpertModel(
+            paligemma_config,
+            action_expert_config,
+            use_adarms=[False, True] if self.pi05 else [False, False],
+            precision=config.dtype,
+        )
 
         self.action_in_proj = nn.Linear(32, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, 32)
@@ -106,17 +108,20 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_in = nn.Linear(2 * action_expert_config.width, action_expert_config.width)
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
-        torch.set_float32_matmul_precision('high')
+        torch.set_float32_matmul_precision("high")
         self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
-        
+
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
+
+        msg = "transformers_replace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`."
         try:
             from transformers.models.siglip import check
+
             if not check.check_whether_transformers_replace_is_installed_correctly():
-                raise ValueError("TransformersReplace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`.")
+                raise ValueError(msg)
         except ImportError:
-            raise ValueError("TransformersReplace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`.")
+            raise ValueError(msg) from None
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
@@ -124,7 +129,7 @@ class PI0Pytorch(nn.Module):
         self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = True
         self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = True
         self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = True
-        
+
         logging.info("Enabled gradient checkpointing for PI0Pytorch model")
 
     def gradient_checkpointing_disable(self):
@@ -133,7 +138,7 @@ class PI0Pytorch(nn.Module):
         self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = False
         self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = False
         self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = False
-        
+
         logging.info("Disabled gradient checkpointing for PI0Pytorch model")
 
     def is_gradient_checkpointing_enabled(self):
@@ -146,15 +151,14 @@ class PI0Pytorch(nn.Module):
             return torch.utils.checkpoint.checkpoint(
                 func, *args, use_reentrant=False, preserve_rng_state=False, **kwargs
             )
-        else:
-            return func(*args, **kwargs)
+        return func(*args, **kwargs)
 
     def _prepare_attention_masks_4d(self, att_2d_masks):
         """Helper method to prepare 4D attention masks for transformer."""
         att_2d_masks_4d = att_2d_masks[:, None, :, :]
         return torch.where(att_2d_masks_4d, 0.0, -2.3819763e38)
 
-    def _preprocess_observation(self, observation, train=True):
+    def _preprocess_observation(self, observation, *, train=True):
         """Helper method to preprocess observation."""
         observation = _preprocessing.preprocess_observation_pytorch(observation, train=train)
         return (
@@ -162,18 +166,17 @@ class PI0Pytorch(nn.Module):
             list(observation.image_masks.values()),
             observation.tokenized_prompt,
             observation.tokenized_prompt_mask,
-            observation.state
+            observation.state,
         )
 
     def sample_noise(self, shape, device):
-        noise = torch.normal(
+        return torch.normal(
             mean=0.0,
             std=1.0,
             size=shape,
             dtype=torch.float32,
             device=device,
         )
-        return noise
 
     def sample_time(self, bsize, device):
         time_beta = sample_beta(1.5, 1.0, bsize, device)
@@ -189,19 +192,19 @@ class PI0Pytorch(nn.Module):
         embs = []
         pad_masks = []
         att_masks = []
-        
+
         # Process images
-        for img, img_mask in zip(images, img_masks):
+        for img, img_mask in zip(images, img_masks, strict=True):
+
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
-            
+
             img_emb = self._apply_checkpoint(image_embed_func, img)
 
             bsize, num_img_embs = img_emb.shape[:2]
-            img_mask = img_mask[:, None].expand(bsize, num_img_embs)
 
             embs.append(img_emb)
-            pad_masks.append(img_mask)
+            pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
 
             # Create attention masks so that image tokens attend to each other
             att_masks += [0] * num_img_embs
@@ -211,7 +214,7 @@ class PI0Pytorch(nn.Module):
             lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
             lang_emb_dim = lang_emb.shape[-1]
             return lang_emb * math.sqrt(lang_emb_dim)
-        
+
         lang_emb = self._apply_checkpoint(lang_embed_func, lang_tokens)
 
         embs.append(lang_emb)
@@ -239,16 +242,16 @@ class PI0Pytorch(nn.Module):
 
         if not self.pi05:
             if self.state_proj.weight.dtype == torch.float32:
-                 state = state.to(torch.float32)
+                state = state.to(torch.float32)
+
             # Embed state
             def state_proj_func(state):
                 return self.state_proj(state)
-            
+
             state_emb = self._apply_checkpoint(state_proj_func, state)
-            
+
             embs.append(state_emb[:, None, :])
             bsize = state_emb.shape[0]
-            dtype = state_emb.dtype
             device = state_emb.device
 
             state_mask = torch.ones(bsize, 1, dtype=torch.bool, device=device)
@@ -266,20 +269,19 @@ class PI0Pytorch(nn.Module):
         # Fuse timestep + action information using an MLP
         def action_proj_func(noisy_actions):
             return self.action_in_proj(noisy_actions)
-        
+
         action_emb = self._apply_checkpoint(action_proj_func, noisy_actions)
 
         if not self.pi05:
             time_emb = time_emb[:, None, :].expand_as(action_emb)
             action_time_emb = torch.cat([action_emb, time_emb], dim=2)
-            
+
             # Apply MLP layers
             def mlp_func(action_time_emb):
                 x = self.action_time_mlp_in(action_time_emb)
                 x = F.silu(x)  # swish == silu
-                x = self.action_time_mlp_out(x)
-                return x
-            
+                return self.action_time_mlp_out(x)
+
             action_time_emb = self._apply_checkpoint(mlp_func, action_time_emb)
             adarms_cond = None
         else:
@@ -288,9 +290,8 @@ class PI0Pytorch(nn.Module):
                 x = self.time_mlp_in(time_emb)
                 x = F.silu(x)  # swish == silu
                 x = self.time_mlp_out(x)
-                x = F.silu(x)
-                return x
-            
+                return F.silu(x)
+
             time_emb = self._apply_checkpoint(time_mlp_func, time_emb)
             action_time_emb = action_emb
             adarms_cond = time_emb
@@ -328,7 +329,10 @@ class PI0Pytorch(nn.Module):
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
-        if self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16:
+        if (
+            self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
+            == torch.bfloat16
+        ):
             suffix_embs = suffix_embs.to(dtype=torch.bfloat16)
             prefix_embs = prefix_embs.to(dtype=torch.bfloat16)
 
@@ -349,25 +353,24 @@ class PI0Pytorch(nn.Module):
                 past_key_values=None,
                 inputs_embeds=[prefix_embs, suffix_embs],
                 use_cache=False,
-                adarms_cond=[None, adarms_cond]
+                adarms_cond=[None, adarms_cond],
             )
             return suffix_out
-        
+
         suffix_out = self._apply_checkpoint(
             forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
         )
-        
+
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
 
         # Apply gradient checkpointing to final action projection if enabled
         def action_out_proj_func(suffix_out):
             return self.action_out_proj(suffix_out)
-        
+
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        losses = F.mse_loss(u_t, v_t, reduction="none")
-        return losses
+        return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
@@ -376,7 +379,7 @@ class PI0Pytorch(nn.Module):
         if noise is None:
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
-        
+
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
@@ -385,7 +388,7 @@ class PI0Pytorch(nn.Module):
 
         # Compute image and language key value cache
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
-        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"
+        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
@@ -441,7 +444,7 @@ class PI0Pytorch(nn.Module):
 
         # Prepare attention masks
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
-        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
+        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
 
         outputs_embeds, _ = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,
@@ -449,12 +452,10 @@ class PI0Pytorch(nn.Module):
             past_key_values=past_key_values,
             inputs_embeds=[None, suffix_embs],
             use_cache=False,
-            adarms_cond=[None, adarms_cond]
+            adarms_cond=[None, adarms_cond],
         )
 
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
-
-        return v_t
+        return self.action_out_proj(suffix_out)

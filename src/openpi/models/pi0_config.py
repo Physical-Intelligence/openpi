@@ -48,6 +48,7 @@ class Pi0Config(_model.BaseModelConfig):
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
         from openpi.models.pi0 import Pi0
+
         return Pi0(self, rngs=nnx.Rngs(rng))
 
     @override

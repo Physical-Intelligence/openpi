@@ -73,7 +73,7 @@ members = ["packages/*"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["docker", "third_party"]
+extend-exclude = ["docker", "third_party", "src/openpi/models_pytorch/transformers_replace/*"]
 
 [tool.ruff.lint]
 # https://docs.astral.sh/ruff/rules/
@@ -101,7 +101,6 @@ select = [
     "PLR5",
     "PLW",
     "PT",
-    "PTH",
     "Q",
     "RET",
     "RUF",

@@ -254,7 +254,7 @@ class FSQTokenizer:
         assert fsq_tokenizer_path is not None, "fsq_tokenizer_path must be provided"
         # Download tokenizer
         path = download.maybe_download(fsq_tokenizer_path)
-        tok_path = os.path.join(path, os.listdir(path)[0])  # noqa: PTH118
+        tok_path = os.path.join(path, os.listdir(path)[0])
 
         # Split step from path
         step = int(tok_path.split("/")[-1])
