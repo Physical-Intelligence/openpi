@@ -238,6 +238,8 @@ class PI0Pytorch(nn.Module):
         att_masks = []
 
         if not self.pi05:
+            if self.state_proj.weight.dtype == torch.float32:
+                 state = state.to(torch.float32)
             # Embed state
             def state_proj_func(state):
                 return self.state_proj(state)

@@ -322,6 +322,7 @@ def create_torch_data_loader(
     else:
         local_batch_size = batch_size // jax.process_count()
 
+    logging.info(f"local_batch_size: {local_batch_size}")
     data_loader = TorchDataLoader(
         dataset,
         local_batch_size=local_batch_size,

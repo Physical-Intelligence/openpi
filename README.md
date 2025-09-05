@@ -292,7 +292,7 @@ JAX and PyTorch implementations handle precision as follows:
 
 **PyTorch:**
 1. Inference: matches JAX - weights and activations are bfloat16 except for selected layers in float32
-2. Training: supports either all float32 or the same mixed precision as inference (default) You can change it by setting `pytorch_training_precision` in the config. Per GPU batch size can be 64 with mixed precision but 16 with float32 on a 80GB memory A100 or H100. Further optimizations to reduce memory consumption can be done in the future.
+2. Training: supports either all float32 (default) or the same mixed precision as inference. You can change it by setting `pytorch_training_precision` in the config. 
 
 ### Validation Results
 
