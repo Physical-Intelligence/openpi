@@ -132,17 +132,6 @@ def build_datasets(config: _config.TrainConfig):
 	return data_loader, data_loader.data_config()
 
 
-def batch_to_torch(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
-	# Memory-efficient conversion: convert to torch tensors and move to device in one step
-	batch = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(device), batch)
-
-	# Convert to float32 for memory efficiency (avoid float64)
-	batch['state'] = batch['state'].to(dtype=torch.float32)
-	batch['actions'] = batch['actions'].to(dtype=torch.float32)
-
-	return batch
-
-
 def get_model_state_dict(model):
 	"""Get state dict from model, handling DDP wrapper."""
 	return model.module.state_dict() if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.state_dict()
@@ -153,27 +142,28 @@ def get_model_parameters(model):
 	return model.module.parameters() if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.parameters()
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main, ema_model=None):
-	"""Save a checkpoint with model state, optimizer state, EMA state, and metadata."""
+def save_checkpoint(model, optimizer, global_step, config, is_main):
+	"""Save a checkpoint with model state, optimizer state, and metadata."""
 	if not is_main:
 		return
 
 	# Only save if it's time to save or if it's the final step
 	if (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
-		# Ensure checkpoint_dir is a Path object and create the step-specific directory
-		ckpt_dir = config.checkpoint_dir / f"{global_step}"
-		ckpt_dir.mkdir(parents=True, exist_ok=True)
+		# Create temporary directory for atomic checkpoint saving
+		final_ckpt_dir = config.checkpoint_dir / f"{global_step}"
+		tmp_ckpt_dir = config.checkpoint_dir / f"tmp_{global_step}"
+		
+		# Remove any existing temp directory and create new one
+		if tmp_ckpt_dir.exists():
+			shutil.rmtree(tmp_ckpt_dir)
+		tmp_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-		# Save model state
-		state_dict = get_model_state_dict(model)
-		torch.save(state_dict, ckpt_dir / "pytorch_model.pt")
+		# Save model state using safetensors (handle shared tensors)
+		model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+		safetensors.torch.save_model(model_to_save, tmp_ckpt_dir / "pytorch_model.safetensors")
 
-		# Save optimizer state
-		torch.save(optimizer.state_dict(), ckpt_dir / "optimizer.pt")
-
-		# Save EMA state if available
-		if ema_model is not None:
-			torch.save(ema_model.state_dict(), ckpt_dir / "ema_model.pt")
+		# Save optimizer state using PyTorch format
+		torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
 
 		# Save training metadata (avoid saving full config to prevent JAX/Flax compatibility issues)
 		metadata = {
@@ -181,20 +171,25 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, ema_model=No
 			"config": dataclasses.asdict(config),
 			"timestamp": time.time(),
 		}
-		torch.save(metadata, ckpt_dir / "metadata.pt")
+		torch.save(metadata, tmp_ckpt_dir / "metadata.pt")
 
-		logging.info(f"Saved checkpoint at step {global_step} -> {ckpt_dir}")
+		# Atomically move temp directory to final location
+		if final_ckpt_dir.exists():
+			shutil.rmtree(final_ckpt_dir)
+		tmp_ckpt_dir.rename(final_ckpt_dir)
+		
+		logging.info(f"Saved checkpoint at step {global_step} -> {final_ckpt_dir}")
 
 		# Log checkpoint to wandb
 		if config.wandb_enabled:
 			wandb.log({"checkpoint_step": global_step}, step=global_step)
 
 
-def load_checkpoint(model, optimizer, checkpoint_dir, device, ema_model=None):
+def load_checkpoint(model, optimizer, checkpoint_dir, device):
     """Load the latest checkpoint and return the global step."""
     checkpoint_steps = []
     for d in checkpoint_dir.iterdir():
-        if d.is_dir() and d.name.isdigit():
+        if d.is_dir() and d.name.isdigit() and not d.name.startswith("tmp_"):
             checkpoint_steps.append(int(d.name))
     
     if not checkpoint_steps:
@@ -212,36 +207,35 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device, ema_model=None):
     try:
         # Load model state with error handling
         logging.info("Loading model state...")
-        model_state_dict = torch.load(ckpt_dir / "pytorch_model.pt", map_location=device, weights_only=False)
-        (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model).load_state_dict(model_state_dict)
-        del model_state_dict
+        safetensors_path = ckpt_dir / "pytorch_model.safetensors"
+        
+        if safetensors_path.exists():
+            model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+            safetensors.torch.load_model(model_to_load, safetensors_path, device=str(device))
+            logging.info("Loaded model state from safetensors format")
+        else:
+            raise FileNotFoundError(f"No model checkpoint found at {ckpt_dir}")
+            
         torch.cuda.empty_cache()
         gc.collect()
         log_memory_usage(device, latest_step, "after_loading_model")
         
         # Load optimizer state with error handling
         logging.info("Loading optimizer state...")
-        optimizer_state_dict = torch.load(ckpt_dir / "optimizer.pt", map_location=device, weights_only=False)
+        optimizer_path = ckpt_dir / "optimizer.pt"
+        
+        if optimizer_path.exists():
+            optimizer_state_dict = torch.load(optimizer_path, map_location=device, weights_only=False)
+            logging.info("Loaded optimizer state from pt format")
+        else:
+            raise FileNotFoundError(f"No optimizer checkpoint found at {ckpt_dir}")
+            
         optimizer.load_state_dict(optimizer_state_dict)
         del optimizer_state_dict
         torch.cuda.empty_cache()
         gc.collect()
         log_memory_usage(device, latest_step, "after_loading_optimizer")
         
-        # Load EMA state if available
-        if ema_model is not None and (ckpt_dir / "ema_model.pt").exists():
-            logging.info("Loading EMA state...")
-            # Clear as much memory as possible before loading EMA
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            ema_state_dict = torch.load(ckpt_dir / "ema_model.pt", map_location=device, weights_only=False)
-            ema_model.load_state_dict(ema_state_dict)
-            del ema_state_dict
-            torch.cuda.empty_cache()
-            gc.collect()
-            log_memory_usage(device, latest_step, "after_loading_ema")
-            logging.info(f"Successfully loaded EMA state from step {latest_step}")
         
         # Load metadata
         logging.info("Loading metadata...")
@@ -270,7 +264,7 @@ def get_latest_checkpoint_step(checkpoint_dir):
 	"""Get the latest checkpoint step number from a checkpoint directory."""
 	checkpoint_steps = []
 	for d in checkpoint_dir.iterdir():
-		if d.is_dir() and d.name.isdigit():
+		if d.is_dir() and d.name.isdigit() and not d.name.startswith("tmp_"):
 			checkpoint_steps.append(int(d.name))
 
 	return max(checkpoint_steps) if checkpoint_steps else None
@@ -356,7 +350,6 @@ def train_loop(config: _config.TrainConfig):
 		observation, actions = sample_batch
 		sample_batch = observation.to_dict()
 		sample_batch["actions"] = actions
-		sample_batch = batch_to_torch(sample_batch, device)
 
 		# Create sample images for wandb
 		images_to_log = []
@@ -371,8 +364,13 @@ def train_loop(config: _config.TrainConfig):
 
 		wandb.log({"camera_views": images_to_log}, step=0)
 
-		# Clear sample batch from memory
-		torch.cuda.empty_cache() if torch.cuda.is_available() else None
+		# Clear sample batch from memory aggressively
+		del sample_batch, observation, actions, images_to_log, img_concatenated
+		del sample_data_loader  # Also delete the sample data loader
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
+		logging.info("Cleared sample batch and data loader from memory")
 
 	# Build model
 	if not isinstance(config.model, openpi.models.pi0_config.Pi0Config):
@@ -392,6 +390,7 @@ def train_loop(config: _config.TrainConfig):
 		object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
 	model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
+
 	
 	if hasattr(model, 'gradient_checkpointing_enable'):
 		enable_gradient_checkpointing = True
@@ -405,9 +404,23 @@ def train_loop(config: _config.TrainConfig):
 	if is_main and torch.cuda.is_available():
 		log_memory_usage(device, 0, "after_model_creation")
 	
+	# Enable memory optimizations for large-scale training
+	if world_size >= 8:
+		torch.backends.cudnn.benchmark = True
+		torch.backends.cuda.matmul.allow_tf32 = True
+		torch.backends.cudnn.allow_tf32 = True
+		# Set memory allocation configuration
+		os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
+		logging.info("Enabled memory optimizations for 8+ GPU training")
+	
 	if use_ddp:
-		# Enable unused parameter detection to handle cases where some parameters don't participate in loss
-		model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None, find_unused_parameters=True)
+		model = torch.nn.parallel.DistributedDataParallel(
+			model, 
+			device_ids=[device.index] if device.type == "cuda" else None, 
+			find_unused_parameters=True,  # Disable for memory efficiency
+			gradient_as_bucket_view=True,   # Enable for memory efficiency
+			static_graph=True if world_size >= 8 else False,  # Enable for 8+ GPUs
+		)
 
 	# Load weights from weight_loader if specified (for fine-tuning)
 	if config.pytorch_weight_path is not None:
@@ -432,23 +445,11 @@ def train_loop(config: _config.TrainConfig):
 		weight_decay=config.optimizer.weight_decay
 	)
 
-	# Initialize EMA if specified in config
-	ema_model = None
-	if config.ema_decay is not None:
-		ema_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
-		
-		# Get the correct state dict from the main model
-		main_model_state_dict = get_model_state_dict(model)
-		
-		# Load the state dict into EMA model
-		ema_model.load_state_dict(main_model_state_dict)
-		ema_model.eval()
-		logging.info(f"Initialized EMA with decay {config.ema_decay}")
 
 	# Load checkpoint if resuming
 	global_step = 0
 	if resuming:
-		global_step = load_checkpoint(model, optim, config.checkpoint_dir, device, ema_model)
+		global_step = load_checkpoint(model, optim, config.checkpoint_dir, device)
 		logging.info(f"Resumed training from step {global_step}")
 
 	def lr_schedule(step: int):
@@ -470,9 +471,8 @@ def train_loop(config: _config.TrainConfig):
 		logging.info(f"Memory optimizations: gradient_checkpointing={enable_gradient_checkpointing}")
 		logging.info(f"LR schedule: warmup={warmup_steps}, peak_lr={peak_lr:.2e}, decay_steps={decay_steps}, end_lr={end_lr:.2e}")
 		logging.info(f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, clip_norm={config.optimizer.clip_gradient_norm}")
+		logging.info(f"EMA is not supported for PyTorch training")
 		logging.info(f"Training precision: {model_cfg.dtype}")
-		if config.ema_decay is not None:
-			logging.info(f"EMA decay: {config.ema_decay}")
 
 	# Training loop - iterate until we reach num_train_steps
 	pbar = tqdm.tqdm(total=config.num_train_steps, initial=global_step, desc="Training", disable=not is_main) if is_main else None
@@ -482,26 +482,21 @@ def train_loop(config: _config.TrainConfig):
 		if use_ddp and hasattr(loader, 'set_epoch'):
 			loader.set_epoch(global_step // len(loader))
 
-		for batch in loader:
+		for observation, actions in loader:
 			# Check if we've reached the target number of steps
 			if global_step >= config.num_train_steps:
 				break
 
 			# The unified data loader returns (observation, actions) tuple
-			observation, actions = batch
-			
-			# Convert observation and actions to torch tensors
-			observation_dict = observation.to_dict()
-			observation_dict["actions"] = actions
-			batch_torch = batch_to_torch(observation_dict, device)
-			actions = batch_torch["actions"]
+			observation = jax.tree.map(lambda x: x.to(device), observation)
+			actions = actions.to(torch.float32)
+			actions = actions.to(device)
 
 			# Update LR
 			for pg in optim.param_groups:
 				pg["lr"] = lr_schedule(global_step)
 
 			# Forward pass
-			observation = _model.Observation.from_dict(batch_torch)
 			losses = model(observation, actions)
 			# Ensure losses is a tensor and handle different return types
 			if isinstance(losses, (list, tuple)):
@@ -532,17 +527,6 @@ def train_loop(config: _config.TrainConfig):
 					param.grad.detach_()
 					param.grad = None
 
-			# Update EMA if enabled
-			if ema_model is not None:
-				try:
-					with torch.no_grad():
-						# Get parameters from the correct model structure
-						main_model_params = get_model_parameters(model)
-						for param, ema_param in zip(main_model_params, ema_model.parameters()):
-							ema_param.data.mul_(config.ema_decay).add_(param.data, alpha=1 - config.ema_decay)
-				except Exception as e:
-					logging.warning(f"Failed to update EMA model: {e}")
-					# Continue training without EMA update
 
 			# Collect stats
 			if is_main:
@@ -581,10 +565,9 @@ def train_loop(config: _config.TrainConfig):
 				start_time = time.time()
 				infos = []  # Reset stats collection
 
-			# Save checkpoint using the new mechanism
-			save_checkpoint(model, optim, global_step, config, is_main, ema_model)
-
 			global_step += 1
+			# Save checkpoint using the new mechanism
+			save_checkpoint(model, optim, global_step, config, is_main)
 
 			# Update progress bar
 			if pbar is not None:
