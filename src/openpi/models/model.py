@@ -304,9 +304,7 @@ def restore_params(
     Returns:
         The restored params.
     """
-    params_path = pathlib.Path(params_path).resolve()
-    if not params_path.exists():
-        raise FileNotFoundError(f"Model params not found at: {params_path}")
+    params_path = pathlib.Path(params_path).resolve() if not params_path.startswith("gs://") else params_path
 
     if restore_type is jax.Array and sharding is None:
         mesh = jax.sharding.Mesh(jax.devices(), ("x",))
