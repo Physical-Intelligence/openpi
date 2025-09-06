@@ -303,9 +303,9 @@ We have validated the PyTorch implementation against JAX:
    - Converted PyTorch checkpoint: 92.2% on Libero-10
 
 2. Finetuning pi05_libero from pi05_base model in PyTorch:
-   - Using float32: (convert JAX ckpt to pytorch in float32) Loss curves match JAX throughout training
-   - Using bfloat16: (convert JAX ckpt to pytorch in bfloat16) Loss curves match after 10k steps (in 30k total steps)
-   - Final performance: 91.4% on Libero-10
+   - Using float32: Loss drops faster than JAX throughout training. Training speed is a bit slower than JAX (can be further optimized)
+   - Using bfloat16: Loss drops slower than JAX. Training speed is a bit faster than JAX.
+   - In both cases, final evaluation performance are >90% on Libero-10
 
 3. We comapred inference speed between JAX and PyTorch and they are comparable.
 

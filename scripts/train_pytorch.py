@@ -351,12 +351,27 @@ def train_loop(config: _config.TrainConfig):
     # For N GPUs, each GPU should get batch_size/N samples, so total across all GPUs is batch_size
     world_size = torch.distributed.get_world_size() if use_ddp else 1
     effective_batch_size = config.batch_size // world_size
+    
+    # Gradient accumulation: enable if per-GPU batch size > 16
+    accumulation_steps = 1
+    if effective_batch_size > 16:
+        # Calculate how many accumulation steps we need
+        accumulation_steps = (effective_batch_size + 15) // 16  # Round up to keep batch size <= 16
+        mini_batch_size = effective_batch_size // accumulation_steps
+        # Adjust to make sure we don't exceed the original effective batch size
+        if mini_batch_size * accumulation_steps < effective_batch_size:
+            mini_batch_size += 1
+    else:
+        mini_batch_size = effective_batch_size
+    
     logging.info(
         f"Using batch size per GPU: {effective_batch_size} (total batch size across {world_size} GPUs: {config.batch_size})"
     )
-
-    # Pass the original batch size to data loader - it will handle DDP splitting internally
-    loader, data_config = build_datasets(config)
+    logging.info(f"Gradient accumulation: mini_batch_size={mini_batch_size}, accumulation_steps={accumulation_steps}")
+    
+    # Create a modified config with the mini batch size for gradient accumulation
+    modified_config = dataclasses.replace(config, batch_size=mini_batch_size * world_size)
+    loader, data_config = build_datasets(modified_config)
 
     # Log sample images to wandb on first batch
     if is_main and config.wandb_enabled and not resuming:
@@ -489,6 +504,7 @@ def train_loop(config: _config.TrainConfig):
         logging.info(
             f"Training config: batch_size={config.batch_size}, effective_batch_size={effective_batch_size}, num_train_steps={config.num_train_steps}"
         )
+        logging.info(f"Gradient accumulation: enabled={accumulation_steps > 1}, mini_batch_size={mini_batch_size}, accumulation_steps={accumulation_steps}")
         logging.info(f"Memory optimizations: gradient_checkpointing={enable_gradient_checkpointing}")
         logging.info(
             f"LR schedule: warmup={warmup_steps}, peak_lr={peak_lr:.2e}, decay_steps={decay_steps}, end_lr={end_lr:.2e}"
@@ -505,6 +521,10 @@ def train_loop(config: _config.TrainConfig):
         if is_main
         else None
     )
+    
+    # Initialize gradient accumulation counter
+    accumulated_loss = 0.0
+    accumulation_count = 0
 
     while global_step < config.num_train_steps:
         # Set epoch for distributed training
@@ -521,10 +541,6 @@ def train_loop(config: _config.TrainConfig):
             actions = actions.to(torch.float32)  # noqa: PLW2901
             actions = actions.to(device)  # noqa: PLW2901
 
-            # Update LR
-            for pg in optim.param_groups:
-                pg["lr"] = lr_schedule(global_step)
-
             # Forward pass
             losses = model(observation, actions)
             # Ensure losses is a tensor and handle different return types
@@ -534,82 +550,100 @@ def train_loop(config: _config.TrainConfig):
                 losses = torch.tensor(losses, device=device, dtype=torch.float32)
 
             loss = losses.mean()
+            
+            # Scale loss by accumulation steps for proper gradient magnitude
+            loss = loss / accumulation_steps
+            accumulated_loss += loss.item()
+            accumulation_count += 1
 
             # Backward pass
             loss.backward()
 
-            # Log memory usage after backward pass
-            if global_step < 5 and is_main and torch.cuda.is_available():
-                log_memory_usage(device, global_step, "after_backward")
+            # Log memory usage after backward pass (only for first few steps)
+            if global_step < 5 and is_main and accumulation_count == 1:
+                if torch.cuda.is_available():
+                    log_memory_usage(device, global_step, "after_backward")
 
-            # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            # Perform optimizer step only after accumulating enough gradients
+            if accumulation_count == accumulation_steps:
+                # Update LR
+                for pg in optim.param_groups:
+                    pg["lr"] = lr_schedule(global_step)
+                
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
 
-            # Optimizer step
-            optim.step()
-            optim.zero_grad(set_to_none=True)
+                # Optimizer step
+                optim.step()
+                optim.zero_grad(set_to_none=True)
+                
+                # Clear gradients more aggressively
+                for param in model.parameters():
+                    if param.grad is not None:
+                        param.grad.detach_()
+                        param.grad = None
 
-            # Clear gradients more aggressively
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.detach_()
-                    param.grad = None
+                # Collect stats (only after completing accumulation)
+                if is_main:
+                    infos.append(
+                        {
+                            "loss": accumulated_loss,  # Use accumulated loss
+                            "learning_rate": optim.param_groups[0]["lr"],
+                            "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                        }
+                    )
+                
+                # Reset accumulation counters
+                accumulated_loss = 0.0
+                accumulation_count = 0
+                
+                # Increment global step only after completing accumulation
+                global_step += 1
+                
+                # Save checkpoint using the new mechanism
+                save_checkpoint(model, optim, global_step, config, is_main, data_config)
 
-            # Collect stats
-            if is_main:
-                infos.append(
-                    {
-                        "loss": loss.item(),
-                        "learning_rate": optim.param_groups[0]["lr"],
-                        "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                    }
-                )
+                # Update progress bar
+                if pbar is not None:
+                    pbar.update(1)
+                    pbar.set_postfix(
+                        {"loss": f"{loss.item() * accumulation_steps:.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
+                    )
 
-            if is_main and (global_step % config.log_interval == 0):
-                elapsed = time.time() - start_time
+                if is_main and (global_step % config.log_interval == 0):
+                    elapsed = time.time() - start_time
 
-                # Average stats over log interval
-                avg_loss = sum(info["loss"] for info in infos) / len(infos)
-                avg_lr = sum(info["learning_rate"] for info in infos) / len(infos)
+                    # Average stats over log interval
+                    avg_loss = sum(info["loss"] for info in infos) / len(infos)
+                    avg_lr = sum(info["learning_rate"] for info in infos) / len(infos)
 
-                avg_grad_norm = None
-                if any("grad_norm" in info for info in infos):
-                    vals = [
-                        info["grad_norm"] for info in infos if "grad_norm" in info and info["grad_norm"] is not None
-                    ]
-                    if len(vals) > 0:
-                        avg_grad_norm = sum(vals) / len(vals)
-                logging.info(
-                    f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
-                    if avg_grad_norm is not None
-                    else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
-                )
+                    avg_grad_norm = None
+                    if any("grad_norm" in info for info in infos):
+                        vals = [
+                            info["grad_norm"] for info in infos if "grad_norm" in info and info["grad_norm"] is not None
+                        ]
+                        if len(vals) > 0:
+                            avg_grad_norm = sum(vals) / len(vals)
+                    logging.info(
+                        f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
+                        if avg_grad_norm is not None
+                        else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
+                    )
 
-                # Log to wandb
-                if config.wandb_enabled and len(infos) > 0:
-                    log_payload = {
-                        "loss": avg_loss,
-                        "learning_rate": avg_lr,
-                        "step": global_step,
-                        "time_per_step": elapsed / config.log_interval,
-                    }
-                    if avg_grad_norm is not None:
-                        log_payload["grad_norm"] = avg_grad_norm
-                    wandb.log(log_payload, step=global_step)
+                    # Log to wandb
+                    if config.wandb_enabled and len(infos) > 0:
+                        log_payload = {
+                            "loss": avg_loss,
+                            "learning_rate": avg_lr,
+                            "step": global_step,
+                            "time_per_step": elapsed / config.log_interval,
+                        }
+                        if avg_grad_norm is not None:
+                            log_payload["grad_norm"] = avg_grad_norm
+                        wandb.log(log_payload, step=global_step)
 
-                start_time = time.time()
-                infos = []  # Reset stats collection
-
-            global_step += 1
-            # Save checkpoint using the new mechanism
-            save_checkpoint(model, optim, global_step, config, is_main, data_config)
-
-            # Update progress bar
-            if pbar is not None:
-                pbar.update(1)
-                pbar.set_postfix(
-                    {"loss": f"{loss.item():.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
-                )
+                    start_time = time.time()
+                    infos = []  # Reset stats collection
 
     # Close progress bar
     if pbar is not None:
