@@ -37,13 +37,12 @@ import safetensors.torch
 import torch
 import torch.distributed as dist
 import torch.nn.parallel
-import torch.utils.data
-import torch.utils.data.distributed
 import tqdm
 import wandb
 
 import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
+import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
 
@@ -147,7 +146,7 @@ def get_model_parameters(model):
     )
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main):
+def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
         return
@@ -165,7 +164,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main):
 
         # Save model state using safetensors (handle shared tensors)
         model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        safetensors.torch.save_model(model_to_save, tmp_ckpt_dir / "pytorch_model.safetensors")
+        safetensors.torch.save_model(model_to_save, tmp_ckpt_dir / "model.safetensors")
 
         # Save optimizer state using PyTorch format
         torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
@@ -177,6 +176,11 @@ def save_checkpoint(model, optimizer, global_step, config, is_main):
             "timestamp": time.time(),
         }
         torch.save(metadata, tmp_ckpt_dir / "metadata.pt")
+
+        # save norm stats
+        norm_stats = data_config.norm_stats
+        if norm_stats is not None and data_config.asset_id is not None:
+            _normalize.save(tmp_ckpt_dir / data_config.asset_id, norm_stats)
 
         # Atomically move temp directory to final location
         if final_ckpt_dir.exists():
@@ -213,7 +217,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
     try:
         # Load model state with error handling
         logging.info("Loading model state...")
-        safetensors_path = ckpt_dir / "pytorch_model.safetensors"
+        safetensors_path = ckpt_dir / "model.safetensors"
 
         if safetensors_path.exists():
             model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
@@ -352,7 +356,7 @@ def train_loop(config: _config.TrainConfig):
     )
 
     # Pass the original batch size to data loader - it will handle DDP splitting internally
-    loader, _ = build_datasets(config)
+    loader, data_config = build_datasets(config)
 
     # Log sample images to wandb on first batch
     if is_main and config.wandb_enabled and not resuming:
@@ -598,7 +602,7 @@ def train_loop(config: _config.TrainConfig):
 
             global_step += 1
             # Save checkpoint using the new mechanism
-            save_checkpoint(model, optim, global_step, config, is_main)
+            save_checkpoint(model, optim, global_step, config, is_main, data_config)
 
             # Update progress bar
             if pbar is not None:
