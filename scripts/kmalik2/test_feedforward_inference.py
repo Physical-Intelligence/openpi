@@ -9,6 +9,7 @@ To test with 2 devices:
   JAX_PLATFORMS=cpu uv run scripts/kmalik2/test_feedforward_inference.py
 """
 
+import argparse
 import os
 import time
 import jax
@@ -16,12 +17,12 @@ import jax.numpy as jnp
 from openpi.models import lora
 from openpi.training import sharding
 
-# Set JAX to use CPU for testing with 2 devices
-os.environ["JAX_PLATFORMS"] = "cpu"
-os.environ["XLA_FLAGS"] = "--xla_cpu_enable_fast_math=false --xla_force_host_platform_device_count=2"
 
-# Force JAX to use 2 devices for sharding testing
-jax.config.update("jax_platforms", "cpu")
+def setup_jax_devices(num_devices):
+    """Set up JAX to use the specified number of devices."""
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["XLA_FLAGS"] = f"--xla_cpu_enable_fast_math=false --xla_force_host_platform_device_count={num_devices}"
+    jax.config.update("jax_platforms", "cpu")
 
 
 def create_dummy_input(batch_size=1, seq_len=10, model_dim=512):
@@ -29,7 +30,7 @@ def create_dummy_input(batch_size=1, seq_len=10, model_dim=512):
     return jnp.ones((batch_size, seq_len, model_dim), dtype=jnp.float32)
 
 
-def create_mesh(batch_size=1, num_fsdp_devices=2):
+def create_mesh(batch_size=1, num_fsdp_devices=8):
     """Create a mesh for sharding with FSDP dimension only."""
     # Create a 1D mesh with FSDP dimension
     devices = jax.devices()[:num_fsdp_devices]
@@ -94,7 +95,8 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
             
             if print_shapes:
                 # Show only local shard shapes for weights
-                print(f"    [SHARDED] Weight shard shapes:")
+                num_shards = fc1.sharding.mesh.shape['fsdp']
+                print(f"    [SHARDED] Weight shard shapes (across {num_shards} shards):")
                 fc1_shard_shape = fc1.sharding.shard_shape(fc1.shape)
                 fc2_shard_shape = fc2.sharding.shard_shape(fc2.shape)
                 print(f"    FC1 local shard: {tuple(fc1_shard_shape)}")
@@ -231,20 +233,38 @@ def setup_devices_for_sharding():
 
 def main():
     """Main test function."""
+    parser = argparse.ArgumentParser(description="Test FeedForward block inference with sharding")
+    parser.add_argument("--num-shards", type=int, default=8, 
+                       help="Number of shards/devices to use (default: 2)")
+    parser.add_argument("--batch-size", type=int, default=1,
+                       help="Batch size (default: 1)")
+    parser.add_argument("--seq-len", type=int, default=128,
+                       help="Sequence length (default: 128)")
+    parser.add_argument("--model-dim", type=int, default=512,
+                       help="Model dimension (default: 512)")
+    parser.add_argument("--hidden-dim", type=int, default=2048,
+                       help="Hidden dimension (default: 2048)")
+    
+    args = parser.parse_args()
+    
+    # Set up JAX with specified number of devices
+    setup_jax_devices(args.num_shards)
+    
     print("FeedForward Block Inference Test (Unsharded vs Sharded)")
     print("=" * 60)
     
     # Configuration
-    batch_size = 1
-    seq_len = 128
-    model_dim = 512
-    hidden_dim = 2048
+    batch_size = args.batch_size
+    seq_len = args.seq_len
+    model_dim = args.model_dim
+    hidden_dim = args.hidden_dim
     
     print(f"Configuration:")
     print(f"  Batch size: {batch_size}")
     print(f"  Sequence length: {seq_len}")
     print(f"  Model dim: {model_dim}")
     print(f"  Hidden dim: {hidden_dim}")
+    print(f"  Number of shards: {args.num_shards}")
     print()
     
     # Set up devices for sharding
@@ -257,7 +277,7 @@ def main():
     print()
     
     # Create mesh for sharding
-    mesh = create_mesh(batch_size)
+    mesh = create_mesh(batch_size, args.num_shards)
     print(f"Mesh shape: {mesh.shape}")
     print()
     
