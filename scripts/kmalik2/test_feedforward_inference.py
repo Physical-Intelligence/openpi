@@ -96,33 +96,13 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
         lora_config=None
     )
     
-    # Initialize the block
-    params = ff_block.init(jax.random.key(0), input_data)
-    
     if sharded and mesh is not None:
-        # Apply FSDP sharding to parameters
+        # Apply FSDP sharding to parameters using jitted init with out_shardings
         print("  Applying FSDP sharding to parameters...")
-        param_sharding = sharding.fsdp_sharding(params, mesh, log=True)
-        
-        # Actually shard the parameters by putting them on devices with the sharding specs
-        print("  Sharding parameters across devices...")
-        sharded_params = {}
-        for key, param in params.items():
-            if hasattr(param, 'items'):  # nested dict
-                sharded_params[key] = {}
-                for subkey, subparam in param.items():
-                    if hasattr(subparam, 'shape'):  # is an array
-                        sharded_param = jax.device_put(subparam, param_sharding[key][subkey])
-                        sharded_params[key][subkey] = sharded_param
-                        print(f"    Sharded {key}.{subkey}: {subparam.shape} -> {sharded_param.shape}, sharding: {sharded_param.sharding}")
-                    else:
-                        sharded_params[key][subkey] = subparam
-            elif hasattr(param, 'shape'):  # direct array
-                sharded_param = jax.device_put(param, param_sharding[key])
-                sharded_params[key] = sharded_param
-                print(f"    Sharded {key}: {param.shape} -> {sharded_param.shape}, sharding: {sharded_param.sharding}")
-            else:
-                sharded_params[key] = param
+        params_shape = jax.eval_shape(ff_block.init, jax.random.key(0), input_data)
+        param_sharding = sharding.fsdp_sharding(params_shape, mesh, log=True)
+        print("  Initializing parameters directly into sharded buffers...")
+        params = jax.jit(ff_block.init, out_shardings=param_sharding)(jax.random.key(0), input_data)
         
         # Use FSDP-only activation sharding
         def activation_sharding_constraint(tensor):
@@ -132,25 +112,15 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, None, "fsdp"))
             )
         
-        # PJIT-compiled forward pass with sharding
-        @pjit.pjit
-        def forward_fn_jit(params, x):
-            # Apply activation sharding constraint (both batch and FSDP dimensions)
-            x = activation_sharding_constraint(x)
-            
-            # Get weights
-            fc1 = params['params']['gating_einsum']
-            fc2 = params['params']['linear']
-            
-            # Forward pass
-            ff_gate = jnp.dot(x, fc1[0])
-            gate_value = jax.nn.gelu(ff_gate)
-            ff1 = jnp.dot(x, fc1[1])
-            activations = gate_value * ff1
-            outputs = jnp.dot(activations, fc2)
-            output = activation_sharding_constraint(outputs)
-            
-            return output
+        # PJIT-compiled forward pass with sharding (minimal version using module.apply)
+        x_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+        def _forward_impl(params, x):
+            return ff_block.apply(params, x)
+        forward_fn_jit = pjit.pjit(
+            _forward_impl,
+            in_shardings=(param_sharding, x_sharding),
+            out_shardings=x_sharding,
+        )
         
         # Wrapper function for debugging with shapes (not JIT-compiled)
         def forward_fn(params, x, print_shapes=False):
@@ -199,10 +169,9 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
             else:
                 # Use PJIT-compiled version for performance
                 return forward_fn_jit(params, x)
-        
-        # Use the sharded parameters
-        params = sharded_params
     else:
+        # Initialize the block without sharding
+        params = ff_block.init(jax.random.key(0), input_data)
         # PJIT-compiled forward pass without sharding (for consistency)
         @pjit.pjit
         def forward_fn_jit(params, x):
