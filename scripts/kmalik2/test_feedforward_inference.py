@@ -21,20 +21,19 @@ import time
 
 # Set up JAX environment variables BEFORE importing JAX
 # This ensures XLA flags and platform settings are properly applied
-def setup_jax_environment(num_devices, enable_hlo_profile=False):
-    """Set up JAX environment variables before importing JAX."""
-    os.environ["JAX_PLATFORMS"] = "cpu"
-    
-    # Base XLA flags
-    xla_flags = f"--xla_cpu_enable_fast_math=false --xla_force_host_platform_device_count={num_devices}"
-    
-    # Add HLO profiling flags if requested
-    if enable_hlo_profile:
-        xla_flags += " --xla_hlo_profile"
-        print(f"  HLO profiling enabled - detailed per-operation timing will be available")
-    
-    os.environ["XLA_FLAGS"] = xla_flags
-
+# --- in setup_jax_environment() ---
+def setup_jax_environment(num_devices, platform="cuda"):
+    if platform in ("cuda", "gpu"):
+        os.environ["JAX_PLATFORMS"] = "cuda"
+        # Do NOT set CPU-only XLA flags on CUDA
+        return
+    elif platform == "rocm":
+        os.environ["JAX_PLATFORMS"] = "rocm"
+        return
+    else:  # cpu
+        os.environ["JAX_PLATFORMS"] = "cpu"
+        os.environ["XLA_FLAGS"] = f"--xla_cpu_enable_fast_math=false --xla_force_host_platform_device_count={num_devices}"
+        
 # Parse command line arguments to get device count early
 parser = argparse.ArgumentParser(description="Test FeedForward block inference with sharding")
 parser.add_argument("--num-shards", type=int, default=8, 
@@ -53,12 +52,14 @@ parser.add_argument("--trace-dir", type=str, default="/tmp/jax_traces",
                    help="Directory to save profiling traces (default: /tmp/jax_traces)")
 parser.add_argument("--disable-hlo-profile", action="store_true",
                    help="Disable detailed HLO profiling with per-operation timing (default: enabled)")
+parser.add_argument("--platform", type=str, choices=["cuda", "rocm", "cpu", "gpu"], default="cuda",
+                   help="Platform to use: 'cuda' for NVIDIA GPUs, 'rocm' for AMD GPUs, 'cpu' for CPU, 'gpu' to auto-detect (default: cuda)")
 
 # Parse args early to get device count
 args, _ = parser.parse_known_args()
 
 # Set up JAX environment BEFORE importing JAX
-setup_jax_environment(args.num_shards, enable_hlo_profile=not args.disable_hlo_profile)
+setup_jax_environment(args.num_shards, platform=args.platform)
 
 # Now import JAX and other dependencies
 import jax
@@ -76,12 +77,13 @@ def create_dummy_input(batch_size=1, seq_len=10, model_dim=512):
     return jnp.ones((batch_size, seq_len, model_dim), dtype=jnp.float32)
 
 
-def create_mesh(batch_size=1, num_fsdp_devices=8):
-    """Create a mesh for sharding with FSDP dimension only."""
-    # Create a 1D mesh with FSDP dimension
-    devices = jax.devices()[:num_fsdp_devices]
-    return jax.sharding.Mesh(devices, ('fsdp',))
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, PartitionSpec as P
 
+def create_mesh(num_fsdp_devices=4):
+    dev_mesh = mesh_utils.create_device_mesh((num_fsdp_devices,))  # 1D (N,)
+    return Mesh(dev_mesh, ('fsdp',))
+    
 
 def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sharded=False, mesh=None):
     """Create a single FeedForward block from Gemma."""
@@ -355,18 +357,68 @@ def compare_outputs(output1, output2, name1="Output 1", name2="Output 2"):
     return identical
 
 
+def check_gpu_memory():
+    """Check GPU memory usage if available."""
+    try:
+        # Try to get GPU memory info
+        import subprocess
+        result = subprocess.run(['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for i, line in enumerate(lines):
+                used, total = line.split(', ')
+                used_gb = int(used) / 1024
+                total_gb = int(total) / 1024
+                print(f"  GPU {i} memory: {used_gb:.1f}GB / {total_gb:.1f}GB ({used_gb/total_gb*100:.1f}% used)")
+        else:
+            print("  GPU memory info not available")
+    except Exception as e:
+        print(f"  GPU memory check failed: {e}")
+
 def setup_devices_for_sharding():
     """Set up devices for sharding testing."""
     print("Setting up devices for sharding...")
-    print(f"  Available devices: {jax.device_count()}")
-    print(f"  Device types: {[str(d) for d in jax.devices()]}")
-    
-    if jax.device_count() < 2:
+
+    # Get device information
+    device_count = jax.device_count()
+    devices = jax.devices()
+        
+    print(f"  Available devices: {device_count}")
+    print(f"  Device types: {[str(d) for d in devices]}")
+        
+    # Check if we're using GPU
+    gpu_devices = [d for d in devices if 'gpu' in str(d).lower() or 'cuda' in str(d).lower()]
+    cpu_devices = [d for d in devices if 'cpu' in str(d).lower()]
+        
+    if gpu_devices:
+        print(f"  ✓ GPU devices detected: {len(gpu_devices)}")
+        for i, device in enumerate(gpu_devices):
+            print(f"    GPU {i}: {device}")
+        # Check GPU memory
+        check_gpu_memory()
+    else:
+        print(f"  ⚠ No GPU devices detected - running on CPU")
+        for i, device in enumerate(cpu_devices):
+            print(f"    CPU {i}: {device}")
+        
+    # Check JAX backend
+    try:
+        # Use the new API to avoid deprecation warning
+        backend = jax.extend.backend.get_backend()
+        print(f"  JAX backend: {backend.platform}")
+        if hasattr(backend, 'device_kind'):
+            print(f"  Device kind: {backend.device_kind}")
+    except Exception as e:
+        print(f"  Backend info unavailable: {e}")
+        
+    if device_count < 2:
         print("  WARNING: Only 1 device available. Sharding will not work properly.")
         return 1
     else:
-        print(f"  Using {jax.device_count()} devices for sharding.")
-        return jax.device_count()
+        print(f"  Using {device_count} devices for sharding.")
+        return device_count
+
 
 
 def main():
@@ -389,8 +441,8 @@ def main():
     print(f"  Model dim: {model_dim}")
     print(f"  Hidden dim: {hidden_dim}")
     print(f"  Number of shards: {args.num_shards}")
+    print(f"  Platform: {args.platform}")
     print(f"  Mode: {args.mode}")
-    print(f"  HLO profiling: {'Disabled' if args.disable_hlo_profile else 'Enabled'}")
     if args.mode in ["profile", "profile_both"]:
         print(f"  Trace directory: {args.trace_dir}")
     print()
@@ -402,10 +454,21 @@ def main():
     # Create dummy input
     input_data = create_dummy_input(batch_size, seq_len, model_dim)
     print(f"Input shape: {input_data.shape}")
+    
+    # Test GPU computation
+    print("Testing GPU computation...")
+    test_array = jnp.ones((2, 2))
+    print(f"  Test array device: {test_array.device}")
+    print(f"  Test array backend: {test_array.device.platform}")
+    
+    # Simple computation test
+    result = jnp.dot(test_array, test_array)
+    print(f"  Computation result device: {result.device}")
+    print(f"  Computation result backend: {result.device.platform}")
     print()
     
     # Create mesh for sharding
-    mesh = create_mesh(batch_size, args.num_shards)
+    mesh = create_mesh(args.num_shards)
     print(f"Mesh shape: {mesh.shape}")
     print()
     
