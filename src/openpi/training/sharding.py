@@ -45,6 +45,18 @@ def activation_sharding_constraint(pytree):
     )
 
 
+def replicate_sharding_constraint(pytree):
+    """Replicate the tensor across the active mesh (explicit all-gather).
+
+    If there is no active mesh, this is a no-op.
+    """
+    if _MeshState.active_mesh is None:
+        return pytree
+    return jax.lax.with_sharding_constraint(
+        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec())
+    )
+
+
 def fsdp_sharding(
     pytree,
     mesh: jax.sharding.Mesh,

@@ -19,16 +19,14 @@ import argparse
 import os
 import time
 
+
 # Set up JAX environment variables BEFORE importing JAX
 # This ensures XLA flags and platform settings are properly applied
 # --- in setup_jax_environment() ---
 def setup_jax_environment(num_devices, platform="cuda"):
-    if platform in ("cuda", "gpu"):
+    if platform == "cuda":
         os.environ["JAX_PLATFORMS"] = "cuda"
         # Do NOT set CPU-only XLA flags on CUDA
-        return
-    elif platform == "rocm":
-        os.environ["JAX_PLATFORMS"] = "rocm"
         return
     else:  # cpu
         os.environ["JAX_PLATFORMS"] = "cpu"
@@ -52,8 +50,16 @@ parser.add_argument("--trace-dir", type=str, default="/tmp/jax_traces",
                    help="Directory to save profiling traces (default: /tmp/jax_traces)")
 parser.add_argument("--disable-hlo-profile", action="store_true",
                    help="Disable detailed HLO profiling with per-operation timing (default: enabled)")
-parser.add_argument("--platform", type=str, choices=["cuda", "rocm", "cpu", "gpu"], default="cuda",
-                   help="Platform to use: 'cuda' for NVIDIA GPUs, 'rocm' for AMD GPUs, 'cpu' for CPU, 'gpu' to auto-detect (default: cuda)")
+parser.add_argument("--platform", type=str, choices=["cuda", "cpu"], default="cuda",
+                   help="Platform to use: 'cuda' for NVIDIA GPUs, 'cpu' for CPU (default: cuda)")
+parser.add_argument("--sharding-strategy", type=str, choices=["default", "megatron"], default="default",
+                   help="Sharding strategy: 'default' for FSDP-style sharding, 'megatron' for tensor parallel (default: default)")
+parser.add_argument("--no-jit", action="store_true",
+                   help="Run forward passes without JIT compilation (useful for debugging)")
+parser.add_argument("--timing-runs", type=int, default=10,
+                   help="Number of timing runs for performance measurement (default: 10)")
+parser.add_argument("--explicit-all-gather", action="store_true",
+                   help="Enable explicit all-gather via sharding constraint (only for default strategy)")
 
 # Parse args early to get device count
 args, _ = parser.parse_known_args()
@@ -81,46 +87,122 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec as P
 
 def create_mesh(num_fsdp_devices=4):
-    dev_mesh = mesh_utils.create_device_mesh((num_fsdp_devices,))  # 1D (N,)
+    # Get available devices and use only the requested number
+    available_devices = jax.devices()
+    if len(available_devices) < num_fsdp_devices:
+        raise ValueError(f"Requested {num_fsdp_devices} devices but only {len(available_devices)} available")
+    
+    # Use only the first num_fsdp_devices devices
+    selected_devices = available_devices[:num_fsdp_devices]
+    dev_mesh = mesh_utils.create_device_mesh((num_fsdp_devices,), devices=selected_devices)  # 1D (N,)
     return Mesh(dev_mesh, ('fsdp',))
+
+
+def megatron_sharding(params_shape, mesh, log=False):
+    """Create megatron-style tensor parallel sharding for FeedForward parameters.
+    
+    In megatron sharding:
+    - gating_einsum (shape: [2, model_dim, hidden_dim]) is sharded column-wise (last dim)
+    - linear (shape: [hidden_dim, model_dim]) is sharded row-wise (first dim)
+    - activations (x) are not sharded
+    """
+    def _shard_param(kp, param_shape):
+        key_path = jax.tree_util.keystr(kp)
+        
+        if 'gating_einsum' in key_path:
+            # Column-wise sharding: shard the hidden_dim (last dimension)
+            if log:
+                print(f"  Megatron sharding {key_path}: column-wise (last dim)")
+            return jax.sharding.NamedSharding(mesh, P(None, None, 'fsdp'))
+        elif 'linear' in key_path:
+            # Row-wise sharding: shard the hidden_dim (first dimension)  
+            if log:
+                print(f"  Megatron sharding {key_path}: row-wise (first dim)")
+            return jax.sharding.NamedSharding(mesh, P('fsdp', None))
+        else:
+            # Replicate everything else
+            if log:
+                print(f"  Megatron sharding {key_path}: replicated")
+            return jax.sharding.NamedSharding(mesh, P())
+    
+    return jax.tree_util.tree_map_with_path(_shard_param, params_shape)
     
 
-def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sharded=False, mesh=None):
+def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sharded=False, mesh=None, sharding_strategy="default", use_jit=True, explicit_all_gather=False):
     """Create a single FeedForward block from Gemma."""
-    print(f"Creating FeedForward block: model_dim={model_dim}, hidden_dim={hidden_dim}, sharded={sharded}")
+    print(f"Creating FeedForward block: model_dim={model_dim}, hidden_dim={hidden_dim}, sharded={sharded}, strategy={sharding_strategy}")
+    if sharding_strategy == "default" and explicit_all_gather and sharded:
+        print(f"  Using explicit all-gather for default strategy")
     
     # Create FeedForward block without LoRA
+    # Only enable explicit_all_gather when sharded=True and strategy=default
+    use_explicit_all_gather = explicit_all_gather and sharded and sharding_strategy == "default"
     ff_block = lora.FeedForward(
         features=model_dim,
         hidden_dim=hidden_dim,
-        lora_config=None
+        lora_config=None,
+        explicit_all_gather=use_explicit_all_gather
     )
     
     if sharded and mesh is not None:
-        # Apply FSDP sharding to parameters using jitted init with out_shardings
-        print("  Applying FSDP sharding to parameters...")
+        # Apply sharding to parameters using jitted init with out_shardings
+        print(f"  Applying {sharding_strategy} sharding to parameters...")
+        
+        # Shape evaluation - mesh context is already active from the calling context
         params_shape = jax.eval_shape(ff_block.init, jax.random.key(0), input_data)
-        param_sharding = sharding.fsdp_sharding(params_shape, mesh, log=True)
+        
+        if sharding_strategy == "megatron":
+            param_sharding = megatron_sharding(params_shape, mesh, log=True)
+        else:  # default
+            param_sharding = sharding.fsdp_sharding(params_shape, mesh, log=True)
+            
         print("  Initializing parameters directly into sharded buffers...")
+        # Parameter initialization - mesh context should already be active when sharded=True
         params = jax.jit(ff_block.init, out_shardings=param_sharding)(jax.random.key(0), input_data)
         
-        # Use FSDP-only activation sharding
-        def activation_sharding_constraint(tensor):
-            """Shard activations along FSDP dimension only"""
-            return jax.lax.with_sharding_constraint(
-                tensor, 
-                jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, None, "fsdp"))
-            )
+        # Set up activation sharding based on strategy
+        if sharding_strategy == "megatron":
+            # In megatron, activations are not sharded (replicated)
+            x_sharding = jax.sharding.NamedSharding(mesh, P())
+            x_out_sharding = jax.sharding.NamedSharding(mesh, P())
+            #x_out_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+            def activation_sharding_constraint(tensor):
+                """Keep activations replicated in megatron strategy"""
+                return jax.lax.with_sharding_constraint(
+                    tensor, 
+                    jax.sharding.NamedSharding(mesh, P())
+                )
+        else:  # default
+            # In default FSDP, shard activations along FSDP dimension
+            x_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+            x_out_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+            def activation_sharding_constraint(tensor):
+                """Shard activations along FSDP dimension only"""
+                return jax.lax.with_sharding_constraint(
+                    tensor, 
+                    jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+                )
         
-        # PJIT-compiled forward pass with sharding (minimal version using module.apply)
-        x_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
-        def _forward_impl(params, x):
-            return ff_block.apply(params, x)
-        forward_fn_jit = pjit.pjit(
-            _forward_impl,
-            in_shardings=(param_sharding, x_sharding),
-            out_shardings=x_sharding,
-        )
+        # Create forward function based on use_jit flag
+        if use_jit:
+            # PJIT-compiled forward pass with sharding (minimal version using module.apply)
+            def _forward_impl(params, x):
+                return ff_block.apply(params, x)
+            forward_fn_jit = pjit.pjit(
+                _forward_impl,
+                in_shardings=(param_sharding, x_sharding),
+                out_shardings=x_out_sharding,
+            )
+        else:
+            # Non-JIT version with manual sharding constraints
+            def forward_fn_no_jit(params, x):
+                # Apply input sharding constraint
+                x = jax.lax.with_sharding_constraint(x, x_sharding)
+                # Forward pass
+                output = ff_block.apply(params, x)
+                # Apply output sharding constraint
+                output = jax.lax.with_sharding_constraint(output, x_out_sharding)
+                return output
         
         # Wrapper function for debugging with shapes (not JIT-compiled)
         def forward_fn(params, x, print_shapes=False):
@@ -129,17 +211,19 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 fc1 = params['params']['gating_einsum']
                 fc2 = params['params']['linear']
                 num_shards = fc1.sharding.mesh.shape['fsdp']
-                print(f"    [SHARDED] Weight shard shapes (across {num_shards} shards):")
+                print(f"    [{sharding_strategy.upper()}] Weight shard shapes (across {num_shards} shards):")
                 fc1_shard_shape = fc1.sharding.shard_shape(fc1.shape)
                 fc2_shard_shape = fc2.sharding.shard_shape(fc2.shape)
                 print(f"    FC1 local shard: {tuple(fc1_shard_shape)}")
                 print(f"    FC2 local shard: {tuple(fc2_shard_shape)}")
                 
                 # Forward pass - show only local shard shapes for activations
-                print(f"    [SHARDED] Activation shard shapes:")
+                print(f"    [{sharding_strategy.upper()}] Activation shard shapes:")
                 
                 # Apply activation sharding constraint
                 x = activation_sharding_constraint(x)
+                x_shard = tuple(x.sharding.shard_shape(x.shape))
+                print(f"    Input x local shard: {x_shard}")
                 
                 ff_gate = jnp.dot(x, fc1[0])
                 ff_gate_shard = tuple(ff_gate.sharding.shard_shape(ff_gate.shape))
@@ -155,7 +239,7 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 
                 activations = gate_value * ff1
                 activations_shard = tuple(activations.sharding.shard_shape(activations.shape))
-                print(f"    Activations local shard: {activations_shard}")
+                print(f"    Final hidden act local shard: {activations_shard}")
                 
                 outputs = jnp.dot(activations, fc2)
                 outputs_shard = tuple(outputs.sharding.shard_shape(outputs.shape))
@@ -167,26 +251,25 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 
                 return output
             else:
-                # Use PJIT-compiled version for performance
-                return forward_fn_jit(params, x)
+                # Use JIT or non-JIT version based on flag
+                if use_jit:
+                    return forward_fn_jit(params, x)
+                else:
+                    return forward_fn_no_jit(params, x)
     else:
         # Initialize the block without sharding
         params = ff_block.init(jax.random.key(0), input_data)
-        # PJIT-compiled forward pass without sharding (for consistency)
-        @pjit.pjit
-        def forward_fn_jit(params, x):
-            # Get weights
-            fc1 = params['params']['gating_einsum']
-            fc2 = params['params']['linear']
-            
-            # Forward pass
-            ff_gate = jnp.dot(x, fc1[0])
-            gate_value = jax.nn.gelu(ff_gate)
-            ff1 = jnp.dot(x, fc1[1])
-            activations = gate_value * ff1
-            outputs = jnp.dot(activations, fc2)
-            
-            return outputs
+        
+        # Create forward function based on use_jit flag
+        if use_jit:
+            # PJIT-compiled forward pass without sharding (for consistency)
+            def _forward_impl(params, x):
+                return ff_block.apply(params, x)
+            forward_fn_jit = pjit.pjit(_forward_impl)
+        else:
+            # Non-JIT version
+            def forward_fn_no_jit(params, x):
+                return ff_block.apply(params, x)
         
         # Wrapper function for debugging with shapes (not JIT-compiled)
         def forward_fn(params, x, print_shapes=False):
@@ -196,6 +279,9 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 fc2 = params['params']['linear']
                 
                 print(f"    [UNSHARDED] Input shape: {x.shape}, sharding: {x.sharding if hasattr(x, 'sharding') else 'None'}")
+                if hasattr(x, 'sharding') and x.sharding is not None:
+                    x_shard = tuple(x.sharding.shard_shape(x.shape))
+                    print(f"    [UNSHARDED] Input x local shard: {x_shard}")
                 print(f"    [UNSHARDED] FC1 weights: {fc1.shape}, sharding: {fc1.sharding if hasattr(fc1, 'sharding') else 'None'}")
                 print(f"    [UNSHARDED] FC2 weights: {fc2.shape}, sharding: {fc2.sharding if hasattr(fc2, 'sharding') else 'None'}")
                 print(f"    [UNSHARDED] Forward pass:")
@@ -207,12 +293,15 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 activations = gate_value * ff1
                 outputs = jnp.dot(activations, fc2)
                 
-                print(f"    [UNSHARDED] All activations on single device: {outputs.shape}")
+                print(f"    [UNSHARDED] All final_hidden_act on single device: {outputs.shape}")
                 
                 return outputs
             else:
-                # Use PJIT-compiled version for performance
-                return forward_fn_jit(params, x)
+                # Use JIT or non-JIT version based on flag
+                if use_jit:
+                    return forward_fn_jit(params, x)
+                else:
+                    return forward_fn_no_jit(params, x)
     
     # Note: Setup time calculation would need to be added at the beginning of the function
     
@@ -255,7 +344,7 @@ def run_forward_pass_with_profiling(forward_fn, params, input_data, name="forwar
         profiler.stop_trace()
 
 
-def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_printing=True, num_warmup=3, num_timing_runs=5):
+def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_printing=True, num_warmup=3, num_timing_runs=10):
     """Run forward pass and measure time with proper warmup and multiple runs"""
     if with_printing:
         print("Running forward pass...")
@@ -289,13 +378,20 @@ def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_pri
     min_time = min(times)
     max_time = max(times)
     
+    # Convert to milliseconds
+    times_ms = [t * 1_000 for t in times]
+    forward_time_ms = forward_time * 1_000
+    min_time_ms = min_time * 1_000
+    max_time_ms = max_time * 1_000
+    
     if with_printing:
-        print(f"  Forward pass time (avg): {forward_time:.3f}s")
-        print(f"  Min time: {min_time:.3f}s")
-        print(f"  Max time: {max_time:.3f}s")
-        print(f"  Times: {[f'{t:.3f}' for t in times]}")
+        print(f"  Forward pass time (avg): {forward_time_ms:.4f}ms")
+        print(f"  Min time: {min_time_ms:.4f}ms")
+        print(f"  Max time: {max_time_ms:.4f}ms")
+        print(f"  Times (raw ms): {times_ms}")
     else:
-        print(f"  Forward pass time: {forward_time:.3f}s")
+        print(f"  Forward pass time (avg): {forward_time_ms:.4f}ms")
+        print(f"  Times (raw ms): {times_ms}")
     
     return output, forward_time
 
@@ -412,6 +508,12 @@ def main():
     print(f"  Number of shards: {args.num_shards}")
     print(f"  Platform: {args.platform}")
     print(f"  Mode: {args.mode}")
+    print(f"  Sharding strategy: {args.sharding_strategy}")
+    print(f"  JIT compilation: {'Disabled' if args.no_jit else 'Enabled'}")
+    if args.sharding_strategy == "default" and args.explicit_all_gather:
+        print(f"  Explicit all-gather: Enabled")
+    if args.mode == "timing":
+        print(f"  Timing runs: {args.timing_runs}")
     if args.mode in ["profile", "profile_both"]:
         print(f"  Trace directory: {args.trace_dir}")
     print()
@@ -447,7 +549,7 @@ def main():
     print("=" * 30)
     
     ff_block_unsharded, params_unsharded, forward_fn_unsharded = create_feedforward_block(
-        model_dim, hidden_dim, input_data, sharded=False
+        model_dim, hidden_dim, input_data, sharded=False, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
     )
     print()
     
@@ -463,7 +565,7 @@ def main():
         output_unsharded, forward_time_unsharded = run_forward_pass_with_profiling(forward_fn_unsharded, params_unsharded, input_data, "unsharded", sharded=False, mode="profile", num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
     else:  # timing mode
         print("TIMING RUN (no debug output):")
-        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=5)
+        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=args.timing_runs)
     print()
     
     # Test 2: Sharded version
@@ -473,7 +575,7 @@ def main():
     
     with sharding.set_mesh(mesh):
         ff_block_sharded, params_sharded, forward_fn_sharded = create_feedforward_block(
-            model_dim, hidden_dim, input_data, sharded=True, mesh=mesh
+            model_dim, hidden_dim, input_data, sharded=True, mesh=mesh, sharding_strategy=args.sharding_strategy, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
         )
         print()
         
@@ -489,7 +591,7 @@ def main():
             output_sharded, forward_time_sharded = run_forward_pass_with_profiling(forward_fn_sharded, params_sharded, input_data, "sharded", sharded=True, mode="profile", num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
         else:  # timing mode
             print("TIMING RUN (no debug output):")
-            output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=5)
+            output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=args.timing_runs)
         print()
     
     # Compare outputs
@@ -506,8 +608,11 @@ def main():
         print("PERFORMANCE COMPARISON")
         print("=" * 30)
         
-        print(f"Unsharded forward time: {forward_time_unsharded:.3f}s")
-        print(f"Sharded forward time: {forward_time_sharded:.3f}s")
+        forward_time_unsharded_ms = forward_time_unsharded * 1_000
+        forward_time_sharded_ms = forward_time_sharded * 1_000
+        
+        print(f"Unsharded forward time: {forward_time_unsharded_ms:.4f}ms")
+        print(f"Sharded forward time: {forward_time_sharded_ms:.4f}ms")
         speedup = forward_time_unsharded / forward_time_sharded if forward_time_sharded > 0 else float('inf')
         print(f"Speedup: {speedup:.2f}x")
         print()
@@ -519,8 +624,10 @@ def main():
     
     print(f"Outputs identical: {'YES' if identical else 'NO'}")
     if args.mode == "timing":
-        print(f"Unsharded time: {forward_time_unsharded:.3f}s")
-        print(f"Sharded time: {forward_time_sharded:.3f}s")
+        forward_time_unsharded_ms = forward_time_unsharded * 1_000
+        forward_time_sharded_ms = forward_time_sharded * 1_000
+        print(f"Unsharded time: {forward_time_unsharded_ms:.4f}ms")
+        print(f"Sharded time: {forward_time_sharded_ms:.4f}ms")
     print()
     
     print("FeedForward inference test completed!")

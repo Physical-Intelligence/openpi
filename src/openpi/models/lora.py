@@ -3,9 +3,12 @@ import re
 
 import flax.linen as nn
 import flax.struct as struct
+import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 import openpi.shared.array_typing as at
+from openpi.training import sharding as sharding_utils
 
 
 @struct.dataclass
@@ -92,6 +95,8 @@ class FeedForward(nn.Module):
     hidden_dim: int
     # If not None, apply LoRA to the weight.
     lora_config: LoRAConfig | None = None
+    # If True, explicitly apply all-gather via sharding constraint.
+    explicit_all_gather: bool = False
 
     def setup(self):
         self.w_gating = self.param(
@@ -123,6 +128,9 @@ class FeedForward(nn.Module):
     @nn.compact
     def __call__(self, x):
         dtype = x.dtype  # original dtype, could be half-precision
+        if self.explicit_all_gather:
+            # Explicitly replicate x across devices (all-gather) when mesh is active
+            x = sharding_utils.replicate_sharding_constraint(x)
         ff_gate = self._dot(
             x,
             self.w_gating[0],
