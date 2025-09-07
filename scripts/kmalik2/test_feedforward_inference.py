@@ -26,7 +26,17 @@ import time
 def setup_jax_environment(num_devices, platform="cuda"):
     if platform == "cuda":
         os.environ["JAX_PLATFORMS"] = "cuda"
-        # Do NOT set CPU-only XLA flags on CUDA
+        # Automatically set CUDA_VISIBLE_DEVICES based on num_devices
+        # Only override if not already set by user
+        if "CUDA_VISIBLE_DEVICES" not in os.environ:
+            cuda_devices = ",".join(str(i) for i in range(num_devices))
+            os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+            print(f"Auto-setting CUDA_VISIBLE_DEVICES={cuda_devices} for {num_devices} devices")
+        else:
+            existing_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            device_count = len([d for d in existing_devices.split(",") if d.strip()])
+            if device_count != num_devices:
+                print(f"WARNING: CUDA_VISIBLE_DEVICES={existing_devices} specifies {device_count} devices, but --num-shards={num_devices}")
         return
     else:  # cpu
         os.environ["JAX_PLATFORMS"] = "cpu"
@@ -83,6 +93,24 @@ def create_dummy_input(batch_size=1, seq_len=10, model_dim=512):
     return jnp.ones((batch_size, seq_len, model_dim), dtype=jnp.float32)
 
 
+def get_gpu_memory_mb():
+    """Get GPU memory usage in MB using JAX device memory stats"""
+    device = jax.devices()[0]
+    memory_stats = device.memory_stats()
+    return {
+        'used_mb': memory_stats['bytes_in_use'] / (1024**2),
+        'peak_mb': memory_stats.get('peak_bytes_in_use', memory_stats['bytes_in_use']) / (1024**2),
+        'limit_mb': memory_stats.get('bytes_limit', 0) / (1024**2)
+    }
+
+
+def log_memory_usage(stage_name):
+    """Log current memory usage at a specific stage"""
+    mem = get_gpu_memory_mb()
+    print(f"  [MEMORY] {stage_name}: {mem['used_mb']:.1f}MB used, {mem['peak_mb']:.1f}MB peak")
+    return mem
+
+
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec as P
 
@@ -94,8 +122,10 @@ def create_mesh(num_fsdp_devices=4):
     
     # Use only the first num_fsdp_devices devices
     selected_devices = available_devices[:num_fsdp_devices]
-    dev_mesh = mesh_utils.create_device_mesh((num_fsdp_devices,), devices=selected_devices)  # 1D (N,)
-    return Mesh(dev_mesh, ('fsdp',))
+    # Create 2D mesh: (batch_dim=1, fsdp_dim=num_fsdp_devices)
+    # This matches the structure expected by sharding.activation_sharding_constraint
+    dev_mesh = mesh_utils.create_device_mesh((1, num_fsdp_devices), devices=selected_devices)  # 2D (1, N)
+    return Mesh(dev_mesh, ('batch', 'fsdp'))
 
 
 def megatron_sharding(params_shape, mesh, log=False):
@@ -164,8 +194,8 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
         if sharding_strategy == "megatron":
             # In megatron, activations are not sharded (replicated)
             x_sharding = jax.sharding.NamedSharding(mesh, P())
-            x_out_sharding = jax.sharding.NamedSharding(mesh, P())
-            #x_out_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+            #x_out_sharding = jax.sharding.NamedSharding(mesh, P())
+            x_out_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
             def activation_sharding_constraint(tensor):
                 """Keep activations replicated in megatron strategy"""
                 return jax.lax.with_sharding_constraint(
@@ -173,15 +203,14 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                     jax.sharding.NamedSharding(mesh, P())
                 )
         else:  # default
-            # In default FSDP, shard activations along FSDP dimension
-            x_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
-            x_out_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
+            # In default FSDP, shard activations using the constraint from sharding.py
+            # The sharding.py constraint uses DATA_AXIS = (batch, fsdp), so we match that
+            data_axis_spec = P(sharding.DATA_AXIS)  # This is P(('batch', 'fsdp'))
+            x_sharding = jax.sharding.NamedSharding(mesh, data_axis_spec)
+            x_out_sharding = jax.sharding.NamedSharding(mesh, data_axis_spec)
             def activation_sharding_constraint(tensor):
-                """Shard activations along FSDP dimension only"""
-                return jax.lax.with_sharding_constraint(
-                    tensor, 
-                    jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
-                )
+                """Use activation sharding constraint from sharding.py"""
+                return sharding.activation_sharding_constraint(tensor)
         
         # Create forward function based on use_jit flag
         if use_jit:
@@ -500,6 +529,9 @@ def main():
     model_dim = args.model_dim
     hidden_dim = args.hidden_dim
     
+    # Assert that batch size should be divisible by num_shards
+    assert batch_size % args.num_shards == 0, f"Batch size ({batch_size}) must be divisible by num_shards ({args.num_shards})"
+    
     print(f"Configuration:")
     print(f"  Batch size: {batch_size}")
     print(f"  Sequence length: {seq_len}")
@@ -520,6 +552,11 @@ def main():
     
     # Set up devices for sharding
     device_count = setup_devices_for_sharding()
+    print()
+    
+    # Memory tracking
+    memory_snapshots = {}
+    memory_snapshots['baseline'] = log_memory_usage("Baseline (before model creation)")
     print()
     
     # Create dummy input
@@ -543,30 +580,29 @@ def main():
     print(f"Mesh shape: {mesh.shape}")
     print()
     
-    # Test 1: Unsharded version
-    print("=" * 30)
-    print("TEST 1: UNSHARDED VERSION")
-    print("=" * 30)
-    
-    ff_block_unsharded, params_unsharded, forward_fn_unsharded = create_feedforward_block(
-        model_dim, hidden_dim, input_data, sharded=False, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
-    )
-    print()
-    
-    # Run unsharded based on mode
+    # Test 1: Unsharded version (only in debug mode)
     if args.mode == "debug":
+        print("=" * 30)
+        print("TEST 1: UNSHARDED VERSION")
+        print("=" * 30)
+        
+        ff_block_unsharded, params_unsharded, forward_fn_unsharded = create_feedforward_block(
+            model_dim, hidden_dim, input_data, sharded=False, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
+        )
+        memory_snapshots['unsharded_model'] = log_memory_usage("After unsharded model creation")
+        print()
+        
         print("DEBUG RUN (showing shapes):")
         output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=True, with_printing=True, num_warmup=0, num_timing_runs=1)
-    elif args.mode == "profile":
-        print("PROFILE RUN (analyzing communication):")
-        output_unsharded, forward_time_unsharded = run_forward_pass_with_profiling(forward_fn_unsharded, params_unsharded, input_data, "unsharded", sharded=False, mode=args.mode, num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
-    elif args.mode == "profile_both":
-        print("PROFILE RUN - UNSHARDED (analyzing communication):")
-        output_unsharded, forward_time_unsharded = run_forward_pass_with_profiling(forward_fn_unsharded, params_unsharded, input_data, "unsharded", sharded=False, mode="profile", num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
-    else:  # timing mode
-        print("TIMING RUN (no debug output):")
-        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=args.timing_runs)
-    print()
+        
+        memory_snapshots['unsharded_forward'] = log_memory_usage("After unsharded forward pass")
+        print()
+    else:
+        # For non-debug modes, create dummy values to avoid errors later
+        memory_snapshots['unsharded_model'] = {'used_mb': 0, 'peak_mb': 0}
+        memory_snapshots['unsharded_forward'] = {'used_mb': 0, 'peak_mb': 0}
+        output_unsharded = None
+        forward_time_unsharded = 0.0
     
     # Test 2: Sharded version
     print("=" * 30)
@@ -577,6 +613,7 @@ def main():
         ff_block_sharded, params_sharded, forward_fn_sharded = create_feedforward_block(
             model_dim, hidden_dim, input_data, sharded=True, mesh=mesh, sharding_strategy=args.sharding_strategy, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
         )
+        memory_snapshots['sharded_model'] = log_memory_usage("After sharded model creation")
         print()
         
         # Run sharded based on mode
@@ -592,15 +629,20 @@ def main():
         else:  # timing mode
             print("TIMING RUN (no debug output):")
             output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=args.timing_runs)
+        
+        memory_snapshots['sharded_forward'] = log_memory_usage("After sharded forward pass")
         print()
     
-    # Compare outputs
-    print("=" * 30)
-    print("OUTPUT COMPARISON")
-    print("=" * 30)
-    
-    identical = compare_outputs(output_unsharded, output_sharded, "Unsharded", "Sharded")
-    print()
+    # Compare outputs (only in debug mode)
+    if args.mode == "debug":
+        print("=" * 30)
+        print("OUTPUT COMPARISON")
+        print("=" * 30)
+        
+        identical = compare_outputs(output_unsharded, output_sharded, "Unsharded", "Sharded")
+        print()
+    else:
+        identical = True  # No comparison needed for non-debug modes
     
     # Performance comparison (only in timing mode)
     if args.mode == "timing":
@@ -617,16 +659,45 @@ def main():
         print(f"Speedup: {speedup:.2f}x")
         print()
     
+    # Memory comparison
+    if args.mode == "debug":
+        print("=" * 30)
+        print("MEMORY USAGE COMPARISON")
+        print("=" * 30)
+        
+        # Calculate memory differences
+        unsharded_model_mem = memory_snapshots['unsharded_model']['used_mb'] - memory_snapshots['baseline']['used_mb']
+        sharded_model_mem = memory_snapshots['sharded_model']['used_mb'] - memory_snapshots['baseline']['used_mb']
+        unsharded_peak_mem = memory_snapshots['unsharded_forward']['peak_mb']
+        sharded_peak_mem = memory_snapshots['sharded_forward']['peak_mb']
+        
+        print(f"{'Stage':<20} {'Unsharded':<12} {'Sharded':<12} {'Difference':<15}")
+        print("-" * 60)
+        print(f"{'Model params:':<20} {unsharded_model_mem:<12.1f} {sharded_model_mem:<12.1f} {sharded_model_mem - unsharded_model_mem:<+15.1f}")
+        print(f"{'Peak forward:':<20} {unsharded_peak_mem:<12.1f} {sharded_peak_mem:<12.1f} {sharded_peak_mem - unsharded_peak_mem:<+15.1f}")
+        print()
+    else:
+        # For non-debug modes, just show sharded memory usage
+        print("=" * 30)
+        print("SHARDED MEMORY USAGE")
+        print("=" * 30)
+        
+        sharded_model_mem = memory_snapshots['sharded_model']['used_mb'] - memory_snapshots['baseline']['used_mb']
+        sharded_peak_mem = memory_snapshots['sharded_forward']['peak_mb']
+        
+        print(f"Model params memory: {sharded_model_mem:.1f}MB")
+        print(f"Peak forward memory: {sharded_peak_mem:.1f}MB")
+        print()
+    
     # Final summary
     print("=" * 30)
     print("FINAL SUMMARY")
     print("=" * 30)
     
-    print(f"Outputs identical: {'YES' if identical else 'NO'}")
+    if args.mode == "debug":
+        print(f"Outputs identical: {'YES' if identical else 'NO'}")
     if args.mode == "timing":
-        forward_time_unsharded_ms = forward_time_unsharded * 1_000
         forward_time_sharded_ms = forward_time_sharded * 1_000
-        print(f"Unsharded time: {forward_time_unsharded_ms:.4f}ms")
         print(f"Sharded time: {forward_time_sharded_ms:.4f}ms")
     print()
     

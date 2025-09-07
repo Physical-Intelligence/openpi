@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Profiling script for FeedForward inference with different configurations.
-Usage: python profile_all.py [--dryrun] [--include-no-jit]
+Usage: python profile_all.py [--dryrun] [--include-no-jit] [--batch-size BATCH_SIZE] [--num-shards NUM_SHARDS]
+
+CUDA devices are automatically configured based on --num-shards parameter.
 """
 
 import argparse
@@ -15,19 +17,27 @@ def main():
     parser = argparse.ArgumentParser(description="Profile FeedForward inference with different configurations")
     parser.add_argument("--dryrun", action="store_true", help="Print commands without executing them")
     parser.add_argument("--include-no-jit", action="store_true", help="Also run non-JIT versions (default: JIT only)")
+    parser.add_argument("--batch-size", type=int, help="Batch size (default: same as num_shards)")
+    parser.add_argument("--num-shards", type=int, default=8, help="Number of GPU shards to use (default: 2)")
     args = parser.parse_args()
+    
+    # Set batch size to same as num_shards if not provided
+    num_shards = args.num_shards
+    batch_size = args.batch_size if args.batch_size is not None else num_shards
     
     print("=== FeedForward Profiling Script ===")
     print(f"Dry run mode: {args.dryrun}")
     print(f"Include no-JIT versions: {args.include_no_jit}")
+    print(f"Number of shards: {num_shards}")
+    print(f"Batch size: {batch_size}")
     print()
     
     # Base command configuration
     base_cmd = [
-        "CUDA_VISIBLE_DEVICES=0,1",
         "uv", "run", "scripts/kmalik2/test_feedforward_inference.py",
         "--mode", "profile",
-        "--num-shards", "2",
+        "--num-shards", str(num_shards),
+        "--batch-size", str(batch_size),
         "--seq-len", "8192"
     ]
     
