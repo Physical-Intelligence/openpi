@@ -11,22 +11,64 @@ To test with 2 devices:
 Modes:
   --mode debug: Show detailed tensor shapes and sharding information (default)
   --mode timing: Show only performance timing information
+  --mode profile: Generate JAX profiling traces for communication analysis
+  --mode profile_both: Generate both sharded and unsharded profiles for comparison
 """
 
 import argparse
 import os
 import time
+
+# Set up JAX environment variables BEFORE importing JAX
+# This ensures XLA flags and platform settings are properly applied
+def setup_jax_environment(num_devices, enable_hlo_profile=False):
+    """Set up JAX environment variables before importing JAX."""
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    
+    # Base XLA flags
+    xla_flags = f"--xla_cpu_enable_fast_math=false --xla_force_host_platform_device_count={num_devices}"
+    
+    # Add HLO profiling flags if requested
+    if enable_hlo_profile:
+        xla_flags += " --xla_hlo_profile"
+        print(f"  HLO profiling enabled - detailed per-operation timing will be available")
+    
+    os.environ["XLA_FLAGS"] = xla_flags
+
+# Parse command line arguments to get device count early
+parser = argparse.ArgumentParser(description="Test FeedForward block inference with sharding")
+parser.add_argument("--num-shards", type=int, default=8, 
+                   help="Number of shards/devices to use (default: 8)")
+parser.add_argument("--batch-size", type=int, default=1,
+                   help="Batch size (default: 1)")
+parser.add_argument("--seq-len", type=int, default=128,
+                   help="Sequence length (default: 128)")
+parser.add_argument("--model-dim", type=int, default=2048,
+                   help="Model dimension (default: 2048)")
+parser.add_argument("--hidden-dim", type=int, default=512,
+                   help="Hidden dimension (default: 512)")
+parser.add_argument("--mode", type=str, choices=["debug", "timing", "profile", "profile_both"], default="debug",
+                   help="Run mode: 'debug' for detailed shape info, 'timing' for performance timing only, 'profile' for communication analysis, 'profile_both' for both sharded and unsharded profiles (default: debug)")
+parser.add_argument("--trace-dir", type=str, default="/tmp/jax_traces",
+                   help="Directory to save profiling traces (default: /tmp/jax_traces)")
+parser.add_argument("--disable-hlo-profile", action="store_true",
+                   help="Disable detailed HLO profiling with per-operation timing (default: enabled)")
+
+# Parse args early to get device count
+args, _ = parser.parse_known_args()
+
+# Set up JAX environment BEFORE importing JAX
+setup_jax_environment(args.num_shards, enable_hlo_profile=not args.disable_hlo_profile)
+
+# Now import JAX and other dependencies
 import jax
 import jax.numpy as jnp
+from jax import profiler
+from jax.experimental import pjit
 from openpi.models import lora
 from openpi.training import sharding
 
 
-def setup_jax_devices(num_devices):
-    """Set up JAX to use the specified number of devices."""
-    os.environ["JAX_PLATFORMS"] = "cpu"
-    os.environ["XLA_FLAGS"] = f"--xla_cpu_enable_fast_math=false --xla_force_host_platform_device_count={num_devices}"
-    jax.config.update("jax_platforms", "cpu")
 
 
 def create_dummy_input(batch_size=1, seq_len=10, model_dim=512):
@@ -88,8 +130,9 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, None, "fsdp"))
             )
         
-        # Direct forward pass with sharding - no JIT, just print shapes
-        def forward_fn(params, x, print_shapes=False):
+        # PJIT-compiled forward pass with sharding
+        @pjit.pjit
+        def forward_fn_jit(params, x):
             # Apply activation sharding constraint (both batch and FSDP dimensions)
             x = activation_sharding_constraint(x)
             
@@ -97,8 +140,22 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
             fc1 = params['params']['gating_einsum']
             fc2 = params['params']['linear']
             
+            # Forward pass
+            ff_gate = jnp.dot(x, fc1[0])
+            gate_value = jax.nn.gelu(ff_gate)
+            ff1 = jnp.dot(x, fc1[1])
+            activations = gate_value * ff1
+            outputs = jnp.dot(activations, fc2)
+            output = activation_sharding_constraint(outputs)
+            
+            return output
+        
+        # Wrapper function for debugging with shapes (not JIT-compiled)
+        def forward_fn(params, x, print_shapes=False):
             if print_shapes:
                 # Show only local shard shapes for weights
+                fc1 = params['params']['gating_einsum']
+                fc2 = params['params']['linear']
                 num_shards = fc1.sharding.mesh.shape['fsdp']
                 print(f"    [SHARDED] Weight shard shapes (across {num_shards} shards):")
                 fc1_shard_shape = fc1.sharding.shard_shape(fc1.shape)
@@ -108,53 +165,48 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 
                 # Forward pass - show only local shard shapes for activations
                 print(f"    [SHARDED] Activation shard shapes:")
-            
-            ff_gate = jnp.dot(x, fc1[0])
-            if print_shapes:
+                
+                # Apply activation sharding constraint
+                x = activation_sharding_constraint(x)
+                
+                ff_gate = jnp.dot(x, fc1[0])
                 ff_gate_shard = tuple(ff_gate.sharding.shard_shape(ff_gate.shape))
                 print(f"    FF gate local shard: {ff_gate_shard}")
-            
-            gate_value = jax.nn.gelu(ff_gate)
-            if print_shapes:
+                
+                gate_value = jax.nn.gelu(ff_gate)
                 gate_value_shard = tuple(gate_value.sharding.shard_shape(gate_value.shape))
                 print(f"    Gate value local shard: {gate_value_shard}")
-            
-            ff1 = jnp.dot(x, fc1[1])
-            if print_shapes:
+                
+                ff1 = jnp.dot(x, fc1[1])
                 ff1_shard = tuple(ff1.sharding.shard_shape(ff1.shape))
                 print(f"    FF1 local shard: {ff1_shard}")
-            
-            activations = gate_value * ff1
-            if print_shapes:
+                
+                activations = gate_value * ff1
                 activations_shard = tuple(activations.sharding.shard_shape(activations.shape))
                 print(f"    Activations local shard: {activations_shard}")
-            
-            outputs = jnp.dot(activations, fc2)
-            if print_shapes:
+                
+                outputs = jnp.dot(activations, fc2)
                 outputs_shard = tuple(outputs.sharding.shard_shape(outputs.shape))
                 print(f"    Output local shard: {outputs_shard}")
-            
-            output = activation_sharding_constraint(outputs)
-            if print_shapes:
+                
+                output = activation_sharding_constraint(outputs)
                 output_shard = tuple(output.sharding.shard_shape(output.shape))
                 print(f"    Final output local shard: {output_shard}")
-            
-            return output
+                
+                return output
+            else:
+                # Use PJIT-compiled version for performance
+                return forward_fn_jit(params, x)
         
         # Use the sharded parameters
         params = sharded_params
     else:
-        # Direct forward pass without sharding - no JIT, just print shapes
-        def forward_fn(params, x, print_shapes=False):
+        # PJIT-compiled forward pass without sharding (for consistency)
+        @pjit.pjit
+        def forward_fn_jit(params, x):
             # Get weights
             fc1 = params['params']['gating_einsum']
             fc2 = params['params']['linear']
-            
-            if print_shapes:
-                print(f"    [UNSHARDED] Input shape: {x.shape}, sharding: {x.sharding if hasattr(x, 'sharding') else 'None'}")
-                print(f"    [UNSHARDED] FC1 weights: {fc1.shape}, sharding: {fc1.sharding if hasattr(fc1, 'sharding') else 'None'}")
-                print(f"    [UNSHARDED] FC2 weights: {fc2.shape}, sharding: {fc2.sharding if hasattr(fc2, 'sharding') else 'None'}")
-                print(f"    [UNSHARDED] Forward pass:")
             
             # Forward pass
             ff_gate = jnp.dot(x, fc1[0])
@@ -163,14 +215,73 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
             activations = gate_value * ff1
             outputs = jnp.dot(activations, fc2)
             
-            if print_shapes:
-                print(f"    [UNSHARDED] All activations on single device: {outputs.shape}")
-            
             return outputs
+        
+        # Wrapper function for debugging with shapes (not JIT-compiled)
+        def forward_fn(params, x, print_shapes=False):
+            if print_shapes:
+                # Get weights
+                fc1 = params['params']['gating_einsum']
+                fc2 = params['params']['linear']
+                
+                print(f"    [UNSHARDED] Input shape: {x.shape}, sharding: {x.sharding if hasattr(x, 'sharding') else 'None'}")
+                print(f"    [UNSHARDED] FC1 weights: {fc1.shape}, sharding: {fc1.sharding if hasattr(fc1, 'sharding') else 'None'}")
+                print(f"    [UNSHARDED] FC2 weights: {fc2.shape}, sharding: {fc2.sharding if hasattr(fc2, 'sharding') else 'None'}")
+                print(f"    [UNSHARDED] Forward pass:")
+                
+                # Forward pass
+                ff_gate = jnp.dot(x, fc1[0])
+                gate_value = jax.nn.gelu(ff_gate)
+                ff1 = jnp.dot(x, fc1[1])
+                activations = gate_value * ff1
+                outputs = jnp.dot(activations, fc2)
+                
+                print(f"    [UNSHARDED] All activations on single device: {outputs.shape}")
+                
+                return outputs
+            else:
+                # Use PJIT-compiled version for performance
+                return forward_fn_jit(params, x)
     
     # Note: Setup time calculation would need to be added at the beginning of the function
     
     return ff_block, params, forward_fn
+
+
+def run_forward_pass_with_profiling(forward_fn, params, input_data, name="forward_pass", sharded=False, mode="profile", num_warmup=3, num_profile_runs=3, trace_dir_base="/tmp/jax_traces"):
+    """Run forward pass with JAX profiling to analyze communication patterns."""
+    print(f"Running {name} with profiling...")
+    
+    # Create a fixed trace directory name (no timestamp)
+    trace_name = f"{'sharded' if sharded else 'unsharded'}_{mode}"
+    trace_dir = f"{trace_dir_base}/{trace_name}"
+    
+    # Enhanced warmup to ensure proper PJIT compilation and device synchronization
+    for i in range(num_warmup):
+        output = forward_fn(params, input_data, print_shapes=False)
+        output.block_until_ready()
+    
+    # Additional synchronization step to ensure all devices are ready
+    jax.block_until_ready(output)
+    
+    print(f"  Starting profiling...")
+    # Start profiling after comprehensive warmup
+    profiler.start_trace(trace_dir)
+    
+    try:
+        # Run multiple forward passes with profiling for better trace data
+        for i in range(num_profile_runs):
+            output = forward_fn(params, input_data, print_shapes=False)
+            output.block_until_ready()
+        
+        print(f"  {name} completed successfully")
+        print(f"  Profiling trace saved to {trace_dir}")
+        print(f"  To analyze: tensorboard --logdir={trace_dir}")
+        return output, 0.0  # Return dummy time since we're focusing on profiling
+        
+    finally:
+        # Stop profiling
+        profiler.stop_trace()
 
 
 def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_printing=True, num_warmup=3, num_timing_runs=5):
@@ -181,14 +292,10 @@ def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_pri
         if show_shapes:
             print("  Showing tensor shapes during forward pass:")
         
-        print(f"  Warmup runs: {num_warmup}")
-        print(f"  Timing runs: {num_timing_runs}")
     else:
         print("Running forward pass (no printing)...")
     
-    # Warmup runs to eliminate JAX compilation overhead
-    if with_printing:
-        print("  Warming up...")
+    # Warmup runs to eliminate JAX compilation overhead and trigger PJIT compilation
     for i in range(num_warmup):
         # Only show debug output on the first warmup run
         debug_output = show_shapes and i == 0
@@ -196,8 +303,6 @@ def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_pri
         output.block_until_ready()
     
     # Timing runs
-    if with_printing:
-        print("  Timing runs...")
     times = []
     for i in range(num_timing_runs):
         # Only show debug output on the first timing run
@@ -266,28 +371,8 @@ def setup_devices_for_sharding():
 
 def main():
     """Main test function."""
-    parser = argparse.ArgumentParser(description="Test FeedForward block inference with sharding")
-    parser.add_argument("--num-shards", type=int, default=8, 
-                       help="Number of shards/devices to use (default: 8)")
-    parser.add_argument("--batch-size", type=int, default=1,
-                       help="Batch size (default: 1)")
-    parser.add_argument("--seq-len", type=int, default=128,
-                       help="Sequence length (default: 128)")
-    parser.add_argument("--model-dim", type=int, default=512,
-                       help="Model dimension (default: 512)")
-    parser.add_argument("--hidden-dim", type=int, default=2048,
-                       help="Hidden dimension (default: 2048)")
-    parser.add_argument("--mode", type=str, choices=["debug", "timing"], default="debug",
-                       help="Run mode: 'debug' for detailed shape info, 'timing' for performance timing only (default: debug)")
-    parser.add_argument("--num-warmup", type=int, default=3,
-                       help="Number of warmup runs to eliminate JAX compilation overhead (default: 3)")
-    parser.add_argument("--num-timing-runs", type=int, default=5,
-                       help="Number of timing runs for performance measurement (default: 5)")
-    
-    args = parser.parse_args()
-    
-    # Set up JAX with specified number of devices
-    setup_jax_devices(args.num_shards)
+    # Arguments are already parsed at module level
+    # JAX environment is already set up before import
     
     print("FeedForward Block Inference Test (Unsharded vs Sharded)")
     print("=" * 60)
@@ -305,9 +390,9 @@ def main():
     print(f"  Hidden dim: {hidden_dim}")
     print(f"  Number of shards: {args.num_shards}")
     print(f"  Mode: {args.mode}")
-    if args.mode == "timing":
-        print(f"  Warmup runs: {args.num_warmup}")
-        print(f"  Timing runs: {args.num_timing_runs}")
+    print(f"  HLO profiling: {'Disabled' if args.disable_hlo_profile else 'Enabled'}")
+    if args.mode in ["profile", "profile_both"]:
+        print(f"  Trace directory: {args.trace_dir}")
     print()
     
     # Set up devices for sharding
@@ -338,9 +423,15 @@ def main():
     if args.mode == "debug":
         print("DEBUG RUN (showing shapes):")
         output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=True, with_printing=True, num_warmup=0, num_timing_runs=1)
+    elif args.mode == "profile":
+        print("PROFILE RUN (analyzing communication):")
+        output_unsharded, forward_time_unsharded = run_forward_pass_with_profiling(forward_fn_unsharded, params_unsharded, input_data, "unsharded", sharded=False, mode=args.mode, num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
+    elif args.mode == "profile_both":
+        print("PROFILE RUN - UNSHARDED (analyzing communication):")
+        output_unsharded, forward_time_unsharded = run_forward_pass_with_profiling(forward_fn_unsharded, params_unsharded, input_data, "unsharded", sharded=False, mode="profile", num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
     else:  # timing mode
         print("TIMING RUN (no debug output):")
-        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False, num_warmup=args.num_warmup, num_timing_runs=args.num_timing_runs)
+        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=5)
     print()
     
     # Test 2: Sharded version
@@ -358,9 +449,15 @@ def main():
         if args.mode == "debug":
             print("DEBUG RUN (showing shard info):")
             output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=True, with_printing=True, num_warmup=0, num_timing_runs=1)
+        elif args.mode == "profile":
+            print("PROFILE RUN (analyzing communication):")
+            output_sharded, forward_time_sharded = run_forward_pass_with_profiling(forward_fn_sharded, params_sharded, input_data, "sharded", sharded=True, mode=args.mode, num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
+        elif args.mode == "profile_both":
+            print("PROFILE RUN - SHARDED (analyzing communication):")
+            output_sharded, forward_time_sharded = run_forward_pass_with_profiling(forward_fn_sharded, params_sharded, input_data, "sharded", sharded=True, mode="profile", num_warmup=3, num_profile_runs=3, trace_dir_base=args.trace_dir)
         else:  # timing mode
             print("TIMING RUN (no debug output):")
-            output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=args.num_warmup, num_timing_runs=args.num_timing_runs)
+            output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=5)
         print()
     
     # Compare outputs
