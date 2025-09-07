@@ -752,7 +752,6 @@ _CONFIGS = [
             "gs://openpi-assets-preview/checkpoints/pi05_may21_280k_v1/params"
         ),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        pytorch_training_precision="float32",
         num_train_steps=30_000,
     ),
     #
