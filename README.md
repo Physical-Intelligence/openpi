@@ -90,11 +90,11 @@ By default, checkpoints are automatically downloaded from `gs://openpi-assets` a
 
 Our pre-trained model checkpoints can be run with a few lines of code (here our $\pi_0$-FAST-DROID model):
 ```python
-from openpi.training import config
+from openpi.training import config as _config
 from openpi.policies import policy_config
 from openpi.shared import download
 
-config = config.get_config("pi0_fast_droid")
+config = _config.get_config("pi0_fast_droid")
 checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_droid")
 
 # Create a trained policy.
@@ -189,7 +189,13 @@ We provide more examples for how to fine-tune and run inference with our models 
 
 ## PyTorch Support
 
-openpi now provides PyTorch implementations of π₀ and π₀.₅ models alongside the original JAX versions (π₀-FAST is not currently supported in PyTorch). The PyTorch models offer greater deployment flexibility and seamless integration with PyTorch-based ML stacks, while maintaining feature parity with their JAX counterparts.
+openpi now provides PyTorch implementations of π₀ and π₀.₅ models alongside the original JAX versions! The PyTorch implementation has been validated on the LIBERO benchmark (both inference and finetuning). A few features are currently not supported (this may change in the future):
+
+- The π₀-FAST model
+- Mixed precision training
+- FSDP (fully-sharded data parallelism) training
+- LoRA (low-rank adaptation) training
+- EMA (exponential moving average) weights during training
 
 ### Setup
 1. Upgrade the transformers library to 4.53.2 and torch to 2.7.1
@@ -208,8 +214,9 @@ openpi now provides PyTorch implementations of π₀ and π₀.₅ models alongs
 To convert a JAX model checkpoint to PyTorch format:
 
 ```bash
-python examples/convert_jax_model_to_pytorch.py \
-    --checkpoint_dir /path/to/jax/checkpoint/params \
+uv run examples/convert_jax_model_to_pytorch.py \
+    --checkpoint_dir /path/to/jax/checkpoint \
+    --config_name <config name> \
     --output_path /path/to/converted/pytorch/checkpoint
 ```
 
@@ -218,11 +225,11 @@ python examples/convert_jax_model_to_pytorch.py \
 The PyTorch implementation uses the same API as the JAX version - you only need to change the checkpoint path to point to the converted PyTorch model:
 
 ```python
-from openpi.training import config
+from openpi.training import config as _config
 from openpi.policies import policy_config
 from openpi.shared import download
 
-config = config.get_config("pi05_droid")
+config = _config.get_config("pi05_droid")
 checkpoint_dir = "/path/to/converted/pytorch/checkpoint"
 
 # Create a trained policy (automatically detects PyTorch format)
@@ -248,7 +255,8 @@ To finetune a model in PyTorch:
 
 1. Convert the JAX base model to PyTorch format:
    ```bash
-   python examples/convert_jax_model_to_pytorch.py \
+   uv run examples/convert_jax_model_to_pytorch.py \
+       --config_name <config name> \
        --checkpoint_dir /path/to/jax/base/model \
        --output_path /path/to/pytorch/base/model
    ```
@@ -266,14 +274,14 @@ uv run scripts/train_pytorch.py debug --exp_name pytorch_test
 uv run scripts/train_pytorch.py debug --exp_name pytorch_test --resume  # Resume from latest checkpoint
 
 # Multi-GPU training (single node):
-torchrun --standalone --nnodes=1 --nproc_per_node=<num_gpus> scripts/train_pytorch.py <config_name> --exp_name <run_name>
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=<num_gpus> scripts/train_pytorch.py <config_name> --exp_name <run_name>
 
 # Example:
-torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test
-torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test --resume
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=2 scripts/train_pytorch.py pi0_aloha_sim --exp_name pytorch_ddp_test --resume
 
 # Multi-Node Training:
-torchrun \
+uv run torchrun \
     --nnodes=<num_nodes> \
     --nproc_per_node=<gpus_per_node> \
     --node_rank=<rank_of_node> \
@@ -287,27 +295,14 @@ torchrun \
 JAX and PyTorch implementations handle precision as follows:
 
 **JAX:**
-1. Inference: weights and activations are bfloat16 except for selected layers in float32
-2. Training: weights and gradients are float32, activations are bfloat16
+1. Inference: most weights and computations in bfloat16, with a few computations in float32 for stability
+2. Training: defaults to mixed precision: weights and gradients in float32, (most) activations and computations in bfloat16. You can change to full float32 training by setting `dtype` to float32 in the config.
 
 **PyTorch:**
-1. Inference: matches JAX - weights and activations are bfloat16 except for selected layers in float32
-2. Training: supports either all float32 (default) or the same mixed precision as inference. You can change it by setting `pytorch_training_precision` in the config. 
+1. Inference: matches JAX -- most weights and computations in bfloat16, with a few weights converted to float32 for stability
+2. Training: supports either full bfloat16 (default) or full float32. You can change it by setting `pytorch_training_precision` in the config. bfloat16 uses less memory but exhibits higher losses compared to float32. Mixed precision is not yet supported.
 
-### Validation Results
-
-We have validated the PyTorch implementation against JAX:
-
-1. Converting a JAX-finetuned pi05_libero model (bfloat16 precision) to PyTorch and evaluate:
-   - JAX checkpoint: 92.0% on Libero-10
-   - Converted PyTorch checkpoint: 92.2% on Libero-10
-
-2. Finetuning pi05_libero from pi05_base model in PyTorch:
-   - Using float32: (convert JAX ckpt to pytorch in float32) Loss curves match JAX throughout training
-   - Using bfloat16: (convert JAX ckpt to pytorch in bfloat16) Loss curves match after 10k steps (in 30k total steps)
-   - Final performance: 91.4% on Libero-10
-
-3. We comapred inference speed between JAX and PyTorch and they are comparable.
+With torch.compile, inference speed is comparable between JAX and PyTorch.
 
 ## Troubleshooting
 
@@ -316,7 +311,7 @@ We will collect common issues and their solutions here. If you encounter an issu
 | Issue                                     | Resolution                                                                                                                                                                                   |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `uv sync` fails with dependency conflicts | Try removing the virtual environment directory (`rm -rf .venv`) and running `uv sync` again. If issues persist, check that you have the latest version of `uv` installed (`uv self update`). |
-| Training runs out of GPU memory           | Make sure you set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` before running training to allow JAX to use more GPU memory. You can also use `--fsdp-devices <n>` where `<n>` is your number of GPUs, to enable [fully-sharded data parallelism](https://engineering.fb.com/2021/07/15/open-source/fsdp/), which reduces memory usage in exchange for slower training (the amount of slowdown depends on your particular setup).        |
+| Training runs out of GPU memory           | Make sure you set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` (or higher) before running training to allow JAX to use more GPU memory. You can also use `--fsdp-devices <n>` where `<n>` is your number of GPUs, to enable [fully-sharded data parallelism](https://engineering.fb.com/2021/07/15/open-source/fsdp/), which reduces memory usage in exchange for slower training (the amount of slowdown depends on your particular setup). If you are still running out of memory, you may way to consider disabling EMA.        |
 | Policy server connection errors           | Check that the server is running and listening on the expected port. Verify network connectivity and firewall settings between client and server.                                            |
 | Missing norm stats error when training    | Run `scripts/compute_norm_stats.py` with your config name before starting training.                                                                                                          |
 | Dataset download fails                    | Check your internet connection. For HuggingFace datasets, ensure you're logged in (`huggingface-cli login`).                                                                                 |
