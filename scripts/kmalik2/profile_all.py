@@ -38,20 +38,20 @@ def main():
         "--mode", "profile",
         "--num-shards", str(num_shards),
         "--batch-size", str(batch_size),
-        "--seq-len", "8192"
+        "--seq-len", "2048"
     ]
     
     # Configuration combinations - only sharded versions
     configs = [
         {
             "name": "hidden_larger",
-            "model_dim": 4096,
+            "model_dim": 2048,
             "hidden_dim": 8192
         },
         {
             "name": "hidden_smaller", 
             "model_dim": 8192,
-            "hidden_dim": 4096
+            "hidden_dim": 2048
         }
     ]
     
@@ -112,3 +112,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+0
