@@ -7,6 +7,10 @@ To test with 2 devices:
   CUDA_VISIBLE_DEVICES=0,1 uv run scripts/kmalik2/test_feedforward_inference.py
   # or for CPU with 2 devices:
   JAX_PLATFORMS=cpu uv run scripts/kmalik2/test_feedforward_inference.py
+
+Modes:
+  --mode debug: Show detailed tensor shapes and sharding information (default)
+  --mode timing: Show only performance timing information
 """
 
 import argparse
@@ -164,29 +168,58 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
             
             return outputs
     
-    print(f"  Setup time: {time.time() - time.time():.3f}s")
+    # Note: Setup time calculation would need to be added at the beginning of the function
     
     return ff_block, params, forward_fn
 
 
-def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_printing=True):
-    """Run forward pass and measure time"""
+def run_forward_pass(forward_fn, params, input_data, show_shapes=False, with_printing=True, num_warmup=3, num_timing_runs=5):
+    """Run forward pass and measure time with proper warmup and multiple runs"""
     if with_printing:
         print("Running forward pass...")
         
         if show_shapes:
             print("  Showing tensor shapes during forward pass:")
         
-        # Timed run
-        print("  Timed run...")
+        print(f"  Warmup runs: {num_warmup}")
+        print(f"  Timing runs: {num_timing_runs}")
     else:
         print("Running forward pass (no printing)...")
     
-    start = time.time()
-    output = forward_fn(params, input_data, print_shapes=show_shapes)
-    output.block_until_ready()
-    forward_time = time.time() - start
-    print(f"  Forward pass time: {forward_time:.3f}s")
+    # Warmup runs to eliminate JAX compilation overhead
+    if with_printing:
+        print("  Warming up...")
+    for i in range(num_warmup):
+        # Only show debug output on the first warmup run
+        debug_output = show_shapes and i == 0
+        output = forward_fn(params, input_data, print_shapes=debug_output)
+        output.block_until_ready()
+    
+    # Timing runs
+    if with_printing:
+        print("  Timing runs...")
+    times = []
+    for i in range(num_timing_runs):
+        # Only show debug output on the first timing run
+        debug_output = show_shapes and i == 0
+        start = time.time()
+        output = forward_fn(params, input_data, print_shapes=debug_output)
+        output.block_until_ready()
+        end = time.time()
+        times.append(end - start)
+    
+    # Calculate statistics
+    forward_time = sum(times) / len(times)  # Average time
+    min_time = min(times)
+    max_time = max(times)
+    
+    if with_printing:
+        print(f"  Forward pass time (avg): {forward_time:.3f}s")
+        print(f"  Min time: {min_time:.3f}s")
+        print(f"  Max time: {max_time:.3f}s")
+        print(f"  Times: {[f'{t:.3f}' for t in times]}")
+    else:
+        print(f"  Forward pass time: {forward_time:.3f}s")
     
     return output, forward_time
 
@@ -235,7 +268,7 @@ def main():
     """Main test function."""
     parser = argparse.ArgumentParser(description="Test FeedForward block inference with sharding")
     parser.add_argument("--num-shards", type=int, default=8, 
-                       help="Number of shards/devices to use (default: 2)")
+                       help="Number of shards/devices to use (default: 8)")
     parser.add_argument("--batch-size", type=int, default=1,
                        help="Batch size (default: 1)")
     parser.add_argument("--seq-len", type=int, default=128,
@@ -244,6 +277,12 @@ def main():
                        help="Model dimension (default: 512)")
     parser.add_argument("--hidden-dim", type=int, default=2048,
                        help="Hidden dimension (default: 2048)")
+    parser.add_argument("--mode", type=str, choices=["debug", "timing"], default="debug",
+                       help="Run mode: 'debug' for detailed shape info, 'timing' for performance timing only (default: debug)")
+    parser.add_argument("--num-warmup", type=int, default=3,
+                       help="Number of warmup runs to eliminate JAX compilation overhead (default: 3)")
+    parser.add_argument("--num-timing-runs", type=int, default=5,
+                       help="Number of timing runs for performance measurement (default: 5)")
     
     args = parser.parse_args()
     
@@ -265,6 +304,10 @@ def main():
     print(f"  Model dim: {model_dim}")
     print(f"  Hidden dim: {hidden_dim}")
     print(f"  Number of shards: {args.num_shards}")
+    print(f"  Mode: {args.mode}")
+    if args.mode == "timing":
+        print(f"  Warmup runs: {args.num_warmup}")
+        print(f"  Timing runs: {args.num_timing_runs}")
     print()
     
     # Set up devices for sharding
@@ -291,14 +334,13 @@ def main():
     )
     print()
     
-    # Run unsharded with debug printing
-    print("DEBUG RUN (showing shapes):")
-    output_unsharded, forward_time_unsharded_debug = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=True, with_printing=True)
-    print()
-    
-    # Run unsharded without debug printing (for timing)
-    print("TIMING RUN (no debug output):")
-    output_unsharded_timing, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False)
+    # Run unsharded based on mode
+    if args.mode == "debug":
+        print("DEBUG RUN (showing shapes):")
+        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=True, with_printing=True, num_warmup=0, num_timing_runs=1)
+    else:  # timing mode
+        print("TIMING RUN (no debug output):")
+        output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=False, with_printing=False, num_warmup=args.num_warmup, num_timing_runs=args.num_timing_runs)
     print()
     
     # Test 2: Sharded version
@@ -312,14 +354,13 @@ def main():
         )
         print()
         
-        # Run sharded with debug printing
-        print("DEBUG RUN (showing shard info):")
-        output_sharded, forward_time_sharded_debug = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=True, with_printing=True)
-        print()
-        
-        # Run sharded without debug printing (for timing)
-        print("TIMING RUN (no debug output):")
-        output_sharded_timing, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False)
+        # Run sharded based on mode
+        if args.mode == "debug":
+            print("DEBUG RUN (showing shard info):")
+            output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=True, with_printing=True, num_warmup=0, num_timing_runs=1)
+        else:  # timing mode
+            print("TIMING RUN (no debug output):")
+            output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=args.num_warmup, num_timing_runs=args.num_timing_runs)
         print()
     
     # Compare outputs
@@ -330,16 +371,17 @@ def main():
     identical = compare_outputs(output_unsharded, output_sharded, "Unsharded", "Sharded")
     print()
     
-    # Performance comparison
-    print("=" * 30)
-    print("PERFORMANCE COMPARISON")
-    print("=" * 30)
-    
-    print(f"Unsharded forward time: {forward_time_unsharded:.3f}s")
-    print(f"Sharded forward time: {forward_time_sharded:.3f}s")
-    speedup = forward_time_unsharded / forward_time_sharded if forward_time_sharded > 0 else float('inf')
-    print(f"Speedup: {speedup:.2f}x")
-    print()
+    # Performance comparison (only in timing mode)
+    if args.mode == "timing":
+        print("=" * 30)
+        print("PERFORMANCE COMPARISON")
+        print("=" * 30)
+        
+        print(f"Unsharded forward time: {forward_time_unsharded:.3f}s")
+        print(f"Sharded forward time: {forward_time_sharded:.3f}s")
+        speedup = forward_time_unsharded / forward_time_sharded if forward_time_sharded > 0 else float('inf')
+        print(f"Speedup: {speedup:.2f}x")
+        print()
     
     # Final summary
     print("=" * 30)
@@ -347,8 +389,9 @@ def main():
     print("=" * 30)
     
     print(f"Outputs identical: {'YES' if identical else 'NO'}")
-    print(f"Unsharded time: {forward_time_unsharded:.3f}s")
-    print(f"Sharded time: {forward_time_sharded:.3f}s")
+    if args.mode == "timing":
+        print(f"Unsharded time: {forward_time_unsharded:.3f}s")
+        print(f"Sharded time: {forward_time_sharded:.3f}s")
     print()
     
     print("FeedForward inference test completed!")
