@@ -1,9 +1,17 @@
-# Run DROID
+# DROID Policies in openpi
 
-This example shows how to run the fine-tuned $\pi_0$-FAST-DROID model on the [DROID robot platform](https://github.com/droid-dataset/droid). We also offer a $\pi_0$-DROID model that is fine-tuned from $\pi_0$ and uses flow action decoding. You can use it by replacing `pi0_fast_droid` with `pi0_droid` in the commands below. In practice, we find that out-of-the-box, the $\pi_0$-FAST-DROID model is better at following language commands, so we recommend it as the default checkpoint for DROID evaluation. If you want to fine-tune on a DROID task that requires a fast-to-inference policy, you may still want to consider using the $\pi_0$-DROID model, since it decodes faster. For more details, please see the [FAST paper](https://pi.website/research/fast).
+We offer instructions for:
+- [Running inference for our best $pi_{0.5}$-DROID policy](./README.md#running-droid-inference)
+- [Running inference for other pre-trained DROID policies ($\pi_0$, $\pi_0$-FAST, ...)](./README.md#running-roboarena-baseline-policies)
+- [Pre-training *generalist* policies on the *full* DROID dataset](./README_train.md#training-on-droid)
+- [Fine-tuning expert $\pi_{0.5}$ on your custom DROID dataset](./README_train.md#fine-tuning-on-custom-droid-datasets)
+
+## Running DROID Inference
+
+This example shows how to run the fine-tuned $\pi_{0.5}$-DROID model on the [DROID robot platform](https://github.com/droid-dataset/droid). Based on the [public RoboArena benchmark](https://robo-arena.github.io/leaderboard), this is currently our strongest generalist DROID policy. 
 
 
-## Step 1: Start a policy server
+### Step 1: Start a policy server
 
 Since the DROID control laptop does not have a powerful GPU, we will start a remote policy server on a different machine with a more powerful GPU and then query it from the DROID control laptop during inference.
 
@@ -11,7 +19,7 @@ Since the DROID control laptop does not have a powerful GPU, we will start a rem
 2. Start the OpenPI server via the following command:
 
 ```bash
-uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_droid --policy.dir=gs://openpi-assets/checkpoints/pi0_fast_droid
+uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi05_droid --policy.dir=gs://openpi-assets/checkpoints/pi05_droid
 ```
 
 You can also run the equivalent command below:
@@ -20,7 +28,7 @@ You can also run the equivalent command below:
 uv run scripts/serve_policy.py --env=DROID
 ```
 
-## Step 2: Run the DROID robot
+### Step 2: Run the DROID robot
 
 1. Make sure you have the most recent version of the DROID package installed on both the DROID control laptop and the NUC.
 2. On the control laptop, activate your DROID conda environment.
@@ -36,7 +44,7 @@ python3 scripts/main.py --remote_host=<server_ip> --remote_port=<server_port> --
 
 The script will ask you to enter a free-form language instruction for the robot to follow. Make sure to point the cameras at the scene you want the robot to interact with. You _do not_ need to carefully control camera angle, object positions, etc. The policy is fairly robust in our experience. Happy prompting!
 
-# Troubleshooting
+## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
@@ -46,11 +54,17 @@ The script will ask you to enter a free-form language instruction for the robot 
 | Policy does not perform the task well | In our experiments, the policy could perform simple table top manipulation tasks (pick-and-place) across a wide range of environments, camera positions, and lighting conditions. If the policy does not perform the task well, you can try modifying the scene or object placement to make the task easier. Also make sure that the camera view you are passing to the policy can see all relevant objects in the scene (the policy is only conditioned on a single external camera + wrist camera, make sure you are feeding the desired camera to the policy). Use `ZED_Explore` to check that the camera view you are passing to the policy can see all relevant objects in the scene. Finally, the policy is far from perfect and will fail on more complex manipulation tasks, but it usually makes a decent effort. :) |
 
 
-# Running RoboArena Baseline Policies
+## Running Other Policies
 
 We provide configs for running the baseline DROID policies from the [RoboArena](https://robo-arena.github.io/) paper. Simply run the commands below to start inference servers for the respective policies. Then follow the instructions above to run evaluation on the DROID robot.
 
 ```
+# Train from pi0-FAST, using FAST tokenizer
+uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_droid --policy.dir=gs://openpi-assets/checkpoints/pi0_fast_droid
+
+# Train from pi0, using flow matching
+uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_droid --policy.dir=gs://openpi-assets/checkpoints/pi0_droid
+
 # Trained from PaliGemma, using RT-2 / OpenVLA style binning tokenizer.
 uv run scripts/serve_policy.py policy:checkpoint --policy.config=paligemma_binning_droid --policy.dir=gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid
 
