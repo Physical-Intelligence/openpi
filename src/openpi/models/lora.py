@@ -41,7 +41,7 @@ class Einsum(nn.Module):
     # Initialization function for the weight.
     init_fn: nn.initializers.Initializer = nn.initializers.zeros
     # If not None, apply LoRA to the weight.
-    lora_config: LoRAConfig | None = None
+    lora_config: LoRAConfig = None
 
     def setup(self):
         self.w = self.param("w", self.init_fn, self.shape)
@@ -94,9 +94,11 @@ class FeedForward(nn.Module):
     features: int
     hidden_dim: int
     # If not None, apply LoRA to the weight.
-    lora_config: LoRAConfig | None = None
-    # If True, explicitly apply all-gather via sharding constraint.
-    explicit_all_gather: bool = False
+    lora_config: LoRAConfig = None
+    # Optional input sharding constraint function
+    input_sharding_constraint: callable = None
+    # Optional output sharding constraint function  
+    output_sharding_constraint: callable = None
 
     def setup(self):
         self.w_gating = self.param(
@@ -128,9 +130,11 @@ class FeedForward(nn.Module):
     @nn.compact
     def __call__(self, x):
         dtype = x.dtype  # original dtype, could be half-precision
-        if self.explicit_all_gather:
-            # Explicitly replicate x across devices (all-gather) when mesh is active
-            x = sharding_utils.replicate_sharding_constraint(x)
+        
+        # Apply input sharding constraint if provided
+        if self.input_sharding_constraint is not None:
+            x = self.input_sharding_constraint(x)
+        
         ff_gate = self._dot(
             x,
             self.w_gating[0],
@@ -146,10 +150,15 @@ class FeedForward(nn.Module):
         activations = gate_value * ff1
 
         outputs = self._dot(activations, self.w_linear, self.w_linear_lora)
+        
+        # Apply output sharding constraint if provided
+        if self.output_sharding_constraint is not None:
+            outputs = self.output_sharding_constraint(outputs)
+        
         assert outputs.dtype == dtype
         return outputs
 
-    def _dot(self, x: at.Array, w: at.Array, lora_weights: tuple[at.Array, at.Array] | None) -> at.Array:
+    def _dot(self, x: at.Array, w: at.Array, lora_weights) -> at.Array:
         base = jnp.dot(x, w.astype(x.dtype))
         if lora_weights is None:
             return base

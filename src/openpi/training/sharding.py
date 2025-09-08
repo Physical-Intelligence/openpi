@@ -57,6 +57,32 @@ def replicate_sharding_constraint(pytree):
     )
 
 
+def megatron_mlp_input_constraint(pytree):
+    """Apply Megatron tensor parallel input sharding: P("batch", None, None).
+    
+    For MLP blocks in tensor parallel, input should be batch-sharded but FSDP-replicated.
+    If there is no active mesh, this is a no-op.
+    """
+    if _MeshState.active_mesh is None:
+        return pytree
+    return jax.lax.with_sharding_constraint(
+        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, None))
+    )
+
+
+def megatron_mlp_output_constraint(pytree):
+    """Apply Megatron tensor parallel output sharding: P("batch", None, "fsdp").
+    
+    For MLP blocks in tensor parallel, output should be batch-sharded and FSDP-sharded.
+    If there is no active mesh, this is a no-op.
+    """
+    if _MeshState.active_mesh is None:
+        return pytree
+    return jax.lax.with_sharding_constraint(
+        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, "fsdp"))
+    )
+
+
 def fsdp_sharding(
     pytree,
     mesh: jax.sharding.Mesh,

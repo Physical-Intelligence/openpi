@@ -68,8 +68,6 @@ parser.add_argument("--no-jit", action="store_true",
                    help="Run forward passes without JIT compilation (useful for debugging)")
 parser.add_argument("--timing-runs", type=int, default=10,
                    help="Number of timing runs for performance measurement (default: 10)")
-parser.add_argument("--explicit-all-gather", action="store_true",
-                   help="Enable explicit all-gather via sharding constraint (only for default strategy)")
 
 # Parse args early to get device count
 args, _ = parser.parse_known_args()
@@ -158,20 +156,31 @@ def megatron_sharding(params_shape, mesh, log=False):
     return jax.tree_util.tree_map_with_path(_shard_param, params_shape)
     
 
-def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sharded=False, mesh=None, sharding_strategy="default", use_jit=True, explicit_all_gather=False):
+def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sharded=False, mesh=None, sharding_strategy="default", use_jit=True):
     """Create a single FeedForward block from Gemma."""
     print(f"Creating FeedForward block: model_dim={model_dim}, hidden_dim={hidden_dim}, sharded={sharded}, strategy={sharding_strategy}")
-    if sharding_strategy == "default" and explicit_all_gather and sharded:
-        print(f"  Using explicit all-gather for default strategy")
     
     # Create FeedForward block without LoRA
-    # Only enable explicit_all_gather when sharded=True and strategy=default
-    use_explicit_all_gather = explicit_all_gather and sharded and sharding_strategy == "default"
+    # Set up sharding constraint functions based on strategy
+    if sharded and sharding_strategy == "megatron":
+        # Megatron: use tensor parallel MLP constraints
+        input_constraint = sharding.megatron_mlp_input_constraint
+        output_constraint = sharding.megatron_mlp_output_constraint
+    elif sharded and sharding_strategy == "default":
+        # Default FSDP: use standard activation sharding for both
+        input_constraint = sharding.activation_sharding_constraint
+        output_constraint = sharding.activation_sharding_constraint
+    else:
+        # Unsharded: no constraints
+        input_constraint = None
+        output_constraint = None
+    
     ff_block = lora.FeedForward(
         features=model_dim,
         hidden_dim=hidden_dim,
         lora_config=None,
-        explicit_all_gather=use_explicit_all_gather
+        input_sharding_constraint=input_constraint,
+        output_sharding_constraint=output_constraint
     )
     
     if sharded and mesh is not None:
@@ -190,48 +199,21 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
         # Parameter initialization - mesh context should already be active when sharded=True
         params = jax.jit(ff_block.init, out_shardings=param_sharding)(jax.random.key(0), input_data)
         
-        # Set up activation sharding based on strategy
-        if sharding_strategy == "megatron":
-            # In megatron, activations are not sharded (replicated)
-            x_sharding = jax.sharding.NamedSharding(mesh, P())
-            #x_out_sharding = jax.sharding.NamedSharding(mesh, P())
-            x_out_sharding = jax.sharding.NamedSharding(mesh, P(None, None, "fsdp"))
-            def activation_sharding_constraint(tensor):
-                """Keep activations replicated in megatron strategy"""
-                return jax.lax.with_sharding_constraint(
-                    tensor, 
-                    jax.sharding.NamedSharding(mesh, P())
-                )
-        else:  # default
-            # In default FSDP, shard activations using the constraint from sharding.py
-            # The sharding.py constraint uses DATA_AXIS = (batch, fsdp), so we match that
-            data_axis_spec = P(sharding.DATA_AXIS)  # This is P(('batch', 'fsdp'))
-            x_sharding = jax.sharding.NamedSharding(mesh, data_axis_spec)
-            x_out_sharding = jax.sharding.NamedSharding(mesh, data_axis_spec)
-            def activation_sharding_constraint(tensor):
-                """Use activation sharding constraint from sharding.py"""
-                return sharding.activation_sharding_constraint(tensor)
-        
         # Create forward function based on use_jit flag
         if use_jit:
-            # PJIT-compiled forward pass with sharding (minimal version using module.apply)
+            # PJIT-compiled forward pass (FeedForward handles all internal sharding)
             def _forward_impl(params, x):
                 return ff_block.apply(params, x)
+            
             forward_fn_jit = pjit.pjit(
                 _forward_impl,
-                in_shardings=(param_sharding, x_sharding),
-                out_shardings=x_out_sharding,
+                in_shardings=(param_sharding, None),  # No input sharding constraint, FeedForward handles it
+                out_shardings=None,  # No output sharding constraint, FeedForward handles it
             )
         else:
-            # Non-JIT version with manual sharding constraints
+            # Non-JIT version (FeedForward handles internal sharding)
             def forward_fn_no_jit(params, x):
-                # Apply input sharding constraint
-                x = jax.lax.with_sharding_constraint(x, x_sharding)
-                # Forward pass
-                output = ff_block.apply(params, x)
-                # Apply output sharding constraint
-                output = jax.lax.with_sharding_constraint(output, x_out_sharding)
-                return output
+                return ff_block.apply(params, x)
         
         # Wrapper function for debugging with shapes (not JIT-compiled)
         def forward_fn(params, x, print_shapes=False):
@@ -249,32 +231,8 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 # Forward pass - show only local shard shapes for activations
                 print(f"    [{sharding_strategy.upper()}] Activation shard shapes:")
                 
-                # Apply activation sharding constraint
-                x = activation_sharding_constraint(x)
-                x_shard = tuple(x.sharding.shard_shape(x.shape))
-                print(f"    Input x local shard: {x_shard}")
-                
-                ff_gate = jnp.dot(x, fc1[0])
-                ff_gate_shard = tuple(ff_gate.sharding.shard_shape(ff_gate.shape))
-                print(f"    FF gate local shard: {ff_gate_shard}")
-                
-                gate_value = jax.nn.gelu(ff_gate)
-                gate_value_shard = tuple(gate_value.sharding.shard_shape(gate_value.shape))
-                print(f"    Gate value local shard: {gate_value_shard}")
-                
-                ff1 = jnp.dot(x, fc1[1])
-                ff1_shard = tuple(ff1.sharding.shard_shape(ff1.shape))
-                print(f"    FF1 local shard: {ff1_shard}")
-                
-                activations = gate_value * ff1
-                activations_shard = tuple(activations.sharding.shard_shape(activations.shape))
-                print(f"    Final hidden act local shard: {activations_shard}")
-                
-                outputs = jnp.dot(activations, fc2)
-                outputs_shard = tuple(outputs.sharding.shard_shape(outputs.shape))
-                print(f"    Output local shard: {outputs_shard}")
-                
-                output = activation_sharding_constraint(outputs)
+                # Use FeedForward block directly (it handles sharding internally)
+                output = ff_block.apply(params, x)
                 output_shard = tuple(output.sharding.shard_shape(output.shape))
                 print(f"    Final output local shard: {output_shard}")
                 
@@ -542,8 +500,6 @@ def main():
     print(f"  Mode: {args.mode}")
     print(f"  Sharding strategy: {args.sharding_strategy}")
     print(f"  JIT compilation: {'Disabled' if args.no_jit else 'Enabled'}")
-    if args.sharding_strategy == "default" and args.explicit_all_gather:
-        print(f"  Explicit all-gather: Enabled")
     if args.mode == "timing":
         print(f"  Timing runs: {args.timing_runs}")
     if args.mode in ["profile", "profile_both"]:
@@ -587,7 +543,7 @@ def main():
         print("=" * 30)
         
         ff_block_unsharded, params_unsharded, forward_fn_unsharded = create_feedforward_block(
-            model_dim, hidden_dim, input_data, sharded=False, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
+            model_dim, hidden_dim, input_data, sharded=False, use_jit=not args.no_jit
         )
         memory_snapshots['unsharded_model'] = log_memory_usage("After unsharded model creation")
         print()
@@ -611,7 +567,7 @@ def main():
     
     with sharding.set_mesh(mesh):
         ff_block_sharded, params_sharded, forward_fn_sharded = create_feedforward_block(
-            model_dim, hidden_dim, input_data, sharded=True, mesh=mesh, sharding_strategy=args.sharding_strategy, use_jit=not args.no_jit, explicit_all_gather=args.explicit_all_gather
+            model_dim, hidden_dim, input_data, sharded=True, mesh=mesh, sharding_strategy=args.sharding_strategy, use_jit=not args.no_jit
         )
         memory_snapshots['sharded_model'] = log_memory_usage("After sharded model creation")
         print()
