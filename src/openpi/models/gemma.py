@@ -302,10 +302,19 @@ class FeedForward(nn.Module):
 
     features: int
     hidden_dim: int
+    # Optional input sharding constraint function
+    input_sharding_constraint: Optional[Callable] = None
+    # Optional output sharding constraint function  
+    output_sharding_constraint: Optional[Callable] = None
 
     @nn.compact
     def __call__(self, x):
         dtype = x.dtype  # original dtype, could be half-precision
+        
+        # Apply input sharding constraint if provided
+        if self.input_sharding_constraint is not None:
+            x = self.input_sharding_constraint(x)
+        
         w_gating = self.param(
             "gating_einsum",
             nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0,)),
@@ -323,6 +332,11 @@ class FeedForward(nn.Module):
             (self.hidden_dim, self.features),
         ).astype(dtype)
         outputs = jnp.dot(activations, w_linear)
+        
+        # Apply output sharding constraint if provided
+        if self.output_sharding_constraint is not None:
+            outputs = self.output_sharding_constraint(outputs)
+        
         assert outputs.dtype == dtype
         return outputs
 
