@@ -423,25 +423,6 @@ def compare_outputs(output1, output2, name1="Output 1", name2="Output 2"):
     return identical
 
 
-def check_gpu_memory():
-    """Check GPU memory usage if available."""
-    try:
-        # Try to get GPU memory info
-        import subprocess
-        result = subprocess.run(['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'], 
-                              capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
-            for i, line in enumerate(lines):
-                used, total = line.split(', ')
-                used_gb = int(used) / 1024
-                total_gb = int(total) / 1024
-                print(f"  GPU {i} memory: {used_gb:.1f}GB / {total_gb:.1f}GB ({used_gb/total_gb*100:.1f}% used)")
-        else:
-            print("  GPU memory info not available")
-    except Exception as e:
-        print(f"  GPU memory check failed: {e}")
-
 def setup_devices_for_sharding():
     """Set up devices for sharding testing."""
     print("Setting up devices for sharding...")
@@ -461,8 +442,6 @@ def setup_devices_for_sharding():
         print(f"  ✓ GPU devices detected: {len(gpu_devices)}")
         for i, device in enumerate(gpu_devices):
             print(f"    GPU {i}: {device}")
-        # Check GPU memory
-        check_gpu_memory()
     else:
         print(f"  ⚠ No GPU devices detected - running on CPU")
         for i, device in enumerate(cpu_devices):
@@ -470,7 +449,6 @@ def setup_devices_for_sharding():
         
     # Check JAX backend
     try:
-        # Use the new API to avoid deprecation warning
         backend = jax.extend.backend.get_backend()
         print(f"  JAX backend: {backend.platform}")
         if hasattr(backend, 'device_kind'):
