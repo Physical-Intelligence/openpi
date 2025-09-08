@@ -25,9 +25,9 @@ We follow this einsum axis naming convention:
   D: d_model ("features")
 """
 
-from collections.abc import Sequence
+from collections.abc import Sequence, Callable
 import dataclasses
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, Optional
 
 import einops
 import flax.linen as nn
@@ -37,6 +37,8 @@ import jax.numpy as jnp
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
+from openpi.training.sharding import ParamAndShardIndex
+
 
 PALIGEMMA_VOCAB_SIZE = 257_152
 
@@ -159,6 +161,10 @@ class Attention(nn.Module):
     """Attention module."""
 
     configs: Sequence[Config]
+    # Optional input sharding constraint function
+    input_sharding_constraint: Optional[Callable] = None
+    # Optional output sharding constraint function  
+    output_sharding_constraint: Optional[Callable] = None
 
     @nn.compact
     def __call__(self, xs, positions, attn_mask, kv_cache):
@@ -166,6 +172,10 @@ class Attention(nn.Module):
         assert all(config.head_dim == self.configs[0].head_dim for config in self.configs)
         assert all(config.num_heads == self.configs[0].num_heads for config in self.configs)
         assert all(config.num_kv_heads == self.configs[0].num_kv_heads for config in self.configs)
+
+        # Apply input sharding constraint if provided
+        if self.input_sharding_constraint is not None:
+            xs = [self.input_sharding_constraint(x) if x is not None else x for x in xs]
 
         dtype = next(x.dtype for x in xs if x is not None)  # original dtype, could be half-precision
 
@@ -246,7 +256,47 @@ class Attention(nn.Module):
             else:
                 out.append(None)
 
+        # Apply output sharding constraint if provided
+        if self.output_sharding_constraint is not None:
+            out = [self.output_sharding_constraint(o) if o is not None else o for o in out]
+
         return out, (k, v)
+
+    def megatron_tensor_parallel_sharding_info(self):
+        """Return parameter names for tensor parallel sharding.
+        
+        In megatron attention sharding:
+        - QKV projection matrices (qkv_einsum, q_einsum, kv_einsum) are sharded on num_heads dimension
+        - Output projection matrix (attn_vec_einsum) is sharded on the larger of num_heads vs head_dim
+        
+        Returns:
+            dict: {
+                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
+            }
+        """
+        # Check that no LoRA is used - tensor parallel sharding with LoRA not yet supported
+        assert len(self.configs) == 1, f"Not tested for multiple configs"
+        for config in self.configs:
+            if config.lora_configs.get("attn") is not None:
+                raise ValueError("Tensor parallel sharding not supported with LoRA for attention")
+        
+        num_heads = self.configs[0].num_heads
+        head_dim = self.configs[0].head_dim
+        
+        info = {
+            'sharded_params': [
+                # QKV matrices have num_heads as the second dimension (index 1)
+                # Shape: (3, num_heads, model_dim, head_dim) -> shard on num_heads
+                ParamAndShardIndex('qkv_einsum', 1),
+                ParamAndShardIndex('q_einsum', 1), 
+                ParamAndShardIndex('kv_einsum', 1),
+                # For output projection, always shard along the num_heads axis
+                # Shape: (num_heads, head_dim, model_dim)
+                ParamAndShardIndex('attn_vec_einsum', 0),
+            ]
+        }
+        
+        return info
 
 
 @at.typecheck
@@ -255,10 +305,19 @@ class FeedForward(nn.Module):
 
     features: int
     hidden_dim: int
+    # Optional input sharding constraint function
+    input_sharding_constraint: Optional[Callable] = None
+    # Optional output sharding constraint function  
+    output_sharding_constraint: Optional[Callable] = None
 
     @nn.compact
     def __call__(self, x):
         dtype = x.dtype  # original dtype, could be half-precision
+        
+        # Apply input sharding constraint if provided
+        if self.input_sharding_constraint is not None:
+            x = self.input_sharding_constraint(x)
+        
         w_gating = self.param(
             "gating_einsum",
             nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0,)),
@@ -276,8 +335,36 @@ class FeedForward(nn.Module):
             (self.hidden_dim, self.features),
         ).astype(dtype)
         outputs = jnp.dot(activations, w_linear)
+        
+        # Apply output sharding constraint if provided
+        if self.output_sharding_constraint is not None:
+            outputs = self.output_sharding_constraint(outputs)
+        
         assert outputs.dtype == dtype
         return outputs
+
+    def megatron_tensor_parallel_sharding_info(self):
+        """Return parameter names for tensor parallel sharding.
+        
+        In megatron feedforward sharding:
+        - Gating matrices (gating_einsum) are sharded on hidden_dim (last dimension)
+        - Linear matrix (linear) is sharded on hidden_dim (first dimension)
+        
+        Returns:
+            dict: {
+                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
+            }
+        """
+        info = {
+            'sharded_params': [
+                # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
+                ParamAndShardIndex('gating_einsum', -1),
+                # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
+                ParamAndShardIndex('linear', 0),
+            ]
+        }
+        
+        return info
 
 
 @at.typecheck

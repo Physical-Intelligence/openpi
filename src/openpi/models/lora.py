@@ -3,9 +3,13 @@ import re
 
 import flax.linen as nn
 import flax.struct as struct
+import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 import openpi.shared.array_typing as at
+from openpi.training import sharding as sharding_utils
+from openpi.training.sharding import ParamAndShardIndex
 
 
 @struct.dataclass
@@ -38,7 +42,7 @@ class Einsum(nn.Module):
     # Initialization function for the weight.
     init_fn: nn.initializers.Initializer = nn.initializers.zeros
     # If not None, apply LoRA to the weight.
-    lora_config: LoRAConfig | None = None
+    lora_config: LoRAConfig = None
 
     def setup(self):
         self.w = self.param("w", self.init_fn, self.shape)
@@ -91,7 +95,11 @@ class FeedForward(nn.Module):
     features: int
     hidden_dim: int
     # If not None, apply LoRA to the weight.
-    lora_config: LoRAConfig | None = None
+    lora_config: LoRAConfig = None
+    # Optional input sharding constraint function
+    input_sharding_constraint: callable = None
+    # Optional output sharding constraint function  
+    output_sharding_constraint: callable = None
 
     def setup(self):
         self.w_gating = self.param(
@@ -123,6 +131,11 @@ class FeedForward(nn.Module):
     @nn.compact
     def __call__(self, x):
         dtype = x.dtype  # original dtype, could be half-precision
+        
+        # Apply input sharding constraint if provided
+        if self.input_sharding_constraint is not None:
+            x = self.input_sharding_constraint(x)
+        
         ff_gate = self._dot(
             x,
             self.w_gating[0],
@@ -138,11 +151,45 @@ class FeedForward(nn.Module):
         activations = gate_value * ff1
 
         outputs = self._dot(activations, self.w_linear, self.w_linear_lora)
+        
+        # Apply output sharding constraint if provided
+        if self.output_sharding_constraint is not None:
+            outputs = self.output_sharding_constraint(outputs)
+        
         assert outputs.dtype == dtype
         return outputs
 
-    def _dot(self, x: at.Array, w: at.Array, lora_weights: tuple[at.Array, at.Array] | None) -> at.Array:
+    def _dot(self, x: at.Array, w: at.Array, lora_weights) -> at.Array:
         base = jnp.dot(x, w.astype(x.dtype))
         if lora_weights is None:
             return base
         return base + jnp.dot(jnp.dot(x, lora_weights[0].astype(x.dtype)), lora_weights[1].astype(x.dtype))
+    
+    def megatron_tensor_parallel_sharding_info(self):
+        """Return parameter names for tensor parallel sharding.
+        
+        Returns:
+            dict: {
+                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
+            }
+        """
+        assert self.lora_config == None, "Tensor parallel sharding not supported with LORA"
+        info = {
+            'sharded_params': [
+                # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
+                ParamAndShardIndex('gating_einsum', -1),
+                # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
+                ParamAndShardIndex('linear', 0),
+            ]
+        }
+        
+        # This might work for LORA but need to test
+        #if self.lora_config:
+        #    info['sharded_params'].extend([
+        #        ParamAndShardIndex('gating_einsum_lora_a', -1),
+        #        ParamAndShardIndex('gating_einsum_lora_b', -1),
+        #        ParamAndShardIndex('linear_lora_a', 0),
+        #        ParamAndShardIndex('linear_lora_b', 0),
+        #    ])
+        
+        return info
