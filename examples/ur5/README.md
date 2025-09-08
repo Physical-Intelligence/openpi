@@ -9,16 +9,11 @@ First, we will define the `UR5Inputs` and `UR5Outputs` classes, which map the UR
 @dataclasses.dataclass(frozen=True)
 class UR5Inputs(transforms.DataTransformFn):
 
-    action_dim: int
     model_type: _model.ModelType = _model.ModelType.PI0
 
     def __call__(self, data: dict) -> dict:
-        mask_padding = self.model_type == _model.ModelType.PI0
-
         # First, concatenate the joints and gripper into the state vector.
-        # Pad to the expected input dimensionality of the model (same as action_dim).
         state = np.concatenate([data["joints"], data["gripper"]])
-        state = transforms.pad_to_dim(state, self.action_dim)
 
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
         # stores as float32 (C,H,W), gets skipped for policy inference.
@@ -39,15 +34,12 @@ class UR5Inputs(transforms.DataTransformFn):
                 "left_wrist_0_rgb": np.True_,
                 # Since the "slot" for the right wrist is not used, this mask is set
                 # to False
-                "right_wrist_0_rgb": np.False_ if mask_padding else np.True_,
+                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
             },
         }
 
-        # Pad actions to the model action dimension.
         if "actions" in data:
-            # The robot produces 7D actions (6 DoF + 1 gripper), and we pad these.
-            actions = transforms.pad_to_dim(data["actions"], self.action_dim)
-            inputs["actions"] = actions
+            inputs["actions"] = data["actions"]
 
         # Pass the prompt (aka language instruction) to the model.
         if "prompt" in data:

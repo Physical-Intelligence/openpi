@@ -35,25 +35,11 @@ class LiberoInputs(transforms.DataTransformFn):
     the correct elements of your dataset into the model.
     """
 
-    # The action dimension of the model. Will be used to pad state and actions for pi0 model (not pi0-FAST).
-    # Do not change this for your own dataset.
-    action_dim: int
-
     # Determines which model will be used.
     # Do not change this for your own dataset.
-    model_type: _model.ModelType = _model.ModelType.PI0
+    model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # We only mask padding for pi0 model, not pi0-FAST. Do not change this for your own dataset.
-        mask_padding = self.model_type == _model.ModelType.PI0
-
-        # We pad the proprioceptive input to the action dimension of the model.
-        # For pi0-FAST, we don't pad the state. For Libero, we don't need to differentiate
-        # since the pi0-FAST action_dim = 7, which is < state_dim = 8, so pad is skipped.
-        # Keep this for your own dataset, but if your dataset stores the proprioceptive input
-        # in a different key than "observation/state", you should change it below.
-        state = transforms.pad_to_dim(data["observation/state"], self.action_dim)
-
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
         # stores as float32 (C,H,W), gets skipped for policy inference.
         # Keep this for your own dataset, but if your dataset stores the images
@@ -68,7 +54,7 @@ class LiberoInputs(transforms.DataTransformFn):
 
         # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
-            "state": state,
+            "state": data["observation/state"],
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": wrist_image,
@@ -78,18 +64,15 @@ class LiberoInputs(transforms.DataTransformFn):
             "image_mask": {
                 "base_0_rgb": np.True_,
                 "left_wrist_0_rgb": np.True_,
-                # Mask any non-existent images with False (if ``mask_padding`` is True).
-                "right_wrist_0_rgb": np.False_ if mask_padding else np.True_,
+                # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
+                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
             },
         }
 
         # Pad actions to the model action dimension. Keep this for your own dataset.
         # Actions are only available during training.
         if "actions" in data:
-            # We are padding to the model action dim.
-            # For pi0-FAST, this is a no-op (since action_dim = 7).
-            actions = transforms.pad_to_dim(data["actions"], self.action_dim)
-            inputs["actions"] = actions
+            inputs["actions"] = data["actions"]
 
         # Pass the prompt (aka language instruction) to the model.
         # Keep this for your own dataset (but modify the key if the instruction is not

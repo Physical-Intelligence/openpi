@@ -29,15 +29,15 @@ def _parse_image(image) -> np.ndarray:
 
 @dataclasses.dataclass(frozen=True)
 class DroidInputs(transforms.DataTransformFn):
-    # The action dimension of the model. Will be used to pad state and actions.
-    action_dim: int
-
     # Determines which model will be used.
-    model_type: _model.ModelType = _model.ModelType.PI0
+    model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        state = np.concatenate([data["observation/joint_position"], data["observation/gripper_position"]])
-        state = transforms.pad_to_dim(state, self.action_dim)
+        gripper_pos = np.asarray(data["observation/gripper_position"])
+        if gripper_pos.ndim == 0:
+            # Ensure gripper position is a 1D array, not a scalar, so we can concatenate with joint positions
+            gripper_pos = gripper_pos[np.newaxis]
+        state = np.concatenate([data["observation/joint_position"], gripper_pos])
 
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
         # stores as float32 (C,H,W), gets skipped for policy inference
@@ -45,7 +45,7 @@ class DroidInputs(transforms.DataTransformFn):
         wrist_image = _parse_image(data["observation/wrist_image_left"])
 
         match self.model_type:
-            case _model.ModelType.PI0:
+            case _model.ModelType.PI0 | _model.ModelType.PI05:
                 names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
                 images = (base_image, wrist_image, np.zeros_like(base_image))
                 image_masks = (np.True_, np.True_, np.False_)
@@ -64,8 +64,7 @@ class DroidInputs(transforms.DataTransformFn):
         }
 
         if "actions" in data:
-            actions = np.array(data["actions"])
-            inputs["actions"] = transforms.pad_to_dim(actions, self.action_dim)
+            inputs["actions"] = np.asarray(data["actions"])
 
         if "prompt" in data:
             if isinstance(data["prompt"], bytes):

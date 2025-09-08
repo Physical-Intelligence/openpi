@@ -10,20 +10,31 @@ This example requires git submodules to be initialized. Don't forget to run:
 git submodule update --init --recursive
 ```
 
-## With Docker
+## With Docker (recommended)
 
 ```bash
 # Grant access to the X11 server:
 sudo xhost +local:docker
 
-export SERVER_ARGS="--env LIBERO"
-docker compose -f examples/libero/compose.yml up --build
+# To run with the default checkpoint and task suite:
+SERVER_ARGS="--env LIBERO" docker compose -f examples/libero/compose.yml up --build
 
 # To run with glx for Mujoco instead (use this if you have egl errors):
-MUJOCO_GL=glx docker compose -f examples/libero/compose.yml up --build
+MUJOCO_GL=glx SERVER_ARGS="--env LIBERO" docker compose -f examples/libero/compose.yml up --build
 ```
 
-## Without Docker
+You can customize the loaded checkpoint by providing additional `SERVER_ARGS` (see `scripts/serve_policy.py`), and the LIBERO task suite by providing additional `CLIENT_ARGS` (see `examples/libero/main.py`).
+For example:
+
+```bash
+# To load a custom checkpoint (located in the top-level openpi/ directory):
+export SERVER_ARGS="--env LIBERO policy:checkpoint --policy.config pi05_libero --policy.dir ./my_custom_checkpoint"
+
+# To run the libero_10 task suite:
+export CLIENT_ARGS="--args.task-suite-name libero_10"
+```
+
+## Without Docker (not recommended)
 
 Terminal window 1:
 
@@ -52,11 +63,9 @@ uv run scripts/serve_policy.py --env LIBERO
 
 ## Results
 
-If you follow the training instructions and hyperparameters in the `pi0_libero` and `pi0_fast_libero` configs, you should get results similar to the following:
+If you want to reproduce the following numbers, you can evaluate the checkpoint at `gs://openpi-assets-preview/checkpoints/pi05_libero_may21/`. This
+checkpoint was trained in openpi with the `pi05_libero` config.
 
 | Model | Libero Spatial | Libero Object | Libero Goal | Libero 10 | Average |
 |-------|---------------|---------------|-------------|-----------|---------|
-| π0-FAST @ 30k (finetuned) | 96.4 | 96.8 | 88.6 | 60.2 | 85.5 |
-| π0 @ 30k (finetuned) | 96.8 | 98.8 | 95.8 | 85.2 | 94.15 |
-
-Note that the hyperparameters for these runs are not tuned and $\pi_0$-FAST does not use a FAST tokenizer optimized for Libero. Likely, the results could be improved with more tuning, we mainly use these results as an example of how to use openpi to fine-tune $\pi_0$ models on a new dataset.
+| π0.5 @ 30k (finetuned) | 98.8 | 98.2 | 98.0 | 92.4 | 96.85

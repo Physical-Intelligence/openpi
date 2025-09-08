@@ -3,7 +3,7 @@
 from typing import TypeAlias
 
 import openpi.models.model as _model
-import openpi.models.pi0 as pi0
+import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.droid_policy as droid_policy
@@ -101,7 +101,7 @@ def get_roboarena_configs():
         TrainConfig(
             # pi0-style diffusion / flow VLA, trained on DROID from PaliGemma.
             name="paligemma_diffusion_droid",
-            model=pi0.Pi0Config(action_horizon=10, action_dim=8),
+            model=pi0_config.Pi0Config(action_horizon=10, action_dim=8),
             data=SimpleDataConfig(
                 assets=AssetsConfig(asset_id="droid"),
                 data_transforms=lambda model: _transforms.Group(
