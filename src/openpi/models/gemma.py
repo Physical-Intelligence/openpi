@@ -267,19 +267,13 @@ class Attention(nn.Module):
             }
         """
         # Check that no LoRA is used - tensor parallel sharding with LoRA not yet supported
+        assert len(self.configs) == 1, f"Not tested for multiple configs"
         for config in self.configs:
             if config.lora_configs.get("attn") is not None:
                 raise ValueError("Tensor parallel sharding not supported with LoRA for attention")
         
         num_heads = self.configs[0].num_heads
         head_dim = self.configs[0].head_dim
-        
-        # For attn_vec_einsum, choose the larger dimension to shard on
-        # Shape: (num_heads, head_dim, model_dim)
-        if num_heads > head_dim:
-            attn_vec_shard_index = 0  # Shard on num_heads (first dim)
-        else:
-            attn_vec_shard_index = 1  # Shard on head_dim (second dim)
         
         info = {
             'sharded_params': [
@@ -288,8 +282,9 @@ class Attention(nn.Module):
                 ParamAndShardIndex('qkv_einsum', 1),
                 ParamAndShardIndex('q_einsum', 1), 
                 ParamAndShardIndex('kv_einsum', 1),
-                # Output projection: shard on larger of num_heads vs head_dim
-                ParamAndShardIndex('attn_vec_einsum', attn_vec_shard_index),
+                # For output projection, always shard along the num_heads axis
+                # Shape: (num_heads, head_dim, model_dim)
+                ParamAndShardIndex('attn_vec_einsum', 0),
             ]
         }
         

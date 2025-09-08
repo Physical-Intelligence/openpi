@@ -53,24 +53,13 @@ def activation_sharding_constraint(pytree):
     )
 
 
-def replicate_sharding_constraint(pytree):
-    """Replicate the tensor across the active mesh (explicit all-gather).
-
-    If there is no active mesh, this is a no-op.
-    """
-    if _MeshState.active_mesh is None:
-        return pytree
-    return jax.lax.with_sharding_constraint(
-        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec())
-    )
-
-
 def megatron_input_constraint(pytree):
     """Apply Megatron tensor parallel input sharding: P("batch", None, None).
     
-    For tensor parallel blocks, input should be batch-sharded but FSDP-replicated.
+    For tensor parallel blocks, the batch dimension should be split across data-parallel groups
+    For each data parallel group, we expect the input to be replicated along the fsdp or tensor_parallel axis
     If there is no active mesh, this is a no-op.
-    TODO: this assume input and output activations are (B,T,D) shaped. 
+    TODO: this assumes input and output activations are (B,T,D) shaped. 
     """
     if _MeshState.active_mesh is None:
         return pytree
@@ -82,11 +71,12 @@ def megatron_input_constraint(pytree):
 def megatron_output_constraint(pytree):
     """Apply Megatron tensor parallel output sharding: P("batch", "fsdp", None).
     
-    For tensor parallel blocks, output should be batch-sharded and seq sharded, so the output is ready for 
-    the RMSNorm or layer norm blocks executing in seq parallel. This output sharding will prevent an all-reduce, and instead
-    convert it to a reduce-scatter, followed by an all-gather after the RMSNorms laye
+    For tensor parallel blocks, output should be batch-split (across data parallel groups) and seq sharded across tensor_parallel/fsdp groups
+    This way, the the output is ready for the RMSNorm or layer norm blocks executing in seq parallel. 
+    This output sharding will prevent an all-reduce at the end of the ATTN/MLP blocks, and it'll 
+    convert it to a reduce-scatter. After the RMSNorms layer we will have an allgather
     If there is no active mesh, this is a no-op.
-    TODO: this assume input and output activations are (B,T,D) shaped :-()
+    TODO: this assume input and output activations are (B,T,D) shaped :-(
     """
     if _MeshState.active_mesh is None:
         return pytree
