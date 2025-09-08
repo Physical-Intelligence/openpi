@@ -63,12 +63,12 @@ def create_attention_block(model_dim=512, num_heads=8, head_dim=64, input_data=N
     # Set up sharding constraint functions based on strategy
     if sharded and sharding_strategy == "megatron":
         # Megatron: use tensor parallel attention constraints
-        input_constraint = sharding.megatron_attn_input_constraint
-        output_constraint = sharding.megatron_attn_output_constraint
+        input_constraint = sharding.megatron_input_constraint
+        output_constraint = sharding.megatron_output_constraint
     elif sharded and sharding_strategy == "default":
-        # Default FSDP: no constraints, handled by parameter sharding
-        input_constraint = None
-        output_constraint = None
+        # Default FSDP: use standard activation sharding for both
+        input_constraint = sharding.activation_sharding_constraint
+        output_constraint = sharding.activation_sharding_constraint
     else:
         # Unsharded: no constraints
         input_constraint = None

@@ -37,13 +37,8 @@ import jax.numpy as jnp
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
+from openpi.training.sharding import ParamAndShardIndex
 
-
-@dataclasses.dataclass
-class ParamAndShardIndex:
-    """Information about a parameter matrix and which dimension to shard on."""
-    name: str
-    shard_index: int  # Which dimension index to shard on
 
 PALIGEMMA_VOCAB_SIZE = 257_152
 

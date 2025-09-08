@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import logging
 
 import jax
@@ -8,6 +9,13 @@ BATCH_AXIS = "batch"
 FSDP_AXIS = "fsdp"
 # In FSDP, we shard the data across both the batch and FSDP axes.
 DATA_AXIS = (BATCH_AXIS, FSDP_AXIS)
+
+
+@dataclasses.dataclass
+class ParamAndShardIndex:
+    """Information about a parameter matrix and which dimension to shard on."""
+    name: str
+    shard_index: int  # Which dimension index to shard on
 
 
 class _MeshState:
@@ -57,10 +65,10 @@ def replicate_sharding_constraint(pytree):
     )
 
 
-def megatron_mlp_input_constraint(pytree):
+def megatron_input_constraint(pytree):
     """Apply Megatron tensor parallel input sharding: P("batch", None, None).
     
-    For MLP blocks in tensor parallel, input should be batch-sharded but FSDP-replicated.
+    For tensor parallel blocks, input should be batch-sharded but FSDP-replicated.
     If there is no active mesh, this is a no-op.
     """
     if _MeshState.active_mesh is None:
@@ -70,36 +78,10 @@ def megatron_mlp_input_constraint(pytree):
     )
 
 
-def megatron_mlp_output_constraint(pytree):
+def megatron_output_constraint(pytree):
     """Apply Megatron tensor parallel output sharding: P("batch", None, "fsdp").
     
-    For MLP blocks in tensor parallel, output should be batch-sharded and FSDP-sharded.
-    If there is no active mesh, this is a no-op.
-    """
-    if _MeshState.active_mesh is None:
-        return pytree
-    return jax.lax.with_sharding_constraint(
-        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, "fsdp"))
-    )
-
-
-def megatron_attn_input_constraint(pytree):
-    """Apply Megatron tensor parallel input sharding for attention: P("batch", None, None).
-    
-    For attention blocks in tensor parallel, input should be batch-sharded but FSDP-replicated.
-    If there is no active mesh, this is a no-op.
-    """
-    if _MeshState.active_mesh is None:
-        return pytree
-    return jax.lax.with_sharding_constraint(
-        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, None))
-    )
-
-
-def megatron_attn_output_constraint(pytree):
-    """Apply Megatron tensor parallel output sharding for attention: P("batch", None, "fsdp").
-    
-    For attention blocks in tensor parallel, output should be batch-sharded and FSDP-sharded.
+    For tensor parallel blocks, output should be batch-sharded and FSDP-sharded.
     If there is no active mesh, this is a no-op.
     """
     if _MeshState.active_mesh is None:
@@ -170,9 +152,6 @@ def megatron_tensor_parallel_sharding(
     pytree,
     mesh: jax.sharding.Mesh,
     sharded_params: list = None,  # List of ParamAndShardIndex objects
-    column_parallel_names: list[str] = None,  # Legacy support
-    row_parallel_names: list[str] = None,     # Legacy support
-    per_head_matrices: list = None,           # Legacy support
     shard_axis: str = 'fsdp',
     log: bool = False,
 ):
@@ -182,33 +161,14 @@ def megatron_tensor_parallel_sharding(
         pytree: A pytree to apply sharding to.
         mesh: The mesh being used for sharding.
         sharded_params: List of ParamAndShardIndex objects specifying which parameters to shard and on which dimension.
-        column_parallel_names: Legacy parameter for backward compatibility.
-        row_parallel_names: Legacy parameter for backward compatibility.
-        per_head_matrices: Legacy parameter for backward compatibility.
         shard_axis: The mesh axis to shard along (default: 'fsdp').
         log: If true, will log the sharding decisions.
     
     Returns:
         The sharded pytree.
     """
-    # Handle legacy parameters for backward compatibility
     if sharded_params is None:
-        sharded_params = []
-        
-        # Convert legacy parameters to new format
-        if per_head_matrices is not None:
-            sharded_params.extend(per_head_matrices)
-        
-        if column_parallel_names is not None:
-            for name in column_parallel_names:
-                sharded_params.append(type('ParamAndShardIndex', (), {'name': name, 'shard_index': -1})())
-        
-        if row_parallel_names is not None:
-            for name in row_parallel_names:
-                sharded_params.append(type('ParamAndShardIndex', (), {'name': name, 'shard_index': 0})())
-    
-    if not sharded_params:
-        raise ValueError("Either sharded_params must be provided or legacy parameters must be specified")
+        raise ValueError("sharded_params must be provided")
     
     def _shard_arr(kp, array):
         if not hasattr(array, "shape"):

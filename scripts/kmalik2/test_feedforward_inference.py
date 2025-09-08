@@ -164,8 +164,8 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
     # Set up sharding constraint functions based on strategy
     if sharded and sharding_strategy == "megatron":
         # Megatron: use tensor parallel MLP constraints
-        input_constraint = sharding.megatron_mlp_input_constraint
-        output_constraint = sharding.megatron_mlp_output_constraint
+        input_constraint = sharding.megatron_input_constraint
+        output_constraint = sharding.megatron_output_constraint
     elif sharded and sharding_strategy == "default":
         # Default FSDP: use standard activation sharding for both
         input_constraint = sharding.activation_sharding_constraint
@@ -196,8 +196,7 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
             param_sharding = sharding.megatron_tensor_parallel_sharding(
                 params_shape, 
                 mesh, 
-                column_parallel_names=tp_info['column_parallel'],
-                row_parallel_names=tp_info['row_parallel'],
+                sharded_params=tp_info['sharded_params'],
                 log=True
             )
         else:  # default

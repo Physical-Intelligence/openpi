@@ -46,8 +46,8 @@ def test_feedforward_constraint_functions_no_mesh():
         features=model_dim,
         hidden_dim=hidden_dim,
         lora_config=None,
-        input_sharding_constraint=sharding.megatron_mlp_input_constraint,
-        output_sharding_constraint=sharding.megatron_mlp_output_constraint
+        input_sharding_constraint=sharding.megatron_input_constraint,
+        output_sharding_constraint=sharding.megatron_output_constraint
     )
     params_megatron = ff_megatron_constraints.init(key, input_data)
     output_megatron = ff_megatron_constraints.apply(params_megatron, input_data)
@@ -122,8 +122,8 @@ def test_feedforward_sharding_strategies_equivalent():
             features=model_dim,
             hidden_dim=hidden_dim,
             lora_config=None,
-            input_sharding_constraint=sharding.megatron_mlp_input_constraint,
-            output_sharding_constraint=sharding.megatron_mlp_output_constraint
+            input_sharding_constraint=sharding.megatron_input_constraint,
+            output_sharding_constraint=sharding.megatron_output_constraint
         )
         params_megatron = ff_megatron.init(key, input_data)
         output_megatron = ff_megatron.apply(params_megatron, input_data)

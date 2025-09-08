@@ -9,6 +9,7 @@ from jax.sharding import PartitionSpec as P
 
 import openpi.shared.array_typing as at
 from openpi.training import sharding as sharding_utils
+from openpi.training.sharding import ParamAndShardIndex
 
 
 @struct.dataclass
@@ -169,19 +170,26 @@ class FeedForward(nn.Module):
         
         Returns:
             dict: {
-                'column_parallel': list of parameter names that should be column-parallel sharded,
-                'row_parallel': list of parameter names that should be row-parallel sharded
+                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
             }
         """
         assert self.lora_config == None, "Tensor parallel sharding not supported with LORA"
         info = {
-            'column_parallel': ['gating_einsum'],  # Column parallel: shard hidden_dim (last axis)
-            'row_parallel': ['linear']             # Row parallel: shard hidden_dim (first axis)
+            'sharded_params': [
+                # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
+                ParamAndShardIndex('gating_einsum', -1),
+                # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
+                ParamAndShardIndex('linear', 0),
+            ]
         }
         
         # This might work for LORA but need to test
         #if self.lora_config:
-        #    info['column_parallel'].extend(['gating_einsum_lora_a', 'gating_einsum_lora_b'])
-        #    info['row_parallel'].extend(['linear_lora_a', 'linear_lora_b'])
+        #    info['sharded_params'].extend([
+        #        ParamAndShardIndex('gating_einsum_lora_a', -1),
+        #        ParamAndShardIndex('gating_einsum_lora_b', -1),
+        #        ParamAndShardIndex('linear_lora_a', 0),
+        #        ParamAndShardIndex('linear_lora_b', 0),
+        #    ])
         
         return info
