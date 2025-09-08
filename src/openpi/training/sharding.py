@@ -138,3 +138,79 @@ def fsdp_sharding(
         return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
     return jax.tree_util.tree_map_with_path(_shard_arr, pytree)
+
+
+def megatron_tensor_parallel_sharding(
+    pytree,
+    mesh: jax.sharding.Mesh,
+    column_parallel_names: list[str],
+    row_parallel_names: list[str],
+    shard_axis: str = 'fsdp',
+    log: bool = False,
+):
+    """Apply Megatron-style tensor parallel sharding based on parameter name patterns.
+    
+    Args:
+        pytree: A pytree to apply sharding to.
+        mesh: The mesh being used for sharding.
+        column_parallel_names: List of parameter names that should be column-parallel sharded.
+                              If None, uses default MLP patterns.
+        row_parallel_names: List of parameter names that should be row-parallel sharded.
+                           If None, uses default MLP patterns.
+        shard_axis: The mesh axis to shard along (default: 'fsdp').
+        log: If true, will log the sharding decisions.
+    
+    Returns:
+        The sharded pytree.
+    """
+    # Validate inputs: names must be provided explicitly
+    if not isinstance(column_parallel_names, list) or len(column_parallel_names) == 0:
+        raise ValueError("column_parallel_names must be a non-empty list of name patterns")
+    if not isinstance(row_parallel_names, list) or len(row_parallel_names) == 0:
+        raise ValueError("row_parallel_names must be a non-empty list of name patterns")
+    
+    def _shard_arr(kp, array):
+        if not hasattr(array, "shape"):
+            return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+        
+        key_path = jax.tree_util.keystr(kp)
+        shape = array.shape
+        
+        # Check for column parallel patterns
+        for pattern in column_parallel_names:
+            if pattern in key_path:
+                # Column parallel: shard last dimension
+                assert len(shape) >= 2, (
+                    f"Column-parallel tensor must have rank >= 2 at {key_path}, got shape {shape}"
+                )
+                assert shape[-1] % mesh.shape[shard_axis] == 0, (
+                    f"Last dimension {shape[-1]} not divisible by mesh {shard_axis} size {mesh.shape[shard_axis]} "
+                    f"for {key_path}"
+                )
+                spec = [None] * len(shape)
+                spec[-1] = shard_axis
+                if log:
+                    logging.info(f"Column parallel sharding {key_path}: {spec}")
+                return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
+        
+        # Check for row parallel patterns  
+        for pattern in row_parallel_names:
+            if pattern in key_path:
+                # Row parallel: shard first dimension
+                assert len(shape) >= 2, (
+                    f"Row-parallel tensor must have rank >= 2 at {key_path}, got shape {shape}"
+                )
+                assert shape[0] % mesh.shape[shard_axis] == 0, (
+                    f"First dimension {shape[0]} not divisible by mesh {shard_axis} size {mesh.shape[shard_axis]} "
+                    f"for {key_path}"
+                )
+                spec = [None] * len(shape)
+                spec[0] = shard_axis
+                if log:
+                    logging.info(f"Row parallel sharding {key_path}: {spec}")
+                return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
+        
+        # Default: use FSDP sharding for remaining parameters
+        return fsdp_sharding({key_path: array}, mesh, log=log)[key_path]
+    
+    return jax.tree_util.tree_map_with_path(_shard_arr, pytree)

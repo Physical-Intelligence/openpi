@@ -191,7 +191,15 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
         params_shape = jax.eval_shape(ff_block.init, jax.random.key(0), input_data)
         
         if sharding_strategy == "megatron":
-            param_sharding = megatron_sharding(params_shape, mesh, log=True)
+            # Get sharding info from the FeedForward block
+            tp_info = ff_block.megatron_tensor_parallel_sharding_info()
+            param_sharding = sharding.megatron_tensor_parallel_sharding(
+                params_shape, 
+                mesh, 
+                column_parallel_names=tp_info['column_parallel'],
+                row_parallel_names=tp_info['row_parallel'],
+                log=True
+            )
         else:  # default
             param_sharding = sharding.fsdp_sharding(params_shape, mesh, log=True)
             
@@ -227,6 +235,12 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
                 fc2_shard_shape = fc2.sharding.shard_shape(fc2.shape)
                 print(f"    FC1 local shard: {tuple(fc1_shard_shape)}")
                 print(f"    FC2 local shard: {tuple(fc2_shard_shape)}")
+                
+                # Show input shape and sharding
+                print(f"    [{sharding_strategy.upper()}] Input shape: {x.shape}, sharding: {x.sharding if hasattr(x, 'sharding') else 'None'}")
+                if hasattr(x, 'sharding') and x.sharding is not None:
+                    x_shard = tuple(x.sharding.shard_shape(x.shape))
+                    print(f"    [{sharding_strategy.upper()}] Input x local shard: {x_shard}")
                 
                 # Forward pass - show only local shard shapes for activations
                 print(f"    [{sharding_strategy.upper()}] Activation shard shapes:")

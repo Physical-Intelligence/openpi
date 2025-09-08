@@ -163,3 +163,25 @@ class FeedForward(nn.Module):
         if lora_weights is None:
             return base
         return base + jnp.dot(jnp.dot(x, lora_weights[0].astype(x.dtype)), lora_weights[1].astype(x.dtype))
+    
+    def megatron_tensor_parallel_sharding_info(self):
+        """Return parameter names for tensor parallel sharding.
+        
+        Returns:
+            dict: {
+                'column_parallel': list of parameter names that should be column-parallel sharded,
+                'row_parallel': list of parameter names that should be row-parallel sharded
+            }
+        """
+        assert self.lora_config == None, "Tensor parallel sharding not supported with LORA"
+        info = {
+            'column_parallel': ['gating_einsum'],  # Column parallel: shard hidden_dim (last axis)
+            'row_parallel': ['linear']             # Row parallel: shard hidden_dim (first axis)
+        }
+        
+        # This might work for LORA but need to test
+        #if self.lora_config:
+        #    info['column_parallel'].extend(['gating_einsum_lora_a', 'gating_einsum_lora_b'])
+        #    info['row_parallel'].extend(['linear_lora_a', 'linear_lora_b'])
+        
+        return info
