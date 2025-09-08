@@ -143,8 +143,14 @@ We provide example fine-tuning configs for both, [π₀](src/openpi/training/con
 Before we can run training, we need to compute the normalization statistics for the training data. Run the script below with the name of your training config:
 
 ```bash
+# Use the original CPU-based script
 uv run scripts/compute_norm_stats.py --config-name pi0_fast_libero
+
+# Or use the JAX-accelerated version for faster processing (recommended)
+uv run scripts/compute_norm_stats_jax.py --config-name pi0_fast_libero --use-fast-stats=True
 ```
+
+**Note:** The JAX-accelerated version provides significant speedup on GPU-enabled machines, especially for larger datasets. The script automatically detects and utilizes available GPUs, with optimal performance on H100 and similar high-end GPUs. See [JAX Acceleration Documentation](docs/jax_acceleration.md) for detailed performance benchmarks and technical details.
 
 Now we can kick off training with the following command (the `--overwrite` flag is used to overwrite existing checkpoints if you rerun fine-tuning with the same config):
 
@@ -188,7 +194,7 @@ We will collect common issues and their solutions here. If you encounter an issu
 | `uv sync` fails with dependency conflicts | Try removing the virtual environment directory (`rm -rf .venv`) and running `uv sync` again. If issues persist, check that you have the latest version of `uv` installed (`uv self update`). |
 | Training runs out of GPU memory           | Make sure you set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` before running training to allow JAX to use more GPU memory. You can also try reducing the batch size in your training config.        |
 | Policy server connection errors           | Check that the server is running and listening on the expected port. Verify network connectivity and firewall settings between client and server.                                            |
-| Missing norm stats error when training    | Run `scripts/compute_norm_stats.py` with your config name before starting training.                                                                                                          |
+| Missing norm stats error when training    | Run `scripts/compute_norm_stats.py` or `scripts/compute_norm_stats_jax.py` with your config name before starting training.                                                                                                          |
 | Dataset download fails                    | Check your internet connection. For HuggingFace datasets, ensure you're logged in (`huggingface-cli login`).                                                                                 |
 | CUDA/GPU errors                           | Verify NVIDIA drivers and CUDA toolkit are installed correctly. For Docker, ensure nvidia-container-toolkit is installed. Check GPU compatibility.                                           |
 | Import errors when running examples       | Make sure you've installed all dependencies with `uv sync` and activated the virtual environment. Some examples may have additional requirements listed in their READMEs.                    |
