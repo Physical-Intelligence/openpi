@@ -245,8 +245,8 @@ def test_multi_device_sharding():
                 # Megatron sharding: P("batch", None, "fsdp") - batch sharded, model_dim sharded by FSDP
                 expected_shard_shape = (
                     batch_size // mesh.shape['batch'],  # batch dimension sharded
-                    SEQ_LEN,                            # seq_len not sharded (None in PartitionSpec)
-                    MODEL_DIM // mesh.shape['fsdp']     # model_dim sharded by FSDP
+                    SEQ_LEN // mesh.shape['fsdp'],   # seq_len sharded by FSDP
+                    MODEL_DIM      # model_dim not sharded
                 )
             
             assert actual_shard_shape == expected_shard_shape, \

@@ -70,6 +70,7 @@ def megatron_input_constraint(pytree):
     
     For tensor parallel blocks, input should be batch-sharded but FSDP-replicated.
     If there is no active mesh, this is a no-op.
+    TODO: this assume input and output activations are (B,T,D) shaped. 
     """
     if _MeshState.active_mesh is None:
         return pytree
@@ -79,15 +80,18 @@ def megatron_input_constraint(pytree):
 
 
 def megatron_output_constraint(pytree):
-    """Apply Megatron tensor parallel output sharding: P("batch", None, "fsdp").
+    """Apply Megatron tensor parallel output sharding: P("batch", "fsdp", None).
     
-    For tensor parallel blocks, output should be batch-sharded and FSDP-sharded.
+    For tensor parallel blocks, output should be batch-sharded and seq sharded, so the output is ready for 
+    the RMSNorm or layer norm blocks executing in seq parallel. This output sharding will prevent an all-reduce, and instead
+    convert it to a reduce-scatter, followed by an all-gather after the RMSNorms laye
     If there is no active mesh, this is a no-op.
+    TODO: this assume input and output activations are (B,T,D) shaped :-()
     """
     if _MeshState.active_mesh is None:
         return pytree
     return jax.lax.with_sharding_constraint(
-        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, "fsdp"))
+        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", "fsdp", None))
     )
 
 
@@ -161,6 +165,12 @@ def megatron_tensor_parallel_sharding(
         pytree: A pytree to apply sharding to.
         mesh: The mesh being used for sharding.
         sharded_params: List of ParamAndShardIndex objects specifying which parameters to shard and on which dimension.
+            It is the responsibility of individual components (like MLP and Attention) to fill this in correctly
+            TODO: This code can be brittle because it relies on string matching to shard parameters
+            E.g: MLPs have param name "gating_einsum" (similar to MLP). If another module adds a param where "gating_einsum" 
+            is part of the name, we will shard that parameter in columnwise
+            Maybe one solution would be to iterate through all the nn.Modules, ask each module: "which params do you want to megatron shard"
+            Currently, matched the pattern of fsdp_sharding() that takes in a pytree
         shard_axis: The mesh axis to shard along (default: 'fsdp').
         log: If true, will log the sharding decisions.
     
