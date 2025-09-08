@@ -63,7 +63,7 @@ uv run scripts/serve_policy.py --env LIBERO
 
 ## Results
 
-If you want to reproduce the following numbers, you can evaluate the checkpoint at `gs://openpi-assets-preview/checkpoints/pi05_libero_may21/`. This
+If you want to reproduce the following numbers, you can evaluate the checkpoint at `gs://openpi-assets/checkpoints/pi05_libero/`. This
 checkpoint was trained in openpi with the `pi05_libero` config.
 
 | Model | Libero Spatial | Libero Object | Libero Goal | Libero 10 | Average |
