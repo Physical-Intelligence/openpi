@@ -169,27 +169,23 @@ class FeedForward(nn.Module):
         """Return parameter names for tensor parallel sharding.
         
         Returns:
-            dict: {
-                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
-            }
+            list of ParamAndShardIndex for all matrices that should be sharded
         """
         assert self.lora_config == None, "Tensor parallel sharding not supported with LORA"
-        info = {
-            'sharded_params': [
-                # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
-                ParamAndShardIndex('gating_einsum', -1),
-                # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
-                ParamAndShardIndex('linear', -2),
-            ]
-        }
+        sharded_params = [
+            # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
+            ParamAndShardIndex('gating_einsum', -1),
+            # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
+            ParamAndShardIndex('linear', -2),
+        ]
         
         # This might work for LORA but need to test
         #if self.lora_config:
-        #    info['sharded_params'].extend([
+        #    sharded_params.extend([
         #        ParamAndShardIndex('gating_einsum_lora_a', -1),
         #        ParamAndShardIndex('gating_einsum_lora_b', -1),
         #        ParamAndShardIndex('linear_lora_a', 0),
         #        ParamAndShardIndex('linear_lora_b', 0),
         #    ])
         
-        return info
+        return sharded_params

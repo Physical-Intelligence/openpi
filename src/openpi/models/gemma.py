@@ -262,9 +262,7 @@ class Attention(nn.Module):
         - Output projection matrix (attn_vec_einsum) is sharded on the larger of num_heads vs head_dim
         
         Returns:
-            dict: {
-                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
-            }
+            list of ParamAndShardIndex for all matrices that should be sharded
         """
 
         # Check that no LoRA is used - tensor parallel sharding with LoRA not yet supported
@@ -280,21 +278,17 @@ class Attention(nn.Module):
         num_heads = self.configs[0].num_heads
         head_dim = self.configs[0].head_dim
         
-        info = {
-            'sharded_params': [
-                # QKV matrices have num_heads as the second dimension (index 1)
-                # Shape: (3, num_heads, model_dim, head_dim) -> shard on num_heads
-                ParamAndShardIndex('qkv_einsum', -3),
-                # Shape: (num_heads, model_dim, head_dim) -> shard on num_heads
-                ParamAndShardIndex('q_einsum', -3), 
-                ParamAndShardIndex('kv_einsum', -3),
-                # For output projection, always shard along the num_heads axis
-                # Shape: (num_heads, head_dim, model_dim)
-                ParamAndShardIndex('attn_vec_einsum', -3),
-            ]
-        }
-        
-        return info
+        return [
+            # QKV matrices have num_heads as the second dimension (index 1)
+            # Shape: (3, num_heads, model_dim, head_dim) -> shard on num_heads
+            ParamAndShardIndex('qkv_einsum', -3),
+            # Shape: (num_heads, model_dim, head_dim) -> shard on num_heads
+            ParamAndShardIndex('q_einsum', -3), 
+            ParamAndShardIndex('kv_einsum', -3),
+            # For output projection, always shard along the num_heads axis
+            # Shape: (num_heads, head_dim, model_dim)
+            ParamAndShardIndex('attn_vec_einsum', -3),
+        ]
 
 
 @at.typecheck
@@ -349,20 +343,14 @@ class FeedForward(nn.Module):
         - Linear matrix (linear) is sharded on hidden_dim (first dimension)
         
         Returns:
-            dict: {
-                'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
-            }
+            list of ParamAndShardIndex for all matrices that should be sharded
         """
-        info = {
-            'sharded_params': [
-                # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
-                ParamAndShardIndex('gating_einsum', -1),
-                # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
-                ParamAndShardIndex('linear', -2),
-            ]
-        }
-        
-        return info
+        return [
+            # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
+            ParamAndShardIndex('gating_einsum', -1),
+            # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
+            ParamAndShardIndex('linear', -2),
+        ]
 
 
 @at.typecheck

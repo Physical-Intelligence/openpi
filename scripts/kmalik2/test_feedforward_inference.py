@@ -53,22 +53,6 @@ def create_dummy_feedforward_input(batch_size=1, seq_len=10, model_dim=512):
     return jnp.ones((batch_size, seq_len, model_dim), dtype=jnp.float32)
 
 
-def get_gpu_memory_mb():
-    """Get GPU memory usage in MB using JAX device memory stats"""
-    device = jax.devices()[0]
-    memory_stats = device.memory_stats()
-    return {
-        'used_mb': memory_stats['bytes_in_use'] / (1024**2),
-        'peak_mb': memory_stats.get('peak_bytes_in_use', memory_stats['bytes_in_use']) / (1024**2),
-        'limit_mb': memory_stats.get('bytes_limit', 0) / (1024**2)
-    }
-
-
-def log_memory_usage(stage_name):
-    """Log current memory usage at a specific stage"""
-    mem = get_gpu_memory_mb()
-    print(f"  [MEMORY] {stage_name}: {mem['used_mb']:.1f}MB used, {mem['peak_mb']:.1f}MB peak")
-    return mem
 
 
 # Note: megatron_sharding function removed since we now use the shared
@@ -111,11 +95,11 @@ def create_feedforward_block(model_dim=512, hidden_dim=2048, input_data=None, sh
         
         if sharding_strategy == "megatron":
             # Get sharding info from the FeedForward block
-            tp_info = ff_block.megatron_tensor_parallel_sharding_info()
+            sharded_params_spec = ff_block.megatron_tensor_parallel_sharding_info()
             param_sharding = sharding.megatron_tensor_parallel_sharding(
                 params_shape, 
                 mesh, 
-                sharded_params=tp_info['sharded_params'],
+                sharded_params=sharded_params_spec,
                 log=True
             )
         else:  # default
@@ -247,10 +231,6 @@ def main():
     device_count = setup_devices_for_sharding()
     print()
     
-    # Memory tracking
-    memory_snapshots = {}
-    memory_snapshots['baseline'] = log_memory_usage("Baseline (before model creation)")
-    print()
     
     # Create dummy input
     input_data = create_dummy_feedforward_input(batch_size, seq_len, model_dim)
@@ -273,18 +253,13 @@ def main():
         ff_block_unsharded, params_unsharded, forward_fn_unsharded = create_feedforward_block(
             model_dim, hidden_dim, input_data, sharded=False, use_jit=not args.no_jit
         )
-        memory_snapshots['unsharded_model'] = log_memory_usage("After unsharded model creation")
         print()
         
         print("DEBUG RUN (showing shapes):")
         output_unsharded, forward_time_unsharded = run_forward_pass(forward_fn_unsharded, params_unsharded, input_data, show_shapes=True, with_printing=True, num_warmup=0, num_timing_runs=1)
         
-        memory_snapshots['unsharded_forward'] = log_memory_usage("After unsharded forward pass")
         print()
     else:
-        # For non-debug modes, create dummy values to avoid errors later
-        memory_snapshots['unsharded_model'] = {'used_mb': 0, 'peak_mb': 0}
-        memory_snapshots['unsharded_forward'] = {'used_mb': 0, 'peak_mb': 0}
         output_unsharded = None
         forward_time_unsharded = 0.0
     
@@ -297,7 +272,6 @@ def main():
         ff_block_sharded, params_sharded, forward_fn_sharded = create_feedforward_block(
             model_dim, hidden_dim, input_data, sharded=True, mesh=mesh, sharding_strategy=args.sharding_strategy, use_jit=not args.no_jit
         )
-        memory_snapshots['sharded_model'] = log_memory_usage("After sharded model creation")
         print()
         
         # Run sharded based on mode
@@ -314,7 +288,6 @@ def main():
             print("TIMING RUN (no debug output):")
             output_sharded, forward_time_sharded = run_forward_pass(forward_fn_sharded, params_sharded, input_data, show_shapes=False, with_printing=False, num_warmup=3, num_timing_runs=args.timing_runs)
         
-        memory_snapshots['sharded_forward'] = log_memory_usage("After sharded forward pass")
         print()
     
     # Compare outputs (only in debug mode)
@@ -332,35 +305,6 @@ def main():
     if args.mode == "timing":
         print_performance_comparison(forward_time_unsharded, forward_time_sharded)
     
-    # Memory comparison
-    if args.mode == "debug":
-        print("=" * 30)
-        print("MEMORY USAGE COMPARISON")
-        print("=" * 30)
-        
-        # Calculate memory differences
-        unsharded_model_mem = memory_snapshots['unsharded_model']['used_mb'] - memory_snapshots['baseline']['used_mb']
-        sharded_model_mem = memory_snapshots['sharded_model']['used_mb'] - memory_snapshots['baseline']['used_mb']
-        unsharded_peak_mem = memory_snapshots['unsharded_forward']['peak_mb']
-        sharded_peak_mem = memory_snapshots['sharded_forward']['peak_mb']
-        
-        print(f"{'Stage':<20} {'Unsharded':<12} {'Sharded':<12} {'Difference':<15}")
-        print("-" * 60)
-        print(f"{'Model params:':<20} {unsharded_model_mem:<12.1f} {sharded_model_mem:<12.1f} {sharded_model_mem - unsharded_model_mem:<+15.1f}")
-        print(f"{'Peak forward:':<20} {unsharded_peak_mem:<12.1f} {sharded_peak_mem:<12.1f} {sharded_peak_mem - unsharded_peak_mem:<+15.1f}")
-        print()
-    else:
-        # For non-debug modes, just show sharded memory usage
-        print("=" * 30)
-        print("SHARDED MEMORY USAGE")
-        print("=" * 30)
-        
-        sharded_model_mem = memory_snapshots['sharded_model']['used_mb'] - memory_snapshots['baseline']['used_mb']
-        sharded_peak_mem = memory_snapshots['sharded_forward']['peak_mb']
-        
-        print(f"Model params memory: {sharded_model_mem:.1f}MB")
-        print(f"Peak forward memory: {sharded_peak_mem:.1f}MB")
-        print()
     
     # Final summary
     print_final_summary(args, identical, forward_time_sharded)

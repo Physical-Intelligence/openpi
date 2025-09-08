@@ -219,8 +219,7 @@ def test_feedforward_parameter_sharding():
         
         # Test Megatron sharding
         if module_name == "Gemma":
-            sharding_info = ff_module.megatron_tensor_parallel_sharding_info()
-            sharded_params_spec = sharding_info['sharded_params']
+            sharded_params_spec = ff_module.megatron_tensor_parallel_sharding_info()
         else:
             sharded_params_spec = [
                 sharding.ParamAndShardIndex('gating_einsum', -1),
@@ -292,8 +291,7 @@ def test_attention_parameter_sharding():
         "Attention FSDP specs should be NamedSharding objects"
     
     # Test Megatron sharding
-    sharding_info = attn_module.megatron_tensor_parallel_sharding_info()
-    sharded_params_spec = sharding_info['sharded_params']
+    sharded_params_spec = attn_module.megatron_tensor_parallel_sharding_info()
     
     megatron_specs = sharding.megatron_tensor_parallel_sharding(
         params, mesh, sharded_params=sharded_params_spec, log=False
@@ -401,8 +399,7 @@ def test_feedforward_multi_device_sharding():
             if "FSDP" in config_name:
                 param_specs = sharding.fsdp_sharding(params, mesh, log=False)
             else:  # Megatron
-                sharding_info = ff_module.megatron_tensor_parallel_sharding_info()
-                sharded_params_spec = sharding_info['sharded_params']
+                sharded_params_spec = ff_module.megatron_tensor_parallel_sharding_info()
                 param_specs = sharding.megatron_tensor_parallel_sharding(
                     params, mesh, sharded_params=sharded_params_spec, log=False
                 )
@@ -522,8 +519,7 @@ def test_attention_multi_device_sharding():
             if "FSDP" in config_name:
                 param_specs = sharding.fsdp_sharding(params, mesh, log=False)
             else:  # Megatron
-                sharding_info = attn_module.megatron_tensor_parallel_sharding_info()
-                sharded_params_spec = sharding_info['sharded_params']
+                sharded_params_spec = attn_module.megatron_tensor_parallel_sharding_info()
                 param_specs = sharding.megatron_tensor_parallel_sharding(
                     params, mesh, sharded_params=sharded_params_spec, log=False
                 )

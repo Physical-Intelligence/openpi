@@ -93,11 +93,11 @@ def create_attention_block(model_dim=512, num_heads=8, head_dim=64, input_data=N
         
         if sharding_strategy == "megatron":
             # Get sharding info from the Attention block
-            tp_info = attn_block.megatron_tensor_parallel_sharding_info()
+            sharded_params_spec = attn_block.megatron_tensor_parallel_sharding_info()
             param_sharding = sharding.megatron_tensor_parallel_sharding(
                 params_shape, 
                 mesh, 
-                sharded_params=tp_info['sharded_params'],
+                sharded_params=sharded_params_spec,
                 log=True
             )
         else:  # default
