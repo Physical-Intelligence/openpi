@@ -242,7 +242,7 @@ def test_multi_device_sharding():
                     MODEL_DIM                                                   # model_dim not sharded for FSDP activation sharding
                 )
             else:  # Megatron
-                # Megatron sharding: P("batch", None, "fsdp") - batch sharded, model_dim sharded by FSDP
+                # Megatron sharding: P("batch", "fsdp", None) - batch sharded, seq sharded
                 expected_shard_shape = (
                     batch_size // mesh.shape['batch'],  # batch dimension sharded
                     SEQ_LEN // mesh.shape['fsdp'],   # seq_len sharded by FSDP
@@ -258,7 +258,6 @@ def test_multi_device_sharding():
             if "FSDP" in config_name:
                 param_specs = sharding.fsdp_sharding(params, mesh, log=False)
             else:  # Megatron
-                # Both LoRA and Gemma have the same megatron_tensor_parallel_sharding_info method
                 sharding_info = ff_module.megatron_tensor_parallel_sharding_info()
                 sharded_params_spec = sharding_info['sharded_params']
                 param_specs = sharding.megatron_tensor_parallel_sharding(
