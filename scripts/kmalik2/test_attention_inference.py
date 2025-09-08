@@ -60,8 +60,26 @@ def create_attention_block(model_dim=512, num_heads=8, head_dim=64, input_data=N
         head_dim=head_dim,
     )
     
+    # Set up sharding constraint functions based on strategy
+    if sharded and sharding_strategy == "megatron":
+        # Megatron: use tensor parallel attention constraints
+        input_constraint = sharding.megatron_attn_input_constraint
+        output_constraint = sharding.megatron_attn_output_constraint
+    elif sharded and sharding_strategy == "default":
+        # Default FSDP: no constraints, handled by parameter sharding
+        input_constraint = None
+        output_constraint = None
+    else:
+        # Unsharded: no constraints
+        input_constraint = None
+        output_constraint = None
+
     # Create Attention block
-    attn_block = gemma.Attention(configs=[config])
+    attn_block = gemma.Attention(
+        configs=[config],
+        input_sharding_constraint=input_constraint,
+        output_sharding_constraint=output_constraint
+    )
     
     # Unpack input data
     xs, positions, attn_mask, kv_cache = input_data
@@ -73,11 +91,17 @@ def create_attention_block(model_dim=512, num_heads=8, head_dim=64, input_data=N
         # Shape evaluation - mesh context is already active from the calling context
         params_shape = jax.eval_shape(attn_block.init, jax.random.key(0), xs, positions, attn_mask, kv_cache)
         
-        # For attention, we only support default FSDP sharding for now
-        if sharding_strategy == "default":
+        if sharding_strategy == "megatron":
+            # Get sharding info from the Attention block
+            tp_info = attn_block.megatron_tensor_parallel_sharding_info()
+            param_sharding = sharding.megatron_tensor_parallel_sharding(
+                params_shape, 
+                mesh, 
+                sharded_params=tp_info['sharded_params'],
+                log=True
+            )
+        else:  # default
             param_sharding = sharding.fsdp_sharding(params_shape, mesh, log=True)
-        else:
-            raise ValueError(f"Sharding strategy '{sharding_strategy}' not supported for attention")
             
         print("  Initializing parameters directly into sharded buffers...")
         # Parameter initialization - mesh context should already be active when sharded=True
@@ -195,12 +219,12 @@ def main():
     """Main test function."""
     # Set up argument parser with attention-specific arguments
     parser = create_base_argument_parser("Test Attention block inference with sharding")
-    parser.add_argument("--num-heads", type=int, default=8,
-                       help="Number of attention heads (default: 8)")
+    parser.add_argument("--num-heads", type=int, default=None,
+                       help="Number of attention heads (default: auto-calculated as model_dim // head_dim)")
     parser.add_argument("--head-dim", type=int, default=256,
                        help="Head dimension (default: 256)")
-    parser.add_argument("--sharding-strategy", type=str, choices=["default"], default="default",
-                       help="Sharding strategy: 'default' for FSDP-style sharding (default: default)")
+    parser.add_argument("--sharding-strategy", type=str, choices=["default", "megatron"], default="default",
+                       help="Sharding strategy: 'default' for FSDP-style sharding, 'megatron' for tensor parallel (default: default)")
     
     # Parse args early to get device count
     args, _ = parser.parse_known_args()
@@ -215,8 +239,16 @@ def main():
     batch_size = args.batch_size
     seq_len = args.seq_len
     model_dim = args.model_dim
-    num_heads = args.num_heads
     head_dim = args.head_dim
+    
+    # Calculate num_heads if not provided
+    if args.num_heads is None:
+        if model_dim % head_dim != 0:
+            raise ValueError(f"model_dim ({model_dim}) must be divisible by head_dim ({head_dim}) when num_heads is auto-calculated")
+        num_heads = model_dim // head_dim
+        print(f"Auto-calculated num_heads: {num_heads} (model_dim={model_dim} // head_dim={head_dim})")
+    else:
+        num_heads = args.num_heads
     
     # Assert that batch size should be divisible by num_shards
     assert batch_size % args.num_shards == 0, f"Batch size ({batch_size}) must be divisible by num_shards ({args.num_shards})"

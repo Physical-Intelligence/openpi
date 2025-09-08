@@ -83,6 +83,32 @@ def megatron_mlp_output_constraint(pytree):
     )
 
 
+def megatron_attn_input_constraint(pytree):
+    """Apply Megatron tensor parallel input sharding for attention: P("batch", None, None).
+    
+    For attention blocks in tensor parallel, input should be batch-sharded but FSDP-replicated.
+    If there is no active mesh, this is a no-op.
+    """
+    if _MeshState.active_mesh is None:
+        return pytree
+    return jax.lax.with_sharding_constraint(
+        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, None))
+    )
+
+
+def megatron_attn_output_constraint(pytree):
+    """Apply Megatron tensor parallel output sharding for attention: P("batch", None, "fsdp").
+    
+    For attention blocks in tensor parallel, output should be batch-sharded and FSDP-sharded.
+    If there is no active mesh, this is a no-op.
+    """
+    if _MeshState.active_mesh is None:
+        return pytree
+    return jax.lax.with_sharding_constraint(
+        pytree, jax.sharding.NamedSharding(_MeshState.active_mesh, jax.sharding.PartitionSpec("batch", None, "fsdp"))
+    )
+
+
 def fsdp_sharding(
     pytree,
     mesh: jax.sharding.Mesh,
@@ -143,31 +169,46 @@ def fsdp_sharding(
 def megatron_tensor_parallel_sharding(
     pytree,
     mesh: jax.sharding.Mesh,
-    column_parallel_names: list[str],
-    row_parallel_names: list[str],
+    sharded_params: list = None,  # List of ParamAndShardIndex objects
+    column_parallel_names: list[str] = None,  # Legacy support
+    row_parallel_names: list[str] = None,     # Legacy support
+    per_head_matrices: list = None,           # Legacy support
     shard_axis: str = 'fsdp',
     log: bool = False,
 ):
-    """Apply Megatron-style tensor parallel sharding based on parameter name patterns.
+    """Apply Megatron-style tensor parallel sharding based on parameter specifications.
     
     Args:
         pytree: A pytree to apply sharding to.
         mesh: The mesh being used for sharding.
-        column_parallel_names: List of parameter names that should be column-parallel sharded.
-                              If None, uses default MLP patterns.
-        row_parallel_names: List of parameter names that should be row-parallel sharded.
-                           If None, uses default MLP patterns.
+        sharded_params: List of ParamAndShardIndex objects specifying which parameters to shard and on which dimension.
+        column_parallel_names: Legacy parameter for backward compatibility.
+        row_parallel_names: Legacy parameter for backward compatibility.
+        per_head_matrices: Legacy parameter for backward compatibility.
         shard_axis: The mesh axis to shard along (default: 'fsdp').
         log: If true, will log the sharding decisions.
     
     Returns:
         The sharded pytree.
     """
-    # Validate inputs: names must be provided explicitly
-    if not isinstance(column_parallel_names, list) or len(column_parallel_names) == 0:
-        raise ValueError("column_parallel_names must be a non-empty list of name patterns")
-    if not isinstance(row_parallel_names, list) or len(row_parallel_names) == 0:
-        raise ValueError("row_parallel_names must be a non-empty list of name patterns")
+    # Handle legacy parameters for backward compatibility
+    if sharded_params is None:
+        sharded_params = []
+        
+        # Convert legacy parameters to new format
+        if per_head_matrices is not None:
+            sharded_params.extend(per_head_matrices)
+        
+        if column_parallel_names is not None:
+            for name in column_parallel_names:
+                sharded_params.append(type('ParamAndShardIndex', (), {'name': name, 'shard_index': -1})())
+        
+        if row_parallel_names is not None:
+            for name in row_parallel_names:
+                sharded_params.append(type('ParamAndShardIndex', (), {'name': name, 'shard_index': 0})())
+    
+    if not sharded_params:
+        raise ValueError("Either sharded_params must be provided or legacy parameters must be specified")
     
     def _shard_arr(kp, array):
         if not hasattr(array, "shape"):
@@ -176,38 +217,31 @@ def megatron_tensor_parallel_sharding(
         key_path = jax.tree_util.keystr(kp)
         shape = array.shape
         
-        # Check for column parallel patterns
-        for pattern in column_parallel_names:
-            if pattern in key_path:
-                # Column parallel: shard last dimension
-                assert len(shape) >= 2, (
-                    f"Column-parallel tensor must have rank >= 2 at {key_path}, got shape {shape}"
-                )
-                assert shape[-1] % mesh.shape[shard_axis] == 0, (
-                    f"Last dimension {shape[-1]} not divisible by mesh {shard_axis} size {mesh.shape[shard_axis]} "
+        # Check for sharded parameters
+        for param_info in sharded_params:
+            if param_info.name in key_path:
+                # Create spec with None everywhere except at the specified shard_index
+                spec = [None] * len(shape)
+                shard_index = param_info.shard_index
+                
+                # Handle negative indices
+                if shard_index < 0:
+                    shard_index = len(shape) + shard_index
+                
+                # Validate index is within bounds
+                if shard_index >= len(shape) or shard_index < 0:
+                    raise ValueError(f"shard_index {param_info.shard_index} out of bounds for shape {shape} at {key_path}")
+                
+                # Check that the dimension is divisible by mesh size
+                dim_size = shape[shard_index]
+                assert dim_size % mesh.shape[shard_axis] == 0, (
+                    f"Dimension size {dim_size} at index {shard_index} not divisible by mesh {shard_axis} size {mesh.shape[shard_axis]} "
                     f"for {key_path}"
                 )
-                spec = [None] * len(shape)
-                spec[-1] = shard_axis
+                
+                spec[shard_index] = shard_axis
                 if log:
-                    logging.info(f"Column parallel sharding {key_path}: {spec}")
-                return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
-        
-        # Check for row parallel patterns  
-        for pattern in row_parallel_names:
-            if pattern in key_path:
-                # Row parallel: shard first dimension
-                assert len(shape) >= 2, (
-                    f"Row-parallel tensor must have rank >= 2 at {key_path}, got shape {shape}"
-                )
-                assert shape[0] % mesh.shape[shard_axis] == 0, (
-                    f"First dimension {shape[0]} not divisible by mesh {shard_axis} size {mesh.shape[shard_axis]} "
-                    f"for {key_path}"
-                )
-                spec = [None] * len(shape)
-                spec[0] = shard_axis
-                if log:
-                    logging.info(f"Row parallel sharding {key_path}: {spec}")
+                    logging.info(f"Tensor parallel sharding {key_path}: {spec} (shard at index {shard_index})")
                 return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
         
         # Default: use FSDP sharding for remaining parameters
