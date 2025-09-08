@@ -266,8 +266,13 @@ class Attention(nn.Module):
                 'sharded_params': list of ParamAndShardIndex for all matrices that should be sharded
             }
         """
+
         # Check that no LoRA is used - tensor parallel sharding with LoRA not yet supported
         assert len(self.configs) == 1, f"Not tested for multiple configs"
+
+        assert self.configs[0].num_kv_heads == self.configs[0].num_heads, "Not tested for GQA"
+
+
         for config in self.configs:
             if config.lora_configs.get("attn") is not None:
                 raise ValueError("Tensor parallel sharding not supported with LoRA for attention")
@@ -279,12 +284,13 @@ class Attention(nn.Module):
             'sharded_params': [
                 # QKV matrices have num_heads as the second dimension (index 1)
                 # Shape: (3, num_heads, model_dim, head_dim) -> shard on num_heads
-                ParamAndShardIndex('qkv_einsum', 1),
-                ParamAndShardIndex('q_einsum', 1), 
-                ParamAndShardIndex('kv_einsum', 1),
+                ParamAndShardIndex('qkv_einsum', -3),
+                # Shape: (num_heads, model_dim, head_dim) -> shard on num_heads
+                ParamAndShardIndex('q_einsum', -3), 
+                ParamAndShardIndex('kv_einsum', -3),
                 # For output projection, always shard along the num_heads axis
                 # Shape: (num_heads, head_dim, model_dim)
-                ParamAndShardIndex('attn_vec_einsum', 0),
+                ParamAndShardIndex('attn_vec_einsum', -3),
             ]
         }
         
@@ -352,7 +358,7 @@ class FeedForward(nn.Module):
                 # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
                 ParamAndShardIndex('gating_einsum', -1),
                 # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
-                ParamAndShardIndex('linear', 0),
+                ParamAndShardIndex('linear', -2),
             ]
         }
         
@@ -373,6 +379,7 @@ class Block(nn.Module):
         xs = sharding.activation_sharding_constraint(xs)
         drop = nn.Dropout(self.dropout, self.dropout_bdims) if self.dropout else lambda x, _: x
 
+        # TODO: read config, if megatron oass in activation sharding constraints here
         attn = Attention(configs=self.configs, name="attn")
 
         pre_attn = []
@@ -392,6 +399,7 @@ class Block(nn.Module):
         for i, (x, config) in enumerate(zip(xs, self.configs, strict=True)):
             if x is not None:
                 x = RMSNorm(name=_name("pre_ffw_norm", i))(x)  # noqa: PLW2901
+                # TODO: read config, if megatron oass in activation sharding constraints here
                 x = lora.FeedForward(  # noqa: PLW2901
                     features=config.width,
                     hidden_dim=config.mlp_dim,
@@ -437,6 +445,7 @@ class Module(nn.Module):
             static_argnums=(5,),  # 0=self, 5=deterministic
             policy=jax.checkpoint_policies.nothing_saveable,
         )
+        # TODO: ugh have to deal with nn.scan, looks like it's adding a new axis
         self.layers = nn.scan(
             block_cls,
             variable_axes={"params": 0},

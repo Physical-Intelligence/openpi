@@ -179,7 +179,7 @@ class FeedForward(nn.Module):
                 # Gating matrix shape: (2, features, hidden_dim) -> shard on hidden_dim (last dim)
                 ParamAndShardIndex('gating_einsum', -1),
                 # Linear matrix shape: (hidden_dim, features) -> shard on hidden_dim (first dim)
-                ParamAndShardIndex('linear', 0),
+                ParamAndShardIndex('linear', -2),
             ]
         }
         

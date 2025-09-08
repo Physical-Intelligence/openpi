@@ -1,4 +1,4 @@
-"""Tests for FeedForward sharding constraint functionality."""
+"""Tests for FeedForward and Attention sharding constraint functionality."""
 
 import pytest
 import jax
@@ -13,12 +13,35 @@ MODEL_DIM = 512
 HIDDEN_DIM = 2048
 SEQ_LEN = 128
 BATCH_SIZE = 2
+NUM_HEADS = 8
+HEAD_DIM = 64
 
 
 def _create_test_data(batch_size=BATCH_SIZE, seq_len=SEQ_LEN, model_dim=MODEL_DIM):
-    """Create test input data."""
+    """Create test input data for feedforward."""
     key = jax.random.key(42)
     return jax.random.normal(key, (batch_size, seq_len, model_dim))
+
+
+def _create_attention_test_data(batch_size=BATCH_SIZE, seq_len=SEQ_LEN, model_dim=MODEL_DIM, num_heads=NUM_HEADS, head_dim=HEAD_DIM):
+    """Create test input data for attention."""
+    key = jax.random.key(42)
+    
+    # Input activations - list with single expert (non-expert case)
+    x = jax.random.normal(key, (batch_size, seq_len, model_dim))
+    xs = [x]  # Single expert
+    
+    # Positions for RoPE
+    positions = jnp.arange(seq_len)[None, :].repeat(batch_size, axis=0)
+    
+    # Attention mask - causal mask for autoregressive attention
+    attn_mask = jnp.tril(jnp.ones((seq_len, seq_len)))[None, None, :, :]
+    attn_mask = jnp.broadcast_to(attn_mask, (batch_size, 1, seq_len, seq_len))
+    
+    # No KV cache for testing
+    kv_cache = None
+    
+    return xs, positions, attn_mask, kv_cache
 
 
 def _create_multi_device_mesh():
@@ -42,8 +65,8 @@ def _create_multi_device_mesh():
     return mesh, batch_size
 
 
-def test_constraint_functions_no_mesh():
-    """Test that sharding constraint functions work as no-ops when no mesh is active.
+def test_feedforward_constraint_functions_no_mesh():
+    """Test that feedforward sharding constraint functions work as no-ops when no mesh is active.
     
     This test verifies both LoRA and Gemma FeedForward with different constraint functions.
     """
@@ -104,11 +127,63 @@ def test_constraint_functions_no_mesh():
         assert jnp.allclose(reference_output, output, rtol=1e-6, atol=1e-6), \
             f"Output {i} differs from reference when constraints should be no-ops"
     
-    print(f"All constraint functions work correctly as no-ops without mesh")
+    print(f"All feedforward constraint functions work correctly as no-ops without mesh")
 
 
-def test_parameter_sharding():
-    """Test parameter sharding with both FSDP and Megatron strategies.
+def test_attention_constraint_functions_no_mesh():
+    """Test that attention sharding constraint functions work as no-ops when no mesh is active."""
+    xs, positions, attn_mask, kv_cache = _create_attention_test_data()
+    key = jax.random.key(42)
+    
+    # Create Gemma config for single expert
+    config = gemma.Config(
+        width=MODEL_DIM,
+        depth=1,  # Not used for single attention block
+        mlp_dim=MODEL_DIM * 4,  # Not used for attention
+        num_heads=NUM_HEADS,
+        num_kv_heads=NUM_HEADS,  # Use same number of kv heads as query heads
+        head_dim=HEAD_DIM,
+    )
+    
+    # Test configurations: (input_constraint, output_constraint)
+    constraint_pairs = [
+        (None, None),  # No constraints
+        (sharding.activation_sharding_constraint, sharding.activation_sharding_constraint),  # FSDP
+        (sharding.megatron_input_constraint, sharding.megatron_output_constraint),  # Megatron
+    ]
+    
+    outputs = []
+    
+    for input_constraint, output_constraint in constraint_pairs:
+        # Create attention block with constraints
+        attn_module = gemma.Attention(
+            configs=[config],
+            input_sharding_constraint=input_constraint,
+            output_sharding_constraint=output_constraint
+        )
+        
+        # Test forward pass
+        params = attn_module.init(key, xs, positions, attn_mask, kv_cache)
+        output, _ = attn_module.apply(params, xs, positions, attn_mask, kv_cache)
+        
+        # Verify output shape (should match input shape)
+        expected_shape = xs[0].shape  # (batch_size, seq_len, model_dim)
+        assert output[0].shape == expected_shape, \
+            f"Attention output shape mismatch: expected {expected_shape}, got {output[0].shape}"
+        
+        outputs.append(output[0])
+    
+    # All outputs should be identical when no mesh is active (constraints are no-ops)
+    reference_output = outputs[0]
+    for i, output in enumerate(outputs[1:], 1):
+        assert jnp.allclose(reference_output, output, rtol=1e-6, atol=1e-6), \
+            f"Attention output {i} differs from reference when constraints should be no-ops"
+    
+    print(f"All attention constraint functions work correctly as no-ops without mesh")
+
+
+def test_feedforward_parameter_sharding():
+    """Test feedforward parameter sharding with both FSDP and Megatron strategies.
     
     This test works with single device by testing sharding spec creation and application.
     """
@@ -178,9 +253,77 @@ def test_parameter_sharding():
             print(f"  Note: Could not apply sharding for {module_name} (expected with single device): {e}")
 
 
+def test_attention_parameter_sharding():
+    """Test attention parameter sharding with both FSDP and Megatron strategies."""
+    xs, positions, attn_mask, kv_cache = _create_attention_test_data()
+    key = jax.random.key(42)
+    
+    # Create minimal mesh for testing
+    mesh = sharding.make_mesh(num_fsdp_devices=1)
+    
+    # Create Gemma config for single expert
+    config = gemma.Config(
+        width=MODEL_DIM,
+        depth=1,
+        mlp_dim=MODEL_DIM * 4,
+        num_heads=NUM_HEADS,
+        num_kv_heads=NUM_HEADS,
+        head_dim=HEAD_DIM,
+    )
+    
+    print(f"\nTesting Attention parameter sharding:")
+    
+    # Create attention module
+    attn_module = gemma.Attention(configs=[config])
+    
+    # Initialize parameters
+    params = attn_module.init(key, xs, positions, attn_mask, kv_cache)
+    param_shapes = jax.tree_map(lambda x: x.shape, params)
+    print(f"  Parameter shapes: {param_shapes}")
+    
+    # Test FSDP sharding
+    fsdp_specs = sharding.fsdp_sharding(params, mesh, log=False)
+    fsdp_spec_info = jax.tree_map(lambda x: x.spec, fsdp_specs)
+    print(f"  FSDP sharding specs: {fsdp_spec_info}")
+    
+    # Verify FSDP specs are NamedSharding objects
+    assert all(isinstance(spec, jax.sharding.NamedSharding) 
+               for spec in jax.tree_util.tree_leaves(fsdp_specs)), \
+        "Attention FSDP specs should be NamedSharding objects"
+    
+    # Test Megatron sharding
+    sharding_info = attn_module.megatron_tensor_parallel_sharding_info()
+    sharded_params_spec = sharding_info['sharded_params']
+    
+    megatron_specs = sharding.megatron_tensor_parallel_sharding(
+        params, mesh, sharded_params=sharded_params_spec, log=False
+    )
+    megatron_spec_info = jax.tree_map(lambda x: x.spec, megatron_specs)
+    print(f"  Megatron sharding specs: {megatron_spec_info}")
+    
+    # Verify Megatron specs are NamedSharding objects
+    assert all(isinstance(spec, jax.sharding.NamedSharding) 
+               for spec in jax.tree_util.tree_leaves(megatron_specs)), \
+        "Attention Megatron specs should be NamedSharding objects"
+    
+    # Test applying sharding specs (should work even with single device)
+    try:
+        sharded_params_fsdp = jax.device_put(params, fsdp_specs)
+        sharded_params_megatron = jax.device_put(params, megatron_specs)
+        
+        # Verify shapes are preserved for key parameters
+        assert sharded_params_fsdp['params']['qkv_einsum'].shape == params['params']['qkv_einsum'].shape
+        assert sharded_params_megatron['params']['attn_vec_einsum'].shape == params['params']['attn_vec_einsum'].shape
+        
+        print(f"  Successfully applied sharding specs to Attention parameters")
+        
+    except Exception as e:
+        print(f"  Note: Could not apply sharding for Attention (expected with single device): {e}")
+
+
 @pytest.mark.skipif(jax.device_count() < 2, reason="Requires multiple devices")
-def test_multi_device_sharding():
-    """Test actual multi-device sharding with both activation and parameter sharding.
+def test_feedforward_multi_device_sharding():
+    """Test actual feedforward multi-device sharding with both activation and parameter sharding.
     
     This test only runs when multiple devices are available.
     """
@@ -299,4 +442,125 @@ def test_multi_device_sharding():
             else:
                 print(f"  ✓ {config_name} parameter sharding successful")
     
-    print(f"\nAll multi-device sharding tests passed!")
+    print(f"\nAll feedforward multi-device sharding tests passed!")
+
+
+@pytest.mark.skipif(jax.device_count() < 2, reason="Requires multiple devices")
+def test_attention_multi_device_sharding():
+    """Test actual attention multi-device sharding with both activation and parameter sharding."""
+    mesh, batch_size = _create_multi_device_mesh()
+    xs, positions, attn_mask, kv_cache = _create_attention_test_data(batch_size=batch_size)
+    key = jax.random.key(42)
+    
+    print(f"Using {jax.device_count()} devices: mesh shape = {mesh.shape}")
+    print(f"Input data shape: {xs[0].shape}")
+    
+    # Create Gemma config for single expert
+    config = gemma.Config(
+        width=MODEL_DIM,
+        depth=1,
+        mlp_dim=MODEL_DIM * 4,
+        num_heads=NUM_HEADS,
+        num_kv_heads=NUM_HEADS,
+        head_dim=HEAD_DIM,
+    )
+    
+    with sharding.set_mesh(mesh):
+        # Test Attention with different sharding strategies
+        test_configs = [
+            ("Attention-FSDP", gemma.Attention(
+                configs=[config],
+                input_sharding_constraint=sharding.activation_sharding_constraint,
+                output_sharding_constraint=sharding.activation_sharding_constraint
+            )),
+            ("Attention-Megatron", gemma.Attention(
+                configs=[config],
+                input_sharding_constraint=sharding.megatron_input_constraint,
+                output_sharding_constraint=sharding.megatron_output_constraint
+            )),
+        ]
+        
+        for config_name, attn_module in test_configs:
+            print(f"\nTesting {config_name}:")
+            
+            # Initialize and test forward pass
+            params = attn_module.init(key, xs, positions, attn_mask, kv_cache)
+            output, _ = attn_module.apply(params, xs, positions, attn_mask, kv_cache)
+            
+            # Verify output is sharded and has correct shape
+            expected_shape = (batch_size, SEQ_LEN, MODEL_DIM)
+            assert output[0].shape == expected_shape, \
+                f"{config_name} output shape mismatch: expected {expected_shape}, got {output[0].shape}"
+            
+            assert hasattr(output[0], 'sharding') and output[0].sharding is not None, \
+                f"{config_name} output should be sharded"
+            
+            # Verify shard shapes are correct for different sharding strategies
+            actual_shard_shape = output[0].sharding.shard_shape(output[0].shape)
+            
+            if "FSDP" in config_name:
+                # FSDP sharding: P(("batch", "fsdp")) - shards across both batch and fsdp dimensions
+                expected_shard_shape = (
+                    batch_size // (mesh.shape['batch'] * mesh.shape['fsdp']),  # batch dimension sharded across both axes
+                    SEQ_LEN,                                                    # seq_len not sharded
+                    MODEL_DIM                                                   # model_dim not sharded for FSDP activation sharding
+                )
+            else:  # Megatron
+                # Megatron sharding: P("batch", "fsdp", None) - batch sharded, seq sharded
+                expected_shard_shape = (
+                    batch_size // mesh.shape['batch'],  # batch dimension sharded
+                    SEQ_LEN // mesh.shape['fsdp'],   # seq_len sharded by FSDP
+                    MODEL_DIM      # model_dim not sharded
+                )
+            
+            assert actual_shard_shape == expected_shard_shape, \
+                f"{config_name} shard shape mismatch: expected {expected_shard_shape}, got {actual_shard_shape}"
+            
+            print(f"  ✓ {config_name} forward pass successful, shard shape verified: {actual_shard_shape}")
+            
+            # Test parameter sharding for this configuration
+            if "FSDP" in config_name:
+                param_specs = sharding.fsdp_sharding(params, mesh, log=False)
+            else:  # Megatron
+                sharding_info = attn_module.megatron_tensor_parallel_sharding_info()
+                sharded_params_spec = sharding_info['sharded_params']
+                param_specs = sharding.megatron_tensor_parallel_sharding(
+                    params, mesh, sharded_params=sharded_params_spec, log=False
+                )
+            
+            # Apply parameter sharding and test forward pass
+            sharded_params = jax.device_put(params, param_specs)
+            sharded_output, _ = attn_module.apply(sharded_params, xs, positions, attn_mask, kv_cache)
+            
+            assert sharded_output[0].shape == expected_shape, \
+                f"{config_name} sharded params output shape mismatch"
+            
+            # Verify parameter shard shapes for attention-specific parameters
+            qkv_param = sharded_params['params']['qkv_einsum']['w']
+            attn_vec_param = sharded_params['params']['attn_vec_einsum']['w']
+            
+            assert hasattr(qkv_param, 'sharding') and qkv_param.sharding is not None, \
+                f"{config_name} qkv parameter should be sharded"
+            assert hasattr(attn_vec_param, 'sharding') and attn_vec_param.sharding is not None, \
+                f"{config_name} attn_vec parameter should be sharded"
+            
+            if "Megatron" in config_name:
+                # Verify Megatron parameter sharding patterns
+                qkv_shard_shape = qkv_param.sharding.shard_shape(qkv_param.shape)
+                attn_vec_shard_shape = attn_vec_param.sharding.shard_shape(attn_vec_param.shape)
+                
+                # QKV: (3, NUM_HEADS, MODEL_DIM, HEAD_DIM) -> sharded on NUM_HEADS (index 1)
+                expected_qkv_shard = (3, NUM_HEADS // mesh.shape['fsdp'], MODEL_DIM, HEAD_DIM)
+                # Attn_vec: (NUM_HEADS, HEAD_DIM, MODEL_DIM) -> sharded on NUM_HEADS (index 0)
+                expected_attn_vec_shard = (NUM_HEADS // mesh.shape['fsdp'], HEAD_DIM, MODEL_DIM)
+                
+                assert qkv_shard_shape == expected_qkv_shard, \
+                    f"{config_name} qkv param shard shape mismatch: expected {expected_qkv_shard}, got {qkv_shard_shape}"
+                assert attn_vec_shard_shape == expected_attn_vec_shard, \
+                    f"{config_name} attn_vec param shard shape mismatch: expected {expected_attn_vec_shard}, got {attn_vec_shard_shape}"
+                
+                print(f"  ✓ {config_name} parameter sharding verified: qkv={qkv_shard_shape}, attn_vec={attn_vec_shard_shape}")
+            else:
+                print(f"  ✓ {config_name} parameter sharding successful")
+    
+    print(f"\nAll attention multi-device sharding tests passed!")
