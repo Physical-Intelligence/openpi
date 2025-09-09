@@ -65,14 +65,6 @@ def _create_multi_device_mesh():
     return mesh, batch_size
 
 
-
-
-
-
-
-
-
-
 @pytest.mark.skipif(jax.device_count() < 2, reason="Requires multiple devices")
 def test_feedforward_multi_device_sharding():
     """Test actual feedforward multi-device sharding with both activation and parameter sharding.
@@ -147,7 +139,7 @@ def test_feedforward_multi_device_sharding():
             assert actual_shard_shape == expected_shard_shape, \
                 f"{config_name} shard shape mismatch: expected {expected_shard_shape}, got {actual_shard_shape}"
             
-            print(f"  ✓ {config_name} forward pass successful, shard shape verified: {actual_shard_shape}")
+            print(f"  {config_name} forward pass successful, shard shape verified: {actual_shard_shape}")
             
             # Test parameter sharding for this configuration
             if "FSDP" in config_name:
@@ -189,9 +181,9 @@ def test_feedforward_multi_device_sharding():
                 assert linear_shard_shape == expected_linear_shard, \
                     f"{config_name} linear param shard shape mismatch: expected {expected_linear_shard}, got {linear_shard_shape}"
                 
-                print(f"  ✓ {config_name} parameter sharding verified: gating={gating_shard_shape}, linear={linear_shard_shape}")
+                print(f"  {config_name} parameter sharding verified: gating={gating_shard_shape}, linear={linear_shard_shape}")
             else:
-                print(f"  ✓ {config_name} parameter sharding successful")
+                print(f"  {config_name} parameter sharding successful")
     
     print(f"\nAll feedforward multi-device sharding tests passed!")
 
@@ -267,7 +259,7 @@ def test_attention_multi_device_sharding():
             assert actual_shard_shape == expected_shard_shape, \
                 f"{config_name} shard shape mismatch: expected {expected_shard_shape}, got {actual_shard_shape}"
             
-            print(f"  ✓ {config_name} forward pass successful, shard shape verified: {actual_shard_shape}")
+            print(f"  {config_name} forward pass successful, shard shape verified: {actual_shard_shape}")
             
             # Test parameter sharding for this configuration
             if "FSDP" in config_name:
@@ -309,8 +301,8 @@ def test_attention_multi_device_sharding():
                 assert attn_vec_shard_shape == expected_attn_vec_shard, \
                     f"{config_name} attn_vec param shard shape mismatch: expected {expected_attn_vec_shard}, got {attn_vec_shard_shape}"
                 
-                print(f"  ✓ {config_name} parameter sharding verified: qkv={qkv_shard_shape}, attn_vec={attn_vec_shard_shape}")
+                print(f"  {config_name} parameter sharding verified: qkv={qkv_shard_shape}, attn_vec={attn_vec_shard_shape}")
             else:
-                print(f"  ✓ {config_name} parameter sharding successful")
+                print(f"  {config_name} parameter sharding successful")
     
     print(f"\nAll attention multi-device sharding tests passed!")
