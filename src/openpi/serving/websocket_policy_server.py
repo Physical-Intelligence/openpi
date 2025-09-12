@@ -25,6 +25,14 @@ class WebsocketPolicyServer:
         port: int | None = None,
         metadata: dict | None = None,
     ) -> None:
+        """Initialize the WebSocket policy server.
+
+        Args:
+            policy: The policy instance to serve over WebSocket
+            host: The host address to bind the server to
+            port: The port number to bind the server to, or None for automatic assignment
+            metadata: Additional metadata to send to clients upon connection
+        """
         self._policy = policy
         self._host = host
         self._port = port
@@ -32,9 +40,11 @@ class WebsocketPolicyServer:
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
+        """Start the server and run it indefinitely in a blocking manner."""
         asyncio.run(self.run())
 
     async def run(self):
+        """Run the WebSocket server asynchronously with the configured handler."""
         async with _server.serve(
             self._handler,
             self._host,
@@ -46,6 +56,14 @@ class WebsocketPolicyServer:
             await server.serve_forever()
 
     async def _handler(self, websocket: _server.ServerConnection):
+        """Handle incoming WebSocket connections and process inference requests.
+
+        Sends metadata upon connection, then continuously receives observations,
+        runs inference, and sends back actions with timing information.
+
+        Args:
+            websocket: The WebSocket connection to handle
+        """
         logger.info(f"Connection from {websocket.remote_address} opened")
         packer = msgpack_numpy.Packer()
 
@@ -84,6 +102,15 @@ class WebsocketPolicyServer:
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
+    """Handle health check requests on the /healthz endpoint.
+
+    Args:
+        connection: The server connection instance
+        request: The incoming HTTP request
+
+    Returns:
+        HTTP OK response for /healthz path, None otherwise to continue normal processing
+    """
     if request.path == "/healthz":
         return connection.respond(http.HTTPStatus.OK, "OK\n")
     # Continue with the normal request handling.
