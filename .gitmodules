@@ -4,3 +4,6 @@
 [submodule "third_party/libero"]
 	path = third_party/libero
 	url = https://github.com/szhaovas/LIBERO.git
+[submodule "third_party/SimplerEnv"]
+	path = third_party/SimplerEnv
+	url = https://github.com/simpler-env/SimplerEnv.git

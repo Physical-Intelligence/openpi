@@ -20,6 +20,8 @@ from ribs.emitters import EvolutionStrategyEmitter
 from ribs.schedulers import Scheduler
 from ribs.visualize import grid_archive_heatmap
 
+from tqdm import tqdm, trange
+
 task_5_bddl = (
     Path(get_libero_path("bddl_files"))
     / "custom"
@@ -102,7 +104,7 @@ def evaluate(params, ntrials, seed, video_logdir=None):
                 "image": List, 
                 "wrist_image": List, 
                 "state": List, 
-                "action_plan": List
+                "action": List
             }
     """
     np.random.seed(seed)
@@ -135,7 +137,7 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     trajectories = []
     # Get success rates by running openpi on env
     success_rate = 0
-    for trial_id in range(ntrials):
+    for trial_id in trange(ntrials):
         obs = env.reset()
         action_plan = collections.deque()
 
@@ -145,8 +147,9 @@ def evaluate(params, ntrials, seed, video_logdir=None):
             "image": [],
             "wrist_image": [],
             "state": [],
-            "action_plan": []
+            "action": []
         }
+        print(f"Evaluating trial {trial_id}")
         for t in range(max_steps + num_steps_wait):
             try:
                 if t < num_steps_wait:
@@ -177,13 +180,13 @@ def evaluate(params, ntrials, seed, video_logdir=None):
                     ), f"We want to replan every {replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                     action_plan.extend(action_chunk[: replan_steps])
 
-                    # store in trajectory list
-                    new_trajectory["image"].append(img)
-                    new_trajectory["wrist_image"].append(wrist_img)
-                    new_trajectory["state"].append(element["observation/state"]) 
-                    new_trajectory["action_plan"].append(list(action_plan)) # (?) is this correct
-
                 action = action_plan.popleft()
+
+                # store in trajectory list
+                new_trajectory["image"].append(img)
+                new_trajectory["wrist_image"].append(wrist_img)
+                new_trajectory["state"].append(element["observation/state"]) 
+                new_trajectory["action"].append(action) 
 
                 obs, reward, done, info = env.step(action.tolist())
                 if done:
@@ -214,18 +217,6 @@ def evaluate(params, ntrials, seed, video_logdir=None):
     openpi_client._ws.close()
 
     return entropy, spread, similarity, np.array(trajectories)
-
-# def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
-#     objs = []
-#     meas = []
-#     trajs = []
-#     for sol_id, sol in enumerate(params):
-#         entropy, spread, similarity, trajectoris = evaluate(sol, ntrials, seed+sol_id, video_logdir)
-#         objs.append(entropy)
-#         meas.append([spread, similarity])
-#         trajs.append(trajectoris)
-    
-#     return np.array(objs), np.array(meas), np.array(trajs)
 
 def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
     """Parallelized version of :func:`evaluate`.
@@ -274,7 +265,11 @@ def evaluate_parallel(client, params, ntrials, seed, video_logdir=None):
         meas.append([spread, similarity])
         trajs.append(trajectoris)
 
-    return np.array(objs), np.array(meas), np.array(trajs)
+    print(np.array(objs).shape)
+    print(np.array(meas).shape)
+    print(np.array(trajs).shape)
+
+    return np.array(objs), np.array(meas), np.array(trajs, dtype=object)
 
 def save_heatmap(archive, heatmap_path):
     """Saves a heatmap of the archive to the given path.
@@ -298,7 +293,7 @@ def main(
     seed=42,
     outdir="test_logs",
     reload_from=None,
-    log_every=10,
+    log_every=5
 ):
     logdir = Path(outdir)
     logdir.mkdir(exist_ok=True)
@@ -373,7 +368,7 @@ def main(
     
     start = 1 if reload_from is None else reload_itr + 1
     end = start + iterations
-    for i in range(start, end):
+    for i in trange(start, end):
         solutions = scheduler.ask()
         objectives, measures, trajectories = evaluate_parallel(client=client, params=solutions, ntrials=num_trials_per_sol, seed=seed, video_logdir=None)
         scheduler.tell(objectives, measures, trajectories=trajectories)
@@ -388,6 +383,12 @@ def main(
 
         final_itr = i == end
         if i % log_every == 0 or final_itr:
+            directory = Path(logdir)
+
+            for pkl_file in directory.glob("*.pkl"):
+                pkl_file.unlink() 
+                print(f"Deleted: {pkl_file}")
+
             pkl.dump(
                 scheduler,
                 open(logdir / f"scheduler_{i:08d}.pkl", "wb"),
