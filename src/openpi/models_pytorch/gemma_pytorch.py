@@ -10,6 +10,13 @@ from transformers.models.gemma import modeling_gemma
 
 
 class PaliGemmaWithExpertModel(nn.Module):
+    """
+    A PyTorch module that combines PaliGemma vision-language model with a Gemma expert model.
+    
+    This model integrates a PaliGemma model for multimodal processing with an additional
+    Gemma expert model for specialized language processing tasks.
+    """
+    
     def __init__(
         self,
         vlm_config,
@@ -17,6 +24,16 @@ class PaliGemmaWithExpertModel(nn.Module):
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
     ):
+        """
+        Initialize the PaliGemma with Expert model.
+        
+        Args:
+            vlm_config: Configuration object for the vision-language model
+            action_expert_config: Configuration object for the action expert model
+            use_adarms: List of two booleans indicating whether to use AdaRMS for each model.
+                       Defaults to [False, False] if None
+            precision: Precision type for model parameters, either "bfloat16" or "float32"
+        """
         if use_adarms is None:
             use_adarms = [False, False]
         super().__init__()
@@ -61,6 +78,15 @@ class PaliGemmaWithExpertModel(nn.Module):
         self.to_bfloat16_for_selected_params(precision)
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
+        """
+        Convert model parameters to specified precision while keeping certain parameters in float32.
+        
+        Args:
+            precision: Target precision for most parameters, either "bfloat16" or "float32"
+            
+        Raises:
+            ValueError: If precision is not "bfloat16" or "float32"
+        """
         if precision == "bfloat16":
             self.to(dtype=torch.bfloat16)
         elif precision == "float32":
@@ -83,9 +109,27 @@ class PaliGemmaWithExpertModel(nn.Module):
                 param.data = param.data.to(dtype=torch.float32)
 
     def embed_image(self, image: torch.Tensor):
+        """
+        Extract image features using the PaliGemma vision tower.
+        
+        Args:
+            image: Input image tensor
+            
+        Returns:
+            torch.Tensor: Image feature embeddings
+        """
         return self.paligemma.model.get_image_features(image)
 
     def embed_language_tokens(self, tokens: torch.Tensor):
+        """
+        Convert language tokens to embeddings using the PaliGemma language model.
+        
+        Args:
+            tokens: Input token tensor
+            
+        Returns:
+            torch.Tensor: Token embeddings
+        """
         return self.paligemma.language_model.embed_tokens(tokens)
 
     def forward(
@@ -97,6 +141,26 @@ class PaliGemmaWithExpertModel(nn.Module):
         use_cache: bool | None = None,
         adarms_cond: list[torch.Tensor] | None = None,
     ):
+        """
+        Forward pass through the combined PaliGemma and expert models.
+        
+        Processes input embeddings through either the PaliGemma language model alone,
+        the Gemma expert model alone, or both models in a combined fashion with
+        shared attention computation.
+        
+        Args:
+            attention_mask: Mask to avoid attention on padding tokens
+            position_ids: Position indices for positional embeddings
+            past_key_values: Cached key-value pairs from previous forward passes
+            inputs_embeds: List of two embedding tensors, one for each model
+            use_cache: Whether to return cached key-value pairs
+            adarms_cond: Conditioning tensors for AdaRMS normalization
+            
+        Returns:
+            tuple: A tuple containing:
+                - List of output tensors [prefix_output, suffix_output]
+                - Past key values for caching
+        """
         if adarms_cond is None:
             adarms_cond = [None, None]
         if inputs_embeds[1] is None:
@@ -156,6 +220,19 @@ class PaliGemmaWithExpertModel(nn.Module):
 
             # Define the complete layer computation function for gradient checkpointing
             def compute_layer_complete(layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond):
+                """
+                Compute a complete transformer layer for both models with shared attention.
+                
+                Args:
+                    layer_idx: Index of the current layer
+                    inputs_embeds: Input embeddings for both models
+                    attention_mask: Attention mask tensor
+                    position_ids: Position indices
+                    adarms_cond: AdaRMS conditioning tensors
+                    
+                Returns:
+                    list: Output embeddings for both models after layer processing
+                """
                 models = [self.paligemma.language_model, self.gemma_expert.model]
 
                 query_states = []
@@ -260,6 +337,16 @@ class PaliGemmaWithExpertModel(nn.Module):
             # final norm
             # Define final norm computation function for gradient checkpointing
             def compute_final_norms(inputs_embeds, adarms_cond):
+                """
+                Apply final layer normalization to both model outputs.
+                
+                Args:
+                    inputs_embeds: Input embeddings for both models
+                    adarms_cond: AdaRMS conditioning tensors
+                    
+                Returns:
+                    list: Normalized output embeddings for both models
+                """
                 outputs_embeds = []
                 for i, hidden_states in enumerate(inputs_embeds):
                     out_emb, _ = models[i].norm(hidden_states, cond=adarms_cond[i])
