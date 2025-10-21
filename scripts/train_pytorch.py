@@ -164,7 +164,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
 
         # Save model state using safetensors (handle shared tensors)
         model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        safetensors.torch.save_model(model_to_save, tmp_ckpt_dir / "model.safetensors")
+        model_to_save.paligemma_with_expert.save_model(tmp_ckpt_dir)
 
         # Save optimizer state using PyTorch format
         torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
@@ -221,7 +221,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
 
         if safetensors_path.exists():
             model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-            safetensors.torch.load_model(model_to_load, safetensors_path, device=str(device))
+            model_to_load.paligemma_with_expert.load_model(ckpt_dir)
             logging.info("Loaded model state from safetensors format")
         else:
             raise FileNotFoundError(f"No model checkpoint found at {ckpt_dir}")
@@ -429,15 +429,6 @@ def train_loop(config: _config.TrainConfig):
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
         logging.info("Enabled memory optimizations for 8+ GPU training")
 
-    if use_ddp:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[device.index] if device.type == "cuda" else None,
-            find_unused_parameters=True,  # Disable for memory efficiency
-            gradient_as_bucket_view=True,  # Enable for memory efficiency
-            static_graph=world_size >= 8,  # Enable for 8+ GPUs
-        )
-
     # Load weights from weight_loader if specified (for fine-tuning)
     if config.pytorch_weight_path is not None:
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
@@ -447,6 +438,18 @@ def train_loop(config: _config.TrainConfig):
             (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
+
+    if config.vlm_lora_config is not None or config.expert_lora_config is not None:
+        model.paligemma_with_expert.prepare_lora_training(config.vlm_lora_config, config.expert_lora_config)
+
+    if use_ddp:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[device.index] if device.type == "cuda" else None,
+            find_unused_parameters=True,  # Disable for memory efficiency
+            gradient_as_bucket_view=True,  # Enable for memory efficiency
+            static_graph=world_size >= 8,  # Enable for 8+ GPUs
+        )
 
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
