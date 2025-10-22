@@ -646,7 +646,6 @@ _CONFIGS = [
     TrainConfig(
         # Change the name to reflect your model and dataset.
         name="pi0_libero",
-        batch_size=32,
         # Here you define the model config -- In this example we use pi0 as the model
         # architecture and perform *full* finetuning. in the examples below we show how to modify
         # this to perform *low-memory* (LORA) finetuning and use pi0-FAST as an alternative architecture.
@@ -670,27 +669,6 @@ _CONFIGS = [
         # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
         # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
-        pytorch_weight_path="/data/weixu/.cache/openpi/openpi-assets/pytorch_checkpoints/pi0_base",
-        vlm_lora_config=LoraConfig(
-            r=4,
-            lora_alpha=4,  # same as r
-            lora_dropout=0.0,
-            init_lora_weights="gaussian",
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules="all-linear",
-        ),
-        expert_lora_config=LoraConfig(
-            r=4,
-            lora_alpha=4,  # same as r
-            lora_dropout=0.0,
-            init_lora_weights="gaussian",
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules="all-linear",
-        ),
-        wandb_enabled=False,
-        save_interval=1,
     ),
     TrainConfig(
         name="pi0_libero_low_mem_finetune",
