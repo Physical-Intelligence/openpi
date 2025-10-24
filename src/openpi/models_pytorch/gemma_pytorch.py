@@ -1,11 +1,9 @@
-import pathlib
 from typing import Literal
 
 from peft import LoraConfig
 from peft import PeftModel
 from peft import get_peft_model
 import pytest
-import safetensors.torch
 import torch
 from torch import nn
 from transformers import GemmaForCausalLM
@@ -109,30 +107,6 @@ class PaliGemmaWithExpertModel(nn.Module):
             self.paligemma = get_peft_model(self.paligemma, vlm_lora_config)
         if expert_lora_config is not None:
             self.gemma_expert = get_peft_model(self.gemma_expert, expert_lora_config)
-
-    def load_model(self, load_directory: pathlib.Path):
-        """Load the model weights from the specified directory.
-
-        If LoRA adapters are used, loads the adapters instead.
-        """
-        if isinstance(self.paligemma, PeftModel):
-            self.paligemma.load_adapter(load_directory / "vlm")
-        if isinstance(self.gemma_expert, PeftModel):
-            self.gemma_expert.load_adapter(load_directory / "expert")
-
-    def save_model(self, save_directory: pathlib.Path):
-        """Save the model weights to the specified directory.
-
-        If LoRA adapters are used, saves the adapters instead.
-        """
-        if isinstance(self.paligemma, PeftModel):
-            self.paligemma.save_pretrained(save_directory / "vlm")
-        else:
-            safetensors.torch.save_model(self.paligemma, save_directory / "vlm.safetensors")
-        if isinstance(self.gemma_expert, PeftModel):
-            self.gemma_expert.save_pretrained(save_directory / "expert")
-        else:
-            safetensors.torch.save_model(self.gemma_expert, save_directory / "expert.safetensors")
 
     @property
     def gemma_expert_model(self):

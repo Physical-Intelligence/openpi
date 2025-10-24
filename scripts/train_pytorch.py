@@ -164,7 +164,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
 
         # Save model state using safetensors (handle shared tensors)
         model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        model_to_save.paligemma_with_expert.save_model(tmp_ckpt_dir)
+        model_to_save.save_model(tmp_ckpt_dir)
 
         # Save optimizer state using PyTorch format
         torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
@@ -221,7 +221,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
 
         if safetensors_path.exists():
             model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-            model_to_load.paligemma_with_expert.load_model(ckpt_dir)
+            model_to_load.load_model(ckpt_dir)
             logging.info("Loaded model state from safetensors format")
         else:
             raise FileNotFoundError(f"No model checkpoint found at {ckpt_dir}")

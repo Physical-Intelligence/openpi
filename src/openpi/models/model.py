@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import dataclasses
 import enum
 import logging
+import os
 import pathlib
 from typing import Generic, TypeVar
 
@@ -243,7 +244,17 @@ class BaseModelConfig(abc.ABC):
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
-        safetensors.torch.load_model(model, weight_path)
+
+        if train_config.pytorch_weight_path is not None:
+            model_path = os.path.join(train_config.pytorch_weight_path, "model.safetensors")
+            safetensors.torch.load_model(model, model_path)
+
+        if train_config.vlm_lora_config is not None or train_config.expert_lora_config is not None:
+            model.paligemma_with_expert.prepare_lora_training(
+                train_config.vlm_lora_config, train_config.expert_lora_config
+            )
+
+        model.load_model(pathlib.Path(weight_path))
         return model
 
     @abc.abstractmethod
