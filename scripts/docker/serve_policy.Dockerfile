@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=packages/openpi-client/pyproject.toml,target=packages/openpi-client/pyproject.toml \
     --mount=type=bind,source=packages/openpi-client/src,target=packages/openpi-client/src \
-    GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen --no-install-project --no-dev
+    GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen --no-install-project
 
 # Copy transformers_replace files while preserving directory structure
 COPY src/openpi/models_pytorch/transformers_replace/ /tmp/transformers_replace/
