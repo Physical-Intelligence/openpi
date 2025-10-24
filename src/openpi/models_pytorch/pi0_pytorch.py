@@ -1,7 +1,7 @@
 from collections import defaultdict
 import logging
 import math
-import pathlib
+import os
 
 import safetensors.torch
 import torch
@@ -150,17 +150,17 @@ class PI0Pytorch(nn.Module):
         except ImportError:
             raise ValueError(msg) from None
 
-    def save_model(self, save_directory: pathlib.Path, *, only_trainable: bool = True):
+    def save_model(self, weight_path: str | os.PathLike, *, only_trainable: bool = True):
         # self.state_dict() contains two shared tensors:
         #   paligemma_with_expert.paligemma.base_model.model.lm_head.weight
         #   paligemma_with_expert.paligemma.base_model.model.model.language_model.embed_tokens.weight
         # We need to deduplicate them before saving with safetensors
         state_dict = get_dedup_state_dict(self, only_trainable=only_trainable)
-        safetensors.torch.save_file(state_dict, str(save_directory / "pi0.safetensors"))
+        safetensors.torch.save_file(state_dict, weight_path)
 
-    def load_model(self, load_directory: pathlib.Path, *, only_trainable: bool = True):
+    def load_model(self, weight_path: str | os.PathLike, *, only_trainable: bool = True):
         state_dict = get_dedup_state_dict(self, only_trainable=only_trainable)
-        loaded_state_dict = safetensors.torch.load_file(str(load_directory / "pi0.safetensors"))
+        loaded_state_dict = safetensors.torch.load_file(weight_path)
         assert set(loaded_state_dict.keys()) == set(state_dict.keys()), (
             "Loaded state dict keys do not match model state dict keys."
             "Mismatched keys: "

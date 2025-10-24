@@ -164,7 +164,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
 
         # Save model state using safetensors (handle shared tensors)
         model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        model_to_save.save_model(tmp_ckpt_dir)
+        model_to_save.save_model(tmp_ckpt_dir / "model.safetensors")
 
         # Save optimizer state using PyTorch format
         torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
@@ -221,7 +221,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
 
         if safetensors_path.exists():
             model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-            model_to_load.load_model(ckpt_dir)
+            model_to_load.load_model(safetensors_path)
             logging.info("Loaded model state from safetensors format")
         else:
             raise FileNotFoundError(f"No model checkpoint found at {ckpt_dir}")
@@ -441,6 +441,9 @@ def train_loop(config: _config.TrainConfig):
 
     if config.vlm_lora_config is not None or config.expert_lora_config is not None:
         model.paligemma_with_expert.prepare_lora_training(config.vlm_lora_config, config.expert_lora_config)
+
+    if config.freeze_vlm:
+        model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
 
     if use_ddp:
         model = torch.nn.parallel.DistributedDataParallel(
