@@ -528,7 +528,7 @@ class TrainConfig:
 
     vlm_lora_config: LoraConfig | None = None
     expert_lora_config: LoraConfig | None = None
-    freeze_vlm: bool = (False,)
+    freeze_vlm: bool = False
 
     @property
     def assets_dirs(self) -> pathlib.Path:
