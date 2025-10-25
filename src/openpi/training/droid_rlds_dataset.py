@@ -203,7 +203,8 @@ class DroidRldsDataset:
         dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
-        dataset = dataset.shuffle(shuffle_buffer_size)
+        if shuffle:
+            dataset = dataset.shuffle(shuffle_buffer_size)
         dataset = dataset.batch(batch_size)
         # Note =>> Seems to reduce memory usage without affecting speed?
         dataset = dataset.with_ram_budget(1)
