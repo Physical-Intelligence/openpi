@@ -439,8 +439,7 @@ def train_loop(config: _config.TrainConfig):
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
-    if config.vlm_lora_config is not None or config.expert_lora_config is not None:
-        model.paligemma_with_expert.prepare_lora_training(config.vlm_lora_config, config.expert_lora_config)
+    model.paligemma_with_expert.prepare_lora_training(config.vlm_lora_config, config.expert_lora_config)
 
     if config.freeze_vlm:
         model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
