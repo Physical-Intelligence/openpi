@@ -249,13 +249,13 @@ class BaseModelConfig(abc.ABC):
             model_path = os.path.join(train_config.pytorch_weight_path, "model.safetensors")
             safetensors.torch.load_model(model, model_path)
 
-        if train_config.freeze_vlm:
-            model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
-
         if train_config.vlm_lora_config is not None or train_config.expert_lora_config is not None:
             model.paligemma_with_expert.prepare_lora_training(
                 train_config.vlm_lora_config, train_config.expert_lora_config
             )
+
+        if train_config.freeze_vlm:
+            model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
 
         model.load_model(weight_path)
         return model
