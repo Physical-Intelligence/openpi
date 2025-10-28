@@ -10,6 +10,7 @@ from openpi.models import model as _model
 import openpi.models.gemma as _gemma
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
+from scripts.rtc_eval import RTCConfig
 
 if TYPE_CHECKING:
     from openpi.models.pi0 import Pi0
@@ -31,6 +32,8 @@ class Pi0Config(_model.BaseModelConfig):
     pi05: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
+
+    rtc_config: RTCConfig | None = None
 
     def __post_init__(self):
         if self.max_token_len is None:
