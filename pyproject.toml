@@ -38,6 +38,7 @@ dependencies = [
     "rich>=14.0.0",
     "polars>=1.30.0",
     "peft==0.17.1",
+    "tensorboard==2.15",
 ]
 
 

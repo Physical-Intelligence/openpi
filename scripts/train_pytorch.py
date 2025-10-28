@@ -38,13 +38,13 @@ import torch
 import torch.distributed as dist
 import torch.nn.parallel
 import tqdm
-import wandb
 
 import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
+import openpi.wandb as wandb
 
 
 def init_logging():
@@ -81,14 +81,16 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, enabled: bool = T
 
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        wandb.init(id=run_id, resume="must", project=config.project_name, summary_dir=config.summary_dir)
     else:
         wandb.init(
             name=config.exp_name,
             config=dataclasses.asdict(config),
             project=config.project_name,
+            summary_dir=str(ckpt_dir),
         )
-        (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
+        if not wandb.use_tensorboard():
+            (ckpt_dir / "wandb_id.txt").write_text(wandb.wandb.run.id)
 
 
 def setup_ddp():
