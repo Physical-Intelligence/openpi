@@ -38,6 +38,10 @@ class Pi0Config(_model.BaseModelConfig):
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
 
+    def to_dict(self) -> dict[str, object]:
+        """Converts the dataclass to a dictionary."""
+        return dataclasses.asdict(self)
+
     @property
     @override
     def model_type(self) -> _model.ModelType:

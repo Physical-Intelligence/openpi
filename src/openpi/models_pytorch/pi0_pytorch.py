@@ -1,6 +1,9 @@
+from collections import defaultdict
 import logging
 import math
+import os
 
+import safetensors.torch
 import torch
 from torch import Tensor
 from torch import nn
@@ -81,6 +84,30 @@ def make_att_2d_masks(pad_masks, att_masks):
     return att_2d_masks & pad_2d_masks
 
 
+def get_dedup_state_dict(module: torch.nn.Module, *, only_trainable: bool = True) -> dict[str, Tensor]:
+    """Get a state dict with deduplicated tensors.
+
+    Args:
+        module: The module to get the state dict from.
+        only_trainable: If True, only include non parameter or trainable parameters.
+    Returns:
+        A state dict with deduplicated tensors.
+    """
+    state_dict = module.state_dict(keep_vars=True)
+    parameters = dict(module.named_parameters())
+    shared_tensors: defaultdict[int, list] = defaultdict(list)
+    for k, v in state_dict.items():
+        shared_tensors[id(v)].append(k)
+    state_dict = {k: v for k, v in state_dict.items() if len(shared_tensors[id(v)]) == 1 or k in parameters}
+    for v in state_dict.values():
+        del shared_tensors[id(v)]
+    for v in shared_tensors.values():
+        raise ValueError(f"Shared tensors which are not parameter are detected in state_dict for keys {v}.")
+    if only_trainable:
+        state_dict = {k: v for k, v in state_dict.items() if k not in parameters or parameters[k].requires_grad}
+    return {k: v.detach() for k, v in state_dict.items()}
+
+
 class PI0Pytorch(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -123,12 +150,30 @@ class PI0Pytorch(nn.Module):
         except ImportError:
             raise ValueError(msg) from None
 
+    def save_model(self, weight_path: str | os.PathLike, *, only_trainable: bool = True):
+        # self.state_dict() contains two shared tensors:
+        #   paligemma_with_expert.paligemma.base_model.model.lm_head.weight
+        #   paligemma_with_expert.paligemma.base_model.model.model.language_model.embed_tokens.weight
+        # We need to deduplicate them before saving with safetensors
+        state_dict = get_dedup_state_dict(self, only_trainable=only_trainable)
+        safetensors.torch.save_file(state_dict, weight_path)
+
+    def load_model(self, weight_path: str | os.PathLike, *, only_trainable: bool = True):
+        state_dict = get_dedup_state_dict(self, only_trainable=only_trainable)
+        loaded_state_dict = safetensors.torch.load_file(weight_path)
+        assert set(loaded_state_dict.keys()) == set(state_dict.keys()), (
+            "Loaded state dict keys do not match model state dict keys."
+            "Mismatched keys: "
+            f"{set(loaded_state_dict.keys()).symmetric_difference(set(state_dict.keys()))}"
+        )
+        self.load_state_dict(loaded_state_dict, strict=False)
+
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
         self.gradient_checkpointing_enabled = True
         self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = True
         self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = True
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = True
+        self.paligemma_with_expert.gemma_expert_model.gradient_checkpointing = True
 
         logging.info("Enabled gradient checkpointing for PI0Pytorch model")
 
@@ -137,7 +182,7 @@ class PI0Pytorch(nn.Module):
         self.gradient_checkpointing_enabled = False
         self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = False
         self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = False
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = False
+        self.paligemma_with_expert.gemma_expert_model.gradient_checkpointing = False
 
         logging.info("Disabled gradient checkpointing for PI0Pytorch model")
 
@@ -444,7 +489,7 @@ class PI0Pytorch(nn.Module):
 
         # Prepare attention masks
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
-        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
+        self.paligemma_with_expert.gemma_expert_model.config._attn_implementation = "eager"  # noqa: SLF001
 
         outputs_embeds, _ = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,

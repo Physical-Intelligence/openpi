@@ -1,5 +1,8 @@
 from typing import Literal
 
+from peft import LoraConfig
+from peft import PeftModel
+from peft import get_peft_model
 import pytest
 import torch
 from torch import nn
@@ -56,7 +59,10 @@ class PaliGemmaWithExpertModel(nn.Module):
 
         self.paligemma = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
         self.gemma_expert = GemmaForCausalLM(config=action_expert_config_hf)
-        self.gemma_expert.model.embed_tokens = None
+
+        # Although we don't need embed_tokens for expert model, we still need to
+        # make an nn.Module for it so that peft can work properly.
+        self.gemma_expert_model.embed_tokens = torch.nn.Module()
 
         self.to_bfloat16_for_selected_params(precision)
 
@@ -88,6 +94,27 @@ class PaliGemmaWithExpertModel(nn.Module):
     def embed_language_tokens(self, tokens: torch.Tensor):
         return self.paligemma.language_model.embed_tokens(tokens)
 
+    def prepare_lora_training(self, vlm_lora_config: LoraConfig, expert_lora_config: LoraConfig):
+        """Apply LoRA adapters to the VLM and expert models.
+
+        Note: this should be called after loading the original model weights.
+
+        Args:
+            vlm_lora_config: LoRA configuration for the VLM model.
+            expert_lora_config: LoRA configuration for the expert model.
+        """
+        if vlm_lora_config is not None:
+            self.paligemma = get_peft_model(self.paligemma, vlm_lora_config)
+        if expert_lora_config is not None:
+            self.gemma_expert = get_peft_model(self.gemma_expert, expert_lora_config)
+
+    @property
+    def gemma_expert_model(self):
+        """Get the underlying Gemma model for the expert."""
+        if isinstance(self.gemma_expert, PeftModel):
+            return self.gemma_expert.model.model
+        return self.gemma_expert.model
+
     def forward(
         self,
         attention_mask: torch.Tensor | None = None,
@@ -112,7 +139,7 @@ class PaliGemmaWithExpertModel(nn.Module):
             prefix_output = prefix_output.last_hidden_state
             suffix_output = None
         elif inputs_embeds[0] is None:
-            suffix_output = self.gemma_expert.model.forward(
+            suffix_output = self.gemma_expert_model.forward(
                 inputs_embeds=inputs_embeds[1],
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -124,21 +151,21 @@ class PaliGemmaWithExpertModel(nn.Module):
             prefix_output = None
             prefix_past_key_values = None
         else:
-            models = [self.paligemma.language_model, self.gemma_expert.model]
+            models = [self.paligemma.language_model, self.gemma_expert_model]
             num_layers = self.paligemma.config.text_config.num_hidden_layers
 
             # Check if gradient checkpointing is enabled for any of the models
             use_gradient_checkpointing = (
-                hasattr(self.gemma_expert.model, "gradient_checkpointing")
-                and self.gemma_expert.model.gradient_checkpointing
+                hasattr(self.gemma_expert_model, "gradient_checkpointing")
+                and self.gemma_expert_model.gradient_checkpointing
                 and self.training
             ) or (hasattr(self, "gradient_checkpointing") and self.gradient_checkpointing and self.training)
 
             # Force enable gradient checkpointing if we're in training mode and the model supports it
-            if self.training and hasattr(self.gemma_expert.model, "gradient_checkpointing"):
-                if not self.gemma_expert.model.gradient_checkpointing:
+            if self.training and hasattr(self.gemma_expert_model, "gradient_checkpointing"):
+                if not self.gemma_expert_model.gradient_checkpointing:
                     print("Forcing gradient checkpointing to be enabled for Gemma expert model")
-                    self.gemma_expert.model.gradient_checkpointing = True
+                    self.gemma_expert_model.gradient_checkpointing = True
                 use_gradient_checkpointing = True
 
             # Debug gradient checkpointing status
@@ -146,17 +173,17 @@ class PaliGemmaWithExpertModel(nn.Module):
                 print(f"Gemma expert model gradient checkpointing: {use_gradient_checkpointing}")
                 print(f"Model training mode: {self.training}")
                 print(
-                    f"Gemma expert model has gradient_checkpointing attr: {hasattr(self.gemma_expert.model, 'gradient_checkpointing')}"
+                    f"Gemma expert model has gradient_checkpointing attr: {hasattr(self.gemma_expert_model, 'gradient_checkpointing')}"
                 )
-                if hasattr(self.gemma_expert.model, "gradient_checkpointing"):
+                if hasattr(self.gemma_expert_model, "gradient_checkpointing"):
                     print(
-                        f"Gemma expert model gradient_checkpointing value: {self.gemma_expert.model.gradient_checkpointing}"
+                        f"Gemma expert model gradient_checkpointing value: {self.gemma_expert_model.gradient_checkpointing}"
                     )
                 self._debug_gc_printed = True
 
             # Define the complete layer computation function for gradient checkpointing
             def compute_layer_complete(layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond):
-                models = [self.paligemma.language_model, self.gemma_expert.model]
+                models = [self.paligemma.language_model, self.gemma_expert_model]
 
                 query_states = []
                 key_states = []
