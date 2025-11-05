@@ -20,7 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
-import openpi.policies.ur5e_sim_policy as ur5e_sim_policy
+import openpi.policies.ur5e_policy as ur5e_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -457,8 +457,12 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
         )
 
 @dataclasses.dataclass(frozen=True)
-class LeRobotUR5eSimDataConfig(DataConfigFactory):
-
+class LeRobotUR5eDataConfig(DataConfigFactory):
+    """  
+    Data config for UR5e robot in real and in simulation. Both systems use the same lerobot training data format.
+    The lerobot mappings come from ros2 bags collected via teleoperated control of the UR5e robot with a Robotiq gripper
+    and parsed using examples/ur5/parse_ur5e_bags_to_lerobot.py script.
+    """
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Remap keys produced by parse_ur5e_bags_to_lerobot.py into the flattened structure consumed by the
@@ -479,8 +483,8 @@ class LeRobotUR5eSimDataConfig(DataConfigFactory):
 
         # Convert the repacked dictionary to the format expected by the UR5e pi0-FAST policy helpers.
         data_transforms = _transforms.Group(
-            inputs=[ur5e_sim_policy.UR5eSimInputs(model_type=model_config.model_type)],
-            outputs=[ur5e_sim_policy.UR5eSimOutputs()],
+            inputs=[ur5e_policy.UR5eInputs(model_type=model_config.model_type)],
+            outputs=[ur5e_policy.UR5eOutputs()],
         )
 
         # Convert absolute actions to delta actions.
@@ -708,7 +712,7 @@ _CONFIGS = [
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
-    # LoRA fine-tuning for a local UR5e + 2F-85 sim dataset.
+    # LoRA fine-tuning for a local UR5e sim + 2F-85 sim dataset.
     TrainConfig(
         name="ur5e_2f85_sim_pi0_fast_lora_finetune_local",
         model=pi0_fast.Pi0FASTConfig(
@@ -717,7 +721,7 @@ _CONFIGS = [
             max_token_len=180,
             paligemma_variant="gemma_2b_lora",
         ),
-        data=LeRobotUR5eSimDataConfig(
+        data=LeRobotUR5eDataConfig(
             repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_sim_marker_in_bowl",
             assets=AssetsConfig(
                 # path to find the norm stats file
@@ -726,7 +730,6 @@ _CONFIGS = [
                 asset_id="ur5e_2f85_sim_marker_in_bowl",
             ),
             base_config=DataConfig(
-                repo_id=str(pathlib.Path.home() / "datasets" / "ur5e_2f85_sim_pi0_fast_lora_local"),
                 local_files_only=True,
                 action_sequence_keys=("action",),
             ),
@@ -756,6 +759,56 @@ _CONFIGS = [
         batch_size=4,
         num_train_steps=5_000,
     ),
+
+    # LoRA fine-tuning for a local UR5e + 2F-85 irl dataset.
+    TrainConfig(
+        name="ur5e_2f85_pi0_fast_lora_finetune_local",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=32,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_marker_in_bowl_1",
+            assets=AssetsConfig(
+                # path to find the norm stats file
+                assets_dir="/home/levi/.cache/huggingface/lerobot",
+                # particular asset associated with the norm stats
+                asset_id="ur5e_2f85_marker_in_bowl_1",
+            ),            
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        # Learning rate and optimizer settings for LoRA finetuning.
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1.5e-4,
+            decay_steps=10_000,
+            decay_lr=1.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(
+            b1=0.9, # momentum
+            b2=0.99, # rmsprop
+            clip_gradient_norm=0.5, # gradient clipping
+        ),
+        # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=32,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        # Turn off Exponential Moving Average for LoRA finetuning.
+        ema_decay=None,
+        batch_size=4,
+        num_train_steps=5_000,
+    ),
+
     #
     # Fine-tuning Droid (local LeRobot dataset).
     #

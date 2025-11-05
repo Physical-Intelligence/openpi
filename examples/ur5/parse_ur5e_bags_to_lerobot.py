@@ -38,6 +38,25 @@ def frame_is_valid(frame):
     )
 
 
+def frame_passes_velocity_threshold(frame, joint_reordering, velocity_threshold, metrics=None):
+    """Return True when any joint's absolute velocity meets or exceeds the threshold."""
+    _, state_velocities = _parse_joint_components(frame["state"], joint_reordering)
+    max_velocity = float(np.max(np.abs(state_velocities)))
+
+    # Inspect queued actions as well; the first element becomes the stored action.
+    for joint_state_msg, _ in frame["actions"]:
+        _, action_velocities = _parse_joint_components(joint_state_msg, joint_reordering)
+        max_velocity = max(max_velocity, float(np.max(np.abs(action_velocities))))
+
+    if metrics is not None:
+        metrics.setdefault("max_velocities", []).append(max_velocity)
+
+    if velocity_threshold is None or velocity_threshold <= 0.0:
+        return True, max_velocity
+
+    return max_velocity >= velocity_threshold, max_velocity
+
+
 def parse_image(msg, target_size=(224, 224)):
     """
     Deserialize sensor_msgs/Image and return a HxWx3 uint8 RGB numpy array resized to target_size.
@@ -158,9 +177,17 @@ def process_frame(frame: dict, joint_reordering) -> dict:
     return frame
 
 
-def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str, *, time_source: str = "header"):
+def load_bag(
+    bag_file_path: str,
+    dataset: LeRobotDataset,
+    task_description: str,
+    *,
+    time_source: str = "header",
+    joint_velocity_threshold: float = 0.0,
+    global_velocity_metrics=None,
+):
     reader = SequentialReader()
-    storage_options = StorageOptions(uri=bag_file_path, storage_id="sqlite3")
+    storage_options = StorageOptions(uri=bag_file_path, storage_id="mcap")
     converter_options = ConverterOptions()
     reader.open(storage_options, converter_options)
 
@@ -186,6 +213,8 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
     wrist_msgs = 0
     joint_msgs = 0
     actions_appended = 0
+    skipped_velocity_frames = 0
+    velocity_metrics = {"max_velocities": []}
 
     def explain_frame_state(f):
         reasons = []
@@ -225,38 +254,49 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
                     bag_file_path,
                 )
             else:
-                actions_in_frame = len(frame["actions"])
-                processed_frame = process_frame(frame, joint_reordering)
-                dataset.add_frame(processed_frame)
-                frame_count += 1
-                total_actions_buffered += actions_in_frame
+                velocity_ok, max_velocity = frame_passes_velocity_threshold(
+                    frame,
+                    joint_reordering,
+                    joint_velocity_threshold,
+                    metrics=velocity_metrics,
+                )
+                # If the frame passes the velocity gate, process and add it to the dataset
+                if velocity_ok:
+                    actions_in_frame = len(frame["actions"])
+                    processed_frame = process_frame(frame, joint_reordering)
+                    dataset.add_frame(processed_frame)
+                    frame_count += 1
+                    total_actions_buffered += actions_in_frame
 
-                if first_frame_timestamp is None:
-                    first_frame_timestamp = t
-                last_frame_timestamp = t
+                    if first_frame_timestamp is None:
+                        first_frame_timestamp = t
+                    last_frame_timestamp = t
 
-                state_vec = np.asarray(processed_frame["state"], dtype=np.float64)
-                action_vec = np.asarray(processed_frame["action"], dtype=np.float64)
+                    # Compute statistics
+                    state_vec = np.asarray(processed_frame["state"], dtype=np.float64)
+                    action_vec = np.asarray(processed_frame["action"], dtype=np.float64)
 
-                if state_sum is None:
-                    state_sum = np.zeros_like(state_vec, dtype=np.float64)
-                    state_sq_sum = np.zeros_like(state_vec, dtype=np.float64)
-                    action_sum = np.zeros_like(action_vec, dtype=np.float64)
-                    action_sq_sum = np.zeros_like(action_vec, dtype=np.float64)
+                    if state_sum is None:
+                        state_sum = np.zeros_like(state_vec, dtype=np.float64)
+                        state_sq_sum = np.zeros_like(state_vec, dtype=np.float64)
+                        action_sum = np.zeros_like(action_vec, dtype=np.float64)
+                        action_sq_sum = np.zeros_like(action_vec, dtype=np.float64)
+                    
+                    # compute sums for mean/std
+                    state_sum += state_vec
+                    state_sq_sum += state_vec ** 2
+                    action_sum += action_vec
+                    action_sq_sum += action_vec ** 2
+                else:
+                    skipped_velocity_frames += 1
+                    logger.debug(
+                        "Skipping frame for bag %s due to low joint velocity (max=%.6f < threshold=%.6f)",
+                        bag_file_path,
+                        0.0 if max_velocity is None else max_velocity,
+                        joint_velocity_threshold,
+                    )
 
-                state_sum += state_vec
-                state_sq_sum += state_vec ** 2
-                action_sum += action_vec
-                action_sq_sum += action_vec ** 2
-                # logger.info(
-                #     "Added frame #%d from bag %s at topic=%s timestamp=%s",
-                #     frame_count,
-                #     bag_file_path,
-                #     topic,
-                #     t,
-                # )
-
-                # Start a new frame
+                # Start a new frame, even if velocity gating rejected the current one.
                 frame = {
                     "image": None,
                     "wrist_image": None,
@@ -334,7 +374,7 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
             actions_appended,
         )
         return
-
+    # compute all the statistics for the episode
     episode_duration_seconds = 0.0
     if first_frame_timestamp is not None and last_frame_timestamp is not None:
         episode_duration_seconds = (last_frame_timestamp - first_frame_timestamp) / 1_000_000_000
@@ -379,6 +419,7 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
         "Frame window: %s → %s\n"
         "Frames: %d | Duration: %.2fs | Avg FPS: %s\n"
         "Actions appended: %d | Avg buffered actions/frame: %.2f\n"
+        "Frames skipped by velocity gate: %d (threshold=%.6f)\n"
         "State mean/std: %s / %s\n"
         "Action mean/std: %s / %s\n"
         "Image msgs: %d | Wrist msgs: %d | Joint msgs: %d\n"
@@ -392,6 +433,8 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
         avg_fps_str,
         actions_appended,
         avg_actions_per_frame,
+        skipped_velocity_frames,
+        joint_velocity_threshold,
         state_mean_str,
         state_std_str,
         action_mean_str,
@@ -402,6 +445,24 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
     )
 
     dataset.save_episode()
+
+    if velocity_metrics["max_velocities"]:
+        velocities_arr = np.asarray(velocity_metrics["max_velocities"], dtype=np.float64)
+        hist_counts, hist_edges = np.histogram(velocities_arr, bins=20)
+        # output only 2 decimal places for readability
+        logger.info(
+            "Joint velocity histogram counts=%s edges=%s",
+            hist_counts.tolist(),
+            np.round(hist_edges, decimals=2).tolist(),
+        )
+        # percentiles = np.percentile(velocities_arr, [5, 50, 95])
+        # logger.info(
+        #     "Joint velocity percentiles (5/50/95) rad/s: %s",
+        #     np.array2string(percentiles, precision=6, separator=", "),
+        # )
+
+        if global_velocity_metrics is not None:
+            global_velocity_metrics.extend(velocity_metrics["max_velocities"])
 
     if first_timestamp is not None and last_timestamp is not None:
         # Convert ns->s using integer division to avoid float rounding on huge stamps.
@@ -458,6 +519,12 @@ if __name__ == "__main__":
         default="record",
         help="Use 'record' (bag record time) or 'header' (message header stamp) to order messages",
     )
+    csv_parser.add_argument(
+        "--joint_velocity_threshold",
+        type=float,
+        default=0.0,
+        help="Minimum absolute joint velocity (rad/s) for any joint, required to keep a frame.",
+    )
 
     # parse args after subparsers and args have been defined
     args = parser.parse_args()
@@ -510,5 +577,26 @@ if __name__ == "__main__":
         image_writer_threads=4,
     )
 
+    all_velocity_samples = []
+
     for bag_file_path, task_description in zip(bags, task_descriptions):
-        load_bag(bag_file_path, dataset, task_description, time_source=getattr(args, "time_source", "record"))
+        load_bag(
+            bag_file_path,
+            dataset,
+            task_description,
+            time_source=getattr(args, "time_source", "record"),
+            joint_velocity_threshold=args.joint_velocity_threshold,
+            global_velocity_metrics=all_velocity_samples,
+        )
+
+    if all_velocity_samples:
+        velocities_arr = np.asarray(all_velocity_samples, dtype=np.float64)
+        hist_counts, hist_edges = np.histogram(velocities_arr, bins=100)
+        logger.info(
+            "=============================================================================",
+            "Aggregate joint velocity histogram counts=%s edges=%s (across %d frames)",
+            hist_counts.tolist(),
+            np.round(hist_edges, decimals=5).tolist(),
+            len(all_velocity_samples),
+        )
+        

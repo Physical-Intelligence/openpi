@@ -27,6 +27,16 @@
                 "--time_source", "record",
                 "--dataset_name", "ur5e_2f85_marker_in_bowl_1"
             ]
+        },
+        {
+            "name": "Compute normstats from lerobot dataset",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "scripts/compute_norm_stats.py",
+            "console": "integratedTerminal",
+            "args": [                
+                "--config_name", "ur5e_2f85_pi0_fast_lora_finetune_local"
+            ]
         }
     ]
 }

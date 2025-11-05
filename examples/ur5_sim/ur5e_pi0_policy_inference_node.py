@@ -27,10 +27,11 @@ from openpi.training import config as train_config
 
 
 # Load the trained UR5e Pi0_fast local policy
-cfg = train_config.get_config("ur5e_2f85_sim_pi0_fast_lora_finetune_local")
+cfg = train_config.get_config("ur5e_2f85_pi0_fast_lora_finetune_local")
 policy = _policy_config.create_trained_policy(
     train_config=cfg,
-    checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_fast_lora_finetune_local/ur5e_2f85_sim-marker-bowl1/14999",
+    #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_fast_lora_finetune_local/ur5e_2f85_sim-marker-bowl1/14999",
+    checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_pi0_fast_lora_finetune_local/droid-marker-bowl_1/9999",
     # This maps the ros2 topic/input names to the expected policy input names
     repack_transforms=_transforms.Group(inputs=[
         _transforms.RepackTransform({
