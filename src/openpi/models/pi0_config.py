@@ -13,6 +13,7 @@ import openpi.shared.nnx_utils as nnx_utils
 
 if TYPE_CHECKING:
     from openpi.models.pi0 import Pi0
+    from openpi.models_pytorch.pi0_pytorch import Pi0Pytorch
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,6 +55,11 @@ class Pi0Config(_model.BaseModelConfig):
         from openpi.models.pi0 import Pi0
 
         return Pi0(self, rngs=nnx.Rngs(rng))
+
+    def create_pytorch(self) -> "Pi0Pytorch":
+        from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
+
+        return PI0Pytorch(self)
 
     @override
     def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:

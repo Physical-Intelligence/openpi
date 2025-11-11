@@ -159,6 +159,9 @@ def create_rlds_dataset(
     shuffle: bool = False,
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
+
+    assert data_config.dataset_wrapper_ctor is None, "Dataset wrapper is not supported for RLDS datasets yet."
+
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
         batch_size=batch_size,
@@ -171,7 +174,7 @@ def create_rlds_dataset(
 
 def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
     """Transform the dataset by applying the data transforms."""
-    norm_stats = {}
+    norm_stats = None
     if data_config.repo_id != "fake" and not skip_norm_stats:
         if data_config.norm_stats is None:
             raise ValueError(
@@ -301,6 +304,8 @@ def create_torch_data_loader(
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    if data_config.dataset_wrapper_ctor is not None:
+        dataset = data_config.dataset_wrapper_ctor(dataset)
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
@@ -334,7 +339,9 @@ def create_torch_data_loader(
         framework=framework,
     )
 
-    return DataLoaderImpl(data_config, data_loader)
+    if data_config.data_loader_wrapper_ctor is None:
+        return DataLoaderImpl(data_config, data_loader)
+    return data_config.data_loader_wrapper_ctor(data_config, data_loader)
 
 
 def create_rlds_data_loader(

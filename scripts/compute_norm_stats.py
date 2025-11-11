@@ -16,11 +16,6 @@ import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
 
 
-class RemoveStrings(transforms.DataTransformFn):
-    def __call__(self, x: dict) -> dict:
-        return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
-
-
 def create_torch_dataloader(
     data_config: _config.DataConfig,
     action_horizon: int,
@@ -38,7 +33,7 @@ def create_torch_dataloader(
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
             # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
-            RemoveStrings(),
+            transforms.RemoveStrings(),
         ],
     )
     if max_frames is not None and max_frames < len(dataset):
@@ -70,7 +65,7 @@ def create_rlds_dataloader(
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
             # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
-            RemoveStrings(),
+            transforms.RemoveStrings(),
         ],
         is_batched=True,
     )

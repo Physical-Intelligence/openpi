@@ -30,6 +30,7 @@ import os
 import platform
 import shutil
 import time
+from typing import Any
 
 import jax
 import numpy as np
@@ -154,7 +155,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         return
 
     # Only save if it's time to save or if it's the final step
-    if (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
+    if global_step % config.save_interval == 0 or global_step == config.num_train_steps:
         # Create temporary directory for atomic checkpoint saving
         final_ckpt_dir = config.checkpoint_dir / f"{global_step}"
         tmp_ckpt_dir = config.checkpoint_dir / f"tmp_{global_step}"
@@ -308,6 +309,28 @@ def log_memory_usage(device, step, phase="unknown"):
     )
 
 
+def train_step(model: torch.nn.Module, batch: Any, device: torch.device):
+    # Forward pass
+    losses = model(batch)
+    # Ensure losses is a tensor and handle different return types
+    if isinstance(losses, list | tuple):
+        losses = {"loss": torch.stack(losses)}
+    elif isinstance(losses, torch.Tensor):
+        losses = {"loss": torch.tensor(losses, device=device, dtype=torch.float32)}
+    else:
+        assert isinstance(losses, dict), (
+            "Model forward must return a tensor or a dict/tuple/list of tensors.")
+
+    losses = jax.tree.map(lambda x: x.mean(), losses)
+
+    loss = losses["loss"]
+
+    # Backward pass
+    loss.backward()
+
+    return losses
+
+
 def train_loop(config: _config.TrainConfig):
     use_ddp, local_rank, device = setup_ddp()
     is_main = (not use_ddp) or (dist.get_rank() == 0)
@@ -366,7 +389,11 @@ def train_loop(config: _config.TrainConfig):
         sample_data_loader = _data.create_data_loader(config, framework="pytorch", shuffle=False)
         sample_batch = next(iter(sample_data_loader))
         # Convert observation and actions to torch tensors
-        observation, actions = sample_batch
+        if isinstance(sample_batch, dict):
+            observation = sample_batch["observation1"]
+            actions = sample_batch["actions1"]
+        else:
+            observation, actions = sample_batch
         sample_batch = observation.to_dict()
         sample_batch["actions"] = actions
 
@@ -408,7 +435,7 @@ def train_loop(config: _config.TrainConfig):
         # Update dtype to match pytorch_training_precision
         object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
-    model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
+    model = model_cfg.create_pytorch().to(device)
 
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
@@ -437,7 +464,9 @@ def train_loop(config: _config.TrainConfig):
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
         safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
+            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
+            model_path,
+            strict=config.strict_load,
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
@@ -518,32 +547,20 @@ def train_loop(config: _config.TrainConfig):
         if use_ddp and hasattr(loader, "set_epoch"):
             loader.set_epoch(global_step // len(loader))
 
-        for observation, actions in loader:
+        for batch in loader:
             # Check if we've reached the target number of steps
             if global_step >= config.num_train_steps:
                 break
 
             # The unified data loader returns (observation, actions) tuple
-            observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
-            actions = actions.to(torch.float32)  # noqa: PLW2901
-            actions = actions.to(device)  # noqa: PLW2901
+            batch = jax.tree.map(lambda x: x.to(device), batch)  # noqa: PLW2901
 
             # Update LR
             for pg in optim.param_groups:
                 pg["lr"] = lr_schedule(global_step)
 
-            # Forward pass
-            losses = model(observation, actions)
-            # Ensure losses is a tensor and handle different return types
-            if isinstance(losses, list | tuple):
-                losses = torch.stack(losses)
-            elif not isinstance(losses, torch.Tensor):
-                losses = torch.tensor(losses, device=device, dtype=torch.float32)
-
-            loss = losses.mean()
-
-            # Backward pass
-            loss.backward()
+            losses = train_step(model, batch, device)
+            loss = losses["loss"]
 
             # Log memory usage after backward pass
             if global_step < 5 and is_main and torch.cuda.is_available():
@@ -564,28 +581,19 @@ def train_loop(config: _config.TrainConfig):
 
             # Collect stats
             if is_main:
-                infos.append(
-                    {
-                        "loss": loss.item(),
-                        "learning_rate": optim.param_groups[0]["lr"],
-                        "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                    }
-                )
+                info = {k: v.item() for k, v in losses.items()}
+                info["learning_rate"] = optim.param_groups[0]["lr"]
+                info["grad_norm"] = float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm
+                infos.append(info)
 
             if is_main and (global_step % config.log_interval == 0):
                 elapsed = time.time() - start_time
 
                 # Average stats over log interval
-                avg_loss = sum(info["loss"] for info in infos) / len(infos)
-                avg_lr = sum(info["learning_rate"] for info in infos) / len(infos)
-
-                avg_grad_norm = None
-                if any("grad_norm" in info for info in infos):
-                    vals = [
-                        info["grad_norm"] for info in infos if "grad_norm" in info and info["grad_norm"] is not None
-                    ]
-                    if len(vals) > 0:
-                        avg_grad_norm = sum(vals) / len(vals)
+                avg_info = jax.tree.map(lambda *args: sum(args) / len(args), *infos)
+                avg_loss = avg_info.get("loss", None)
+                avg_lr = avg_info["learning_rate"]
+                avg_grad_norm = avg_info.get("grad_norm", None)
                 logging.info(
                     f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
                     if avg_grad_norm is not None
@@ -595,13 +603,10 @@ def train_loop(config: _config.TrainConfig):
                 # Log to wandb
                 if config.wandb_enabled and len(infos) > 0:
                     log_payload = {
-                        "loss": avg_loss,
-                        "learning_rate": avg_lr,
                         "step": global_step,
                         "time_per_step": elapsed / config.log_interval,
+                        **avg_info,
                     }
-                    if avg_grad_norm is not None:
-                        log_payload["grad_norm"] = avg_grad_norm
                     wandb.log(log_payload, step=global_step)
 
                 start_time = time.time()
