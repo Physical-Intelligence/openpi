@@ -316,7 +316,7 @@ def train_step(model: torch.nn.Module, batch: Any, device: torch.device):
     if isinstance(losses, list | tuple):
         losses = {"loss": torch.stack(losses)}
     elif isinstance(losses, torch.Tensor):
-        losses = {"loss": torch.tensor(losses, device=device, dtype=torch.float32)}
+        losses = {"loss": losses}
     else:
         assert isinstance(losses, dict), (
             "Model forward must return a tensor or a dict/tuple/list of tensors.")
