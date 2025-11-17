@@ -137,6 +137,16 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
+    # Check if we should use cache-only loading (controlled by environment variable)
+    use_cache_only = os.environ.get("LEROBOT_USE_CACHE_ONLY", "0") == "1"
+
+    if use_cache_only:
+        # Use cache-only dataset loader (requires only meta/ + HF cache, not data/)
+        from openpi.training.lerobot_cache_dataset import create_cached_torch_dataset
+        logging.info("Using cache-only LeRobot dataset loader (no Parquet files required)")
+        return create_cached_torch_dataset(data_config, action_horizon, model_config)
+
+    # Default behavior: use standard LeRobot loader (requires data/ directory)
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
