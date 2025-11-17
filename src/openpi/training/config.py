@@ -19,6 +19,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.bridge_policy as bridge_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -425,6 +426,83 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotBridgeDataConfig(DataConfigFactory):
+    """
+    Config for training on Bridge dataset in LeRobot format (for PyTorch training).
+
+    This follows the third-party open-pi-zero implementation preprocessing:
+    - Quantile normalization to [-1, 1] range (not z-score)
+    - Uses image_0 (primary) and image_1 (secondary), NOT wrist camera
+    - Skips ~30% of episodes without language annotations during conversion
+    - 224x224 image resolution (PaliGemma requirement)
+
+    To convert the Bridge TFDS dataset to LeRobot format, use:
+        uv run --group rlds examples/bridge/convert_bridge_to_lerobot.py \
+            --tfds_data_dir /path/to/bridge_release/data/tfds
+
+    Bridge dataset has 7D actions: [x, y, z, roll, pitch, yaw, gripper] (EEF_POS)
+    and 7D proprioceptive state (POS_EULER: xyz + euler angles + gripper).
+    """
+
+    # Which cameras were included during conversion (must match convert_bridge_to_lerobot.py)
+    # Default: ["image_0", "image_1"] for primary and secondary views (NOT wrist)
+    camera_keys: tuple[str, ...] = ("image_0", "image_1")
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Map LeRobot dataset keys to Bridge policy expected format
+        # BridgeInputs expects: observation/image, observation/wrist_image, observation/state
+        # Note: LeRobot datasets store keys at root level (e.g., "state", "image_0", "task")
+        # not nested under "observation/" prefix
+        #
+        # RepackTransform format: {target_key: source_key}
+        # - Keys: where to put the data (target structure)
+        # - Values: where to get the data from (source keys in the flat dict)
+        repack_dict = {
+            "observation/state": "state",
+            "actions": "actions",
+            "prompt": "task",  # LeRobot uses "task" for language instructions
+        }
+
+        # Map cameras: image_0 (primary) and image_1 (secondary, NOT wrist)
+        # Following third-party open-pi-zero implementation
+        if len(self.camera_keys) >= 1:
+            repack_dict["observation/image"] = self.camera_keys[0]
+        if len(self.camera_keys) >= 2:
+            repack_dict["observation/secondary_image"] = self.camera_keys[1]
+
+        repack_transform = _transforms.Group(
+            inputs=[_transforms.RepackTransform(repack_dict)]
+        )
+
+        # Create input/output transforms
+        data_transforms = _transforms.Group(
+            inputs=[bridge_policy.BridgeInputs(model_type=model_config.model_type)],
+            outputs=[bridge_policy.BridgeOutputs()],
+        )
+
+        # Bridge dataset has absolute position actions, convert to delta actions
+        # Apply delta transform to all 7 dimensions (x, y, z, roll, pitch, yaw, gripper)
+        delta_action_mask = _transforms.make_bool_mask(7)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # IMPORTANT: Use quantile normalization to [-1, 1] range (following third-party implementation)
+        # Bridge has outliers (e.g., action values of 80) that cause training instability with z-score
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=True,  # Maps 1st-99th percentile to [-1, 1]
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class LeRobotDROIDDataConfig(DataConfigFactory):
     """
     Example data config for custom DROID dataset in LeRobot format.
@@ -527,7 +605,7 @@ class TrainConfig:
     resume: bool = False
 
     # If true, will enable wandb logging.
-    wandb_enabled: bool = True
+    wandb_enabled: bool = False
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
@@ -550,9 +628,10 @@ class TrainConfig:
     @property
     def checkpoint_dir(self) -> pathlib.Path:
         """Get the checkpoint directory for this config."""
-        if not self.exp_name:
-            raise ValueError("--exp_name must be set")
-        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+        return pathlib.Path(self.checkpoint_base_dir).resolve()
+        # if not self.exp_name:
+        #     raise ValueError("--exp_name must be set")
+        # return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
 
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:
@@ -963,6 +1042,43 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
         num_train_steps=20_000,
         batch_size=32,
+    ),
+    #
+    # Bridge dataset configs (LeRobot format for PyTorch training).
+    #
+    TrainConfig(
+        # This config is for fine-tuning pi0 on the Bridge dataset (LeRobot format).
+        # Bridge dataset contains 60,096 trajectories of WidowX robot manipulation tasks.
+        # See examples/bridge/TRAINING_GUIDE.md for steps to run training with this config 
+        name="pi0_bridge_finetune",
+        model=pi0_config.Pi0Config(
+            action_dim=32,  # Pad to 32 dims (Bridge has 7D actions)
+            action_horizon=16,
+        ),
+        data=LeRobotBridgeDataConfig(
+            # Replace with your converted LeRobot dataset repo_id
+            # This should match the --repo_name used in convert_bridge_to_lerobot.py
+            repo_id="bridge_lerobot_224",
+            assets=AssetsConfig(asset_id="bridge_lerobot_224"),
+            # Specify which cameras were included during conversion
+            camera_keys=("image_0", "image_1"),
+        ),
+        # Load pretrained weights from the base model checkpoint
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # PyTorch weights converted from JAX checkpoint
+        pytorch_weight_path="/home/jerry/.cache/openpi/pi0_base_pytorch",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=3e-5,
+            decay_steps=50_000,
+            decay_lr=3e-6,
+        ),
+        num_train_steps=50_000,
+        batch_size=128,
+        log_interval=100,
+        save_interval=5000,
+        keep_period=10_000,
+        num_workers=2,  # Can use multiple workers with LeRobot format
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
