@@ -41,9 +41,17 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
                 time.sleep(5)
 
     @override
-    def infer(self, obs: Dict) -> Dict:  # noqa: UP006
-        data = self._packer.pack(obs)
+    def infer(self, obs: Dict, step = -1) -> Dict:  # noqa: UP006
+        # wps: planner
+        #data = self._packer.pack(obs)
+        #self._ws.send(data)
+        payload = {
+        "obs": obs,
+        "step": step,
+        }
+        data = self._packer.pack(payload)
         self._ws.send(data)
+
         response = self._ws.recv()
         if isinstance(response, str):
             # we're expecting bytes; if the server sends a string, it's an error.

@@ -19,7 +19,8 @@ from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
-
+# wps
+from openpi.policies.QwenPlanner import QwenPlanner
 
 class Policy(BasePolicy):
     def __init__(
@@ -33,6 +34,7 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
+        use_planner: bool = False,
     ):
         """Initialize the Policy.
 
@@ -63,9 +65,38 @@ class Policy(BasePolicy):
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
+        # wps: planner
+        self.use_planner = use_planner
+        if self.use_planner:
+            self.planner = QwenPlanner()
+            self.check_frequency = 1
 
     @override
-    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None, step = -1) -> dict:  # wos: step
+        # wps: generage task planning
+        if self.use_planner:
+            print("step:", step)
+            if step == 0:
+                self.all_subtasks = self.planner.get_subtasks(high_task = str(obs['prompt']), image_list = [obs['observation/image'], obs['observation/wrist_image']])
+                self.current_subtask_index = 0
+                self.current_subtask = self.all_subtasks[0]
+                self.finished_subtasks = []
+                print("subtask_list:", self.all_subtasks)
+            elif step % self.check_frequency == 0:
+                completed = self.planner.check_subtask(high_task = str(obs['prompt']), image_list = [obs['observation/image'], obs['observation/wrist_image']],
+                                                        current_subtask = self.current_subtask, finished_subtasks = self.finished_subtasks, all_subtasks = self.all_subtasks)
+                if completed:
+                    print("subtask (", self.current_subtask, ") completed")
+                    self.finished_subtasks.append(self.current_subtask)
+                    self.current_subtask_index += 1
+                    if self.current_subtask_index < len(self.all_subtasks):
+                        self.current_subtask = self.all_subtasks[self.current_subtask_index]
+                        print("Switch to subtask:", self.current_subtask)
+                    else:
+                        print("All subtasks completed!")
+            # # obs['prompt'] = "task:" + obs['prompt'] + "current subtask:" + self.current_subtask
+            obs['prompt'] = self.current_subtask
+
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -98,8 +129,7 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
-
-        outputs = self._output_transform(outputs)
+        outputs = self._output_transform(outputs) # wps: 32 dim -> 7 dim
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }

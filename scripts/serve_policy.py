@@ -54,6 +54,9 @@ class Args:
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    # wps: use_planner
+    use_planner: bool = False
+
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
@@ -88,9 +91,9 @@ def create_default_policy(env: EnvMode, *, default_prompt: str | None = None) ->
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
-        case Checkpoint():
+        case Checkpoint(): # wps
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt, use_planner = args.use_planner
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)

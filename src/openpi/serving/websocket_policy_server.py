@@ -55,10 +55,14 @@ class WebsocketPolicyServer:
         while True:
             try:
                 start_time = time.monotonic()
-                obs = msgpack_numpy.unpackb(await websocket.recv())
-
+                # wps : planner
+                #obs = msgpack_numpy.unpackb(await websocket.recv())
+                payload = msgpack_numpy.unpackb(await websocket.recv())
+                obs = payload["obs"]
+                step = payload.get("step", -1)
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = self._policy.infer(obs, step = step)
+
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
