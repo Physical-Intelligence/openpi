@@ -20,52 +20,37 @@ class ExperimentTracker(ABC):
 
     @abstractmethod
     def log_params(self, params: dict[str, Any]) -> None:
-        """
-        Log hyperparameters.
+        """Log hyperparameters.
 
-        Parameters
-        ----------
-        params : dict[str, Any]
-            Dictionary of parameter names and values.
+        Args:
+            params: Dictionary of parameter names and values.
         """
 
     @abstractmethod
     def log_metrics(self, metrics: dict[str, float], step: int) -> None:
-        """
-        Log metrics at a specific training step.
+        """Log metrics at a specific training step.
 
-        Parameters
-        ----------
-        metrics : dict[str, float]
-            Dictionary of metric names and values.
-        step : int
-            Training step number.
+        Args:
+            metrics: Dictionary of metric names and values.
+            step: Training step number.
         """
 
     @abstractmethod
     def log_images(self, images: list[np.ndarray], name: str, step: int) -> None:
-        """
-        Log images at a specific training step.
+        """Log images at a specific training step.
 
-        Parameters
-        ----------
-        images : List[np.ndarray]
-            List of images to log.
-        name : str
-            Name/key for the logged images.
-        step : int
-            Training step number.
+        Args:
+            images: List of images to log.
+            name: Name/key for the logged images.
+            step: Training step number.
         """
 
     @abstractmethod
     def end_run(self, status: str = "FINISHED") -> None:
-        """
-        End the experiment run.
+        """End the experiment run.
 
-        Parameters
-        ----------
-        status : str, optional
-            Run status - "FINISHED", "FAILED", or "KILLED".
+        Args:
+            status: Run status - "FINISHED", "FAILED", or "KILLED".
         """
 
 
@@ -103,13 +88,10 @@ class MLflowTracker(ExperimentTracker):
     """MLflow experiment tracker."""
 
     def __init__(self, mlflow_client):
-        """
-        Initialize MLflow tracker.
+        """Initialize MLflow tracker.
 
-        Parameters
-        ----------
-        mlflow_client : MLflowClient
-            Configured and started MLflow client instance.
+        Args:
+            mlflow_client: Configured and started MLflow client instance.
         """
         self._client = mlflow_client
         logging.info("[TRACKER] Using MLflow backend")
@@ -156,19 +138,13 @@ def create_tracker(
     backend: TrackingBackend,
     mlflow_client=None,
 ) -> ExperimentTracker:
-    """
-    Factory function to create an experiment tracker for the specified backend.
+    """Factory function to create an experiment tracker for the specified backend.
 
-    Parameters
-    ----------
-    backend : TrackingBackend
-        The tracking backend to use (WANDB, MLFLOW, or NONE).
-    mlflow_client : MLflowClient, optional
-        MLflow client instance (required if backend is MLFLOW).
+    Args:
+        backend: The tracking backend to use (WANDB, MLFLOW, or NONE).
+        mlflow_client: MLflow client instance (required if backend is MLFLOW).
 
-    Returns
-    -------
-    ExperimentTracker
+    Returns:
         An experiment tracker instance for the specified backend.
     """
     if backend == TrackingBackend.WANDB:

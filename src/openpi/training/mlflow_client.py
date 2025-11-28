@@ -18,24 +18,16 @@ BASE64_BLOCK_SIZE = 4
 
 @dataclasses.dataclass
 class MLflowConfig:
-    """
-    Configuration for MLflow tracking client.
+    """Configuration for MLflow tracking client.
 
-    Attributes
-    ----------
-    tracking_uri : str or None
-        MLflow tracking server URI (e.g., "http://mlflow-server:5000").
-        If None, uses local mlruns directory.
-    experiment_name : str
-        Name of the MLflow experiment.
-    run_name : str
-        Name for the MLflow run (typically model_id or experiment name).
-    checkpoint_dir : epath.Path
-        Directory where checkpoints and MLflow metadata are stored.
-    hyperparameters : dict[str, Any]
-        Dictionary of hyperparameters to log at run start.
-    tags : dict[str, str]
-        Dictionary of tags to set at run start.
+    Attributes:
+        tracking_uri: MLflow tracking server URI (e.g., "http://mlflow-server:5000").
+            If None, uses local mlruns directory.
+        experiment_name: Name of the MLflow experiment.
+        run_name: Name for the MLflow run (typically model_id or experiment name).
+        checkpoint_dir: Directory where checkpoints and MLflow metadata are stored.
+        hyperparameters: Dictionary of hyperparameters to log at run start.
+        tags: Dictionary of tags to set at run start.
     """
 
     tracking_uri: str | None
@@ -47,36 +39,22 @@ class MLflowConfig:
 
 
 class MLflowClient:
-    """
-    MLflow tracking client with automatic Cognito authentication.
+    """MLflow tracking client with automatic Cognito authentication.
 
     This client handles Cognito authentication for remote MLflow servers,
     automatic token refresh via background daemon thread, and MLflow run
     lifecycle management.
 
-    Parameters
-    ----------
-    config : MLflowConfig
-        MLflow configuration including tracking URI, experiment name, and tags.
-    resuming : bool, optional
-        Whether to resume from an existing run (default is False).
-
-    Attributes
-    ----------
-    run_id : str or None
-        Current MLflow run ID, or None if not started.
+    Attributes:
+        run_id: Current MLflow run ID, or None if not started.
     """
 
     def __init__(self, config: MLflowConfig, resuming: bool = False):
-        """
-        Initialize MLflow client.
+        """Initialize MLflow client.
 
-        Parameters
-        ----------
-        config : MLflowConfig
-            MLflow configuration.
-        resuming : bool, optional
-            Whether to resume from existing run (default is False).
+        Args:
+            config: MLflow configuration.
+            resuming: Whether to resume from existing run (default is False).
         """
         self._config = config
         self._resuming = resuming
@@ -87,19 +65,15 @@ class MLflowClient:
 
     @property
     def run_id(self) -> str | None:
-        """
-        Get current MLflow run ID.
+        """Get current MLflow run ID.
 
-        Returns
-        -------
-        str or None
+        Returns:
             Current run ID, or None if not started.
         """
         return self._run_id
 
     def start(self) -> None:
-        """
-        Start MLflow run with authentication.
+        """Start MLflow run with authentication.
 
         Authenticates with Cognito (if remote tracking URI is configured),
         starts a new MLflow run or resumes existing one, and logs initial
@@ -142,71 +116,53 @@ class MLflowClient:
             self.log_tags(self._config.tags)
 
     def log_params(self, params: dict[str, Any]) -> None:
-        """
-        Log parameters to MLflow.
+        """Log parameters to MLflow.
 
-        Parameters
-        ----------
-        params : dict[str, Any]
-            Dictionary of parameter names and values to log.
+        Args:
+            params: Dictionary of parameter names and values to log.
         """
         self._mlflow.log_params(params)
 
     def log_tags(self, tags: dict[str, str]) -> None:
-        """
-        Log tags to MLflow.
+        """Log tags to MLflow.
 
-        Parameters
-        ----------
-        tags : dict[str, str]
-            Dictionary of tag names and values to set.
+        Args:
+            tags: Dictionary of tag names and values to set.
         """
         for key, value in tags.items():
             self._mlflow.set_tag(key, value)
 
     def log_metrics(self, metrics: dict[str, float], step: int) -> None:
-        """
-        Log metrics to MLflow.
+        """Log metrics to MLflow.
 
-        Parameters
-        ----------
-        metrics : dict[str, float]
-            Dictionary of metric names and values to log.
-        step : int
-            Training step number.
+        Args:
+            metrics: Dictionary of metric names and values to log.
+            step: Training step number.
         """
         float_metrics = {k: float(v) for k, v in metrics.items()}
         self._mlflow.log_metrics(float_metrics, step=step)
 
     def log_image(self, image, artifact_file: str, step: int | None = None) -> None:
-        """
-        Log image to MLflow.
+        """Log image to MLflow.
 
-        Parameters
-        ----------
-        image : numpy.ndarray or PIL.Image
-            Image to log.
-        artifact_file : str
-            Path/name for the artifact (e.g., "camera_view_0.png").
-        step : int, optional
-            Training step number. If provided, image will be stored under
-            "step_{step}/{artifact_file}".
+        Args:
+            image: Image to log (numpy.ndarray or PIL.Image).
+            artifact_file: Path/name for the artifact (e.g., "camera_view_0.png").
+            step: Training step number. If provided, image will be stored under
+                "step_{step}/{artifact_file}".
         """
         if step is not None:
             artifact_file = f"step_{step}/{artifact_file}"
         self._mlflow.log_image(image, artifact_file)
 
     def end_run(self, status: str = "FINISHED") -> None:
-        """
-        End MLflow run.
+        """End MLflow run.
 
         Stops the token refresh daemon and ends the MLflow run with the
         specified status.
 
-        Parameters
-        ----------
-        status : str, optional
-            Run status - "FINISHED", "FAILED", or "KILLED" (default is "FINISHED").
+        Args:
+            status: Run status - "FINISHED", "FAILED", or "KILLED" (default is "FINISHED").
         """
         self._stop_refresh.set()
         if self._token_refresh_thread:
@@ -219,8 +175,7 @@ class MLflowClient:
             logging.error(f"[MLFLOW] Failed to end run: {e}")
 
     def _start_token_refresh_daemon(self) -> None:
-        """
-        Start background daemon thread to refresh token automatically.
+        """Start background daemon thread to refresh token automatically.
 
         The daemon checks token expiration every 60 seconds and refreshes
         it when it's within 5 minutes of expiring.
@@ -230,8 +185,7 @@ class MLflowClient:
         logging.info("[MLFLOW] Started token refresh daemon")
 
     def _token_refresh_loop(self) -> None:
-        """
-        Background loop that refreshes token before expiration.
+        """Background loop that refreshes token before expiration.
 
         Runs every 60 seconds, checking if token is within 5 minutes of
         expiring and refreshing it if needed.
@@ -246,21 +200,14 @@ class MLflowClient:
             self._stop_refresh.wait(timeout=60)
 
     def _calculate_secret_hash(self, username: str, client_id: str, client_secret: str) -> str:
-        """
-        Calculate SECRET_HASH for Cognito authentication.
+        """Calculate SECRET_HASH for Cognito authentication.
 
-        Parameters
-        ----------
-        username : str
-            Cognito username.
-        client_id : str
-            Cognito app client ID.
-        client_secret : str
-            Cognito app client secret.
+        Args:
+            username: Cognito username.
+            client_id: Cognito app client ID.
+            client_secret: Cognito app client secret.
 
-        Returns
-        -------
-        str
+        Returns:
             Base64-encoded HMAC-SHA256 hash.
         """
         message = username + client_id
@@ -280,27 +227,17 @@ class MLflowClient:
         client_secret: str | None = None,
         region: str = "us-east-1",
     ) -> str | None:
-        """
-        Get JWT ID token from AWS Cognito.
+        """Get JWT ID token from AWS Cognito.
 
-        Parameters
-        ----------
-        username : str
-            Cognito username.
-        password : str
-            Cognito password.
-        user_pool_id : str
-            Cognito user pool ID.
-        client_id : str
-            Cognito app client ID.
-        client_secret : str, optional
-            Cognito app client secret.
-        region : str, optional
-            AWS region (default is "us-east-1").
+        Args:
+            username: Cognito username.
+            password: Cognito password.
+            user_pool_id: Cognito user pool ID.
+            client_id: Cognito app client ID.
+            client_secret: Cognito app client secret.
+            region: AWS region (default is "us-east-1").
 
-        Returns
-        -------
-        str or None
+        Returns:
             JWT ID token if successful, None otherwise.
         """
         try:
@@ -327,8 +264,7 @@ class MLflowClient:
             return None
 
     def _get_mlflow_token_from_env(self) -> str | None:
-        """
-        Get MLflow authentication token from Cognito.
+        """Get MLflow authentication token from Cognito.
 
         Authenticates with AWS Cognito using credentials from environment
         variables and obtains a JWT token for MLflow access.
@@ -341,9 +277,7 @@ class MLflowClient:
             MLFLOW_COGNITO_CLIENT_SECRET: Cognito app client secret (optional)
             MLFLOW_COGNITO_REGION: AWS region (default: us-east-1)
 
-        Returns
-        -------
-        str or None
+        Returns:
             JWT token if authentication succeeds, None otherwise.
         """
         username = os.environ.get("MLFLOW_COGNITO_USERNAME")
@@ -372,17 +306,12 @@ class MLflowClient:
         return token
 
     def _decode_jwt_payload(self, token: str) -> dict | None:
-        """
-        Decode JWT token payload without verification.
+        """Decode JWT token payload without verification.
 
-        Parameters
-        ----------
-        token : str
-            JWT token string.
+        Args:
+            token: JWT token string.
 
-        Returns
-        -------
-        dict or None
+        Returns:
             Decoded payload dict, or None if decoding fails.
         """
         try:
@@ -402,20 +331,14 @@ class MLflowClient:
             return None
 
     def _is_token_expired(self, token: str, buffer_seconds: int = 300) -> bool:
-        """
-        Check if JWT token is expired or will expire soon.
+        """Check if JWT token is expired or will expire soon.
 
-        Parameters
-        ----------
-        token : str
-            JWT token string.
-        buffer_seconds : int, optional
-            Consider token expired if it expires within this many seconds
-            (default is 300, i.e., 5 minutes).
+        Args:
+            token: JWT token string.
+            buffer_seconds: Consider token expired if it expires within this many seconds
+                (default is 300, i.e., 5 minutes).
 
-        Returns
-        -------
-        bool
+        Returns:
             True if token is expired or will expire soon, False otherwise.
         """
         payload = self._decode_jwt_payload(token)
@@ -427,15 +350,12 @@ class MLflowClient:
         return (exp_time - current_time) <= buffer_seconds
 
     def _refresh_token(self) -> str | None:
-        """
-        Refresh MLflow authentication token.
+        """Refresh MLflow authentication token.
 
         Obtains a new JWT token from Cognito and updates the
         MLFLOW_TRACKING_TOKEN environment variable.
 
-        Returns
-        -------
-        str or None
+        Returns:
             New JWT token if successful, None otherwise.
         """
         username = os.environ.get("MLFLOW_COGNITO_USERNAME")
@@ -465,36 +385,26 @@ class MLflowClient:
         return token
 
     def __enter__(self):
-        """
-        Context manager entry - start MLflow run.
+        """Context manager entry - start MLflow run.
 
-        Returns
-        -------
-        MLflowClient
+        Returns:
             Self for use in with statement.
         """
         self.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Context manager exit - end MLflow run.
+        """Context manager exit - end MLflow run.
 
         Automatically sets run status to FAILED if an exception occurred,
         otherwise sets status to FINISHED.
 
-        Parameters
-        ----------
-        exc_type : type or None
-            Exception type if an exception occurred.
-        exc_val : Exception or None
-            Exception instance if an exception occurred.
-        exc_tb : traceback or None
-            Exception traceback if an exception occurred.
+        Args:
+            exc_type: Exception type if an exception occurred.
+            exc_val: Exception instance if an exception occurred.
+            exc_tb: Exception traceback if an exception occurred.
 
-        Returns
-        -------
-        bool
+        Returns:
             Always returns False to propagate exceptions.
         """
         if exc_type:
