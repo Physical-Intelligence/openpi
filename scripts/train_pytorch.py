@@ -447,6 +447,8 @@ def train_loop(config: _config.TrainConfig):
             (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
+    else:
+        logging.warning("No weights loaded, training from scratch.")
 
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
