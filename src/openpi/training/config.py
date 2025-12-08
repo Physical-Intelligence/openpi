@@ -922,6 +922,46 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     #
+    # ALOHA Sim pi05 configs. This config is used to demonstrate how to train on a simple simulated environment.
+    #
+    TrainConfig(
+        name="pi05_aloha_sim_insertion_human",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="lerobot/aloha_sim_insertion_human",
+            default_prompt="Insert the peg into the socket.",
+            use_delta_joint_actions=True,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-5,
+            decay_steps=50_000,
+            decay_lr=1e-6,
+        ),
+
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
+
+        batch_size=32,
+        num_workers=4,
+    ),
+    TrainConfig(
+        name="pi05_aloha_sim_transfer_cube_human",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="lerobot/aloha_sim_transfer_cube_human",
+            default_prompt="Transfer cube.",
+            use_delta_joint_actions=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=10_000,
+
+        batch_size=12,
+        num_workers=4,
+
+        # video_backend="pyav",
+    ),
+    #
     # Debugging configs.
     #
     TrainConfig(
