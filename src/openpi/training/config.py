@@ -506,7 +506,7 @@ class TrainConfig:
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
-    keep_period: int | None = 5000
+    keep_period: int | None = 10000
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -930,7 +930,7 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="lerobot/aloha_sim_insertion_human",
             default_prompt="Insert the peg into the socket.",
-            use_delta_joint_actions=True,
+            use_delta_joint_actions=False,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
@@ -950,11 +950,27 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=LeRobotAlohaDataConfig(
             repo_id="lerobot/aloha_sim_transfer_cube_human",
-            default_prompt="Transfer cube.",
+            default_prompt="Pick up the cube with the right arm and transfer it to the left arm.",
             use_delta_joint_actions=False,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=10_000,
+        num_train_steps=50_000,
+
+        batch_size=12,
+        num_workers=4,
+
+        # video_backend="pyav",
+    ),
+        TrainConfig(
+        name="pi05_aloha_sim_transfer_cube_scripted",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="lerobot/aloha_sim_transfer_cube_scripted",
+            default_prompt="Pick up the cube with the right arm and transfer it to the left arm.",
+            use_delta_joint_actions=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
 
         batch_size=12,
         num_workers=4,

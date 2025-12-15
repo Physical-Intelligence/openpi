@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # 设置检查点路径
-CHECKPOINT_DIR="checkpoints/pi05_aloha_sim_insertion_human/epri_aloha_sim_insertion_pi0520251208151450/1000"
+CHECKPOINT_DIR="checkpoints/pi05_aloha_sim_transfer_cube_scripted/20251215140408/6000"
 
 # 正确设置TASK变量（注意等号两边不能有空格）
-TASK="gym_aloha/AlohaInsertion-v0"
-# TASK="gym_aloha/AlohaTransferCube-v0"
+# TASK="gym_aloha/AlohaInsertion-v0"
+TASK="gym_aloha/AlohaTransferCube-v0"
 
 # 设置绝对输出目录路径
-OUT_DIR="$(pwd)/data/aloha_sim/videos"
+OUT_DIR=${CHECKPOINT_DIR}"/videos"
 
 # 根据TASK自动生成对应的policy.config
 case "$TASK" in
@@ -16,7 +16,7 @@ case "$TASK" in
     POLICY_CONFIG="pi05_aloha_sim_insertion_human"
     ;;
   "gym_aloha/AlohaTransferCube-v0")
-    POLICY_CONFIG="pi05_aloha_sim_transfer_cube_human"
+    POLICY_CONFIG="pi05_aloha_sim_transfer_cube_scripted"
     ;;
   *)
     echo "Unknown task: $TASK"
@@ -42,12 +42,12 @@ python scripts/serve_policy.py policy:checkpoint \
 POLICY_PID=$!
 
 # 等待几秒钟让服务器启动
-sleep 30
+sleep 15
 
 # 启动模拟环境
 echo "Starting simulation environment..."
 # 使用tyro的正确参数格式
-python examples/aloha_sim/main.py --args.out-dir="${OUT_DIR}" --args.task="${TASK}"
+python examples/aloha_sim/main.py --args.out-dir="${OUT_DIR}" --args.task="${TASK}" --args.host="localhost"
 
 # 当模拟环境结束后，终止策略服务器进程
 echo "Terminating policy server..."
