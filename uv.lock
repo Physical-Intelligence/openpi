@@ -3214,7 +3214,6 @@ dependencies = [
     { name = "msgpack" },
     { name = "numpy" },
     { name = "pillow" },
-    { name = "tree" },
     { name = "websockets" },
 ]
 
@@ -3229,7 +3228,6 @@ requires-dist = [
     { name = "msgpack", specifier = ">=1.0.5" },
     { name = "numpy", specifier = ">=1.22.4,<2.0.0" },
     { name = "pillow", specifier = ">=9.0.0" },
-    { name = "tree", specifier = ">=0.2.4" },
     { name = "websockets", specifier = ">=11.0" },
 ]
 
