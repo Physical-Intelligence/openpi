@@ -533,7 +533,7 @@ def convert_pi0_checkpoint(
     safetensors.torch.save_model(pi0_model, os.path.join(output_path, "model.safetensors"))
 
     # Copy assets folder if it exists
-    assets_source = pathlib.Path(checkpoint_dir).parent / "assets"
+    assets_source = pathlib.Path(checkpoint_dir) / "assets"
     if assets_source.exists():
         assets_dest = pathlib.Path(output_path) / "assets"
         if assets_dest.exists():
