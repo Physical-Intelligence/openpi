@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+from contextlib import nullcontext
 import dataclasses
 import functools
 import logging
@@ -11,6 +13,7 @@ import flax.traverse_util as traverse_util
 import jax
 import jax.experimental
 import jax.numpy as jnp
+import mlflow
 import numpy as np
 import optax
 import tqdm_loggable.auto as tqdm
@@ -47,27 +50,118 @@ def init_logging():
     logger.handlers[0].setFormatter(formatter)
 
 
-def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False, enabled: bool = True):
-    if not enabled:
-        wandb.init(mode="disabled")
-        return
+@contextmanager
+def init_tracking(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False):
+    """Initialize tracking systems (WandB and/or MLflow).
+
+    This function sets up both tracking systems if enabled.
+    It handles proper context management for both tracking tools,
+    ensuring they're properly started and cleaned up.
+
+    Args:
+        config: The training configuration containing tracking settings
+        resuming: Whether this is resuming a previous run
+        log_code: Whether to log the source code to the tracking systems
+
+    Yields:
+        A tuple of (wandb_run, mlflow_run) with the respective run objects.
+        Either may be None if the corresponding system is disabled.
+    """
+    # Initialize WandB, returns a run object (not a context manager)
+    wandb_run = init_wandb(config, resuming=resuming, log_code=log_code)
+
+    # Start MLflow, creates a  context manager
+    mlflow_run = mlflow.start_run() if config.mlflow_enabled else nullcontext(None)
+
+    # Use MLflow's context manager to initialize and yield both run objects
+    with wandb_run, mlflow_run:
+        if config.mlflow_enabled:
+            mlflow_log_params_and_set_tags(config)
+        yield (wandb_run, mlflow_run)
+
+
+@contextmanager
+def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False):
+    """Initialize Weights & Biases tracking system.
+
+    This function sets up a WandB run based on the provided configuration.
+    If resuming a previous run, it will try to load the WandB run ID from the
+    checkpoint directory.
+
+    Args:
+        config: The training configuration
+        resuming: Whether this is resuming a previous run
+        log_code: Whether to log the source code to WandB
+
+    Yields:
+        The WandB context manager
+
+    Raises:
+        FileNotFoundError: If the checkpoint directory does not exist
+    """
+    if not config.wandb_enabled:
+        return wandb.init(mode="disabled")
 
     ckpt_dir = config.checkpoint_dir
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
+
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        run = wandb.init(id=run_id, resume="must", project=config.project_name)
     else:
-        wandb.init(
+        run = wandb.init(
             name=config.exp_name,
             config=dataclasses.asdict(config),
             project=config.project_name,
         )
-        (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
+        (ckpt_dir / "wandb_id.txt").write_text(run.id)
 
     if log_code:
-        wandb.run.log_code(epath.Path(__file__).parent.parent)
+        run.log_code(epath.Path(__file__).parent.parent)
+
+    yield run
+
+
+def mlflow_log_params_and_set_tags(config: _config.TrainConfig) -> None:
+    """Initialize MLflow with configuration parameters.
+
+    This function sets up MLflow by setting tags and logging hyperparameters
+    from the provided configuration. It uses the active MLflow run.
+
+    Args:
+        config: The training configuration containing the parameters to log
+    """
+    # Set MLflow tags for better tracking
+    mlflow.set_tag("config_name", config.name)
+    mlflow.set_tag("exp_name", config.exp_name)
+
+    # Log the hyperparameters
+    mlflow.log_param("random_seed", config.seed)
+    mlflow.log_param("batch_size", config.batch_size)
+    mlflow.log_param("num_train_steps", config.num_train_steps)
+    mlflow.log_param("num_workers", config.num_workers)
+    mlflow.log_param("save_interval", config.save_interval)
+    mlflow.log_param("fsdp_devices", config.fsdp_devices)
+    mlflow.log_param("resume_from_checkpoint", config.resume)
+    mlflow.log_param("overwrite_checkpoint_dir", config.overwrite)
+
+
+def log_metrics(config: _config.TrainConfig, metrics: dict[str, Any], step: int) -> None:
+    """Log metrics to enabled tracking systems.
+
+    This function logs the provided metrics to WandB and/or MLflow based on the
+    configuration settings. For MLflow, it ensures all metric values are floats.
+
+    Args:
+        config: The training configuration with tracking settings
+        metrics: Dictionary of metrics to log, with metric names as keys
+        step: The training step/iteration number for these metrics
+    """
+    if config.wandb_enabled:
+        wandb.log(metrics, step=step)
+    if config.mlflow_enabled:
+        mlflow.log_metrics({k: float(v) for k, v in metrics.items()}, step=step)
 
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
@@ -191,7 +285,7 @@ def train_step(
     return new_state, info
 
 
-def main(config: _config.TrainConfig):
+def train(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 
@@ -215,7 +309,6 @@ def main(config: _config.TrainConfig):
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
     data_loader = _data_loader.create_data_loader(
         config,
@@ -265,7 +358,7 @@ def main(config: _config.TrainConfig):
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
+            log_metrics(config, reduced_info, step)
             infos = []
         batch = next(data_iter)
 
@@ -274,6 +367,13 @@ def main(config: _config.TrainConfig):
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
+
+
+def main(config: _config.TrainConfig):
+    """Main function to run the training."""
+    with init_tracking(config, resuming=config.resume, log_code=True) as (wandb_run, mlflow_run):
+        # Both WandB and MLflow contexts are now active if enabled
+        train(config)
 
 
 if __name__ == "__main__":
