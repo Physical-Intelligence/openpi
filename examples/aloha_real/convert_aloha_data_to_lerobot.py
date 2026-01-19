@@ -2,6 +2,7 @@
 Script to convert Aloha hdf5 data to the LeRobot dataset v2.0 format.
 
 Example usage: uv run examples/aloha_real/convert_aloha_data_to_lerobot.py --raw-dir /path/to/raw/data --repo-id <org>/<dataset-name>
+Append additional tasks: add --append and keep the same repo_id.
 """
 
 import dataclasses
@@ -10,9 +11,8 @@ import shutil
 from typing import Literal
 
 import h5py
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+from lerobot.common.constants import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
 import numpy as np
 import torch
 import tqdm
@@ -34,6 +34,7 @@ DEFAULT_DATASET_CONFIG = DatasetConfig()
 def create_empty_dataset(
     repo_id: str,
     robot_type: str,
+    cameras: list[str],
     mode: Literal["video", "image"] = "video",
     *,
     has_velocity: bool = False,
@@ -55,12 +56,6 @@ def create_empty_dataset(
         "left_wrist_angle",
         "left_wrist_rotate",
         "left_gripper",
-    ]
-    cameras = [
-        "cam_high",
-        "cam_low",
-        "cam_left_wrist",
-        "cam_right_wrist",
     ]
 
     features = {
@@ -108,9 +103,6 @@ def create_empty_dataset(
                 "width",
             ],
         }
-
-    if Path(LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
 
     return LeRobotDataset.create(
         repo_id=repo_id,
@@ -164,6 +156,7 @@ def load_raw_images_per_camera(ep: h5py.File, cameras: list[str]) -> dict[str, n
 
 def load_raw_episode_data(
     ep_path: Path,
+    cameras: list[str],
 ) -> tuple[dict[str, np.ndarray], torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     with h5py.File(ep_path, "r") as ep:
         state = torch.from_numpy(ep["/observations/qpos"][:])
@@ -177,15 +170,7 @@ def load_raw_episode_data(
         if "/observations/effort" in ep:
             effort = torch.from_numpy(ep["/observations/effort"][:])
 
-        imgs_per_cam = load_raw_images_per_camera(
-            ep,
-            [
-                "cam_high",
-                "cam_low",
-                "cam_left_wrist",
-                "cam_right_wrist",
-            ],
-        )
+        imgs_per_cam = load_raw_images_per_camera(ep, cameras)
 
     return imgs_per_cam, state, action, velocity, effort
 
@@ -193,6 +178,7 @@ def load_raw_episode_data(
 def populate_dataset(
     dataset: LeRobotDataset,
     hdf5_files: list[Path],
+    cameras: list[str],
     task: str,
     episodes: list[int] | None = None,
 ) -> LeRobotDataset:
@@ -202,13 +188,14 @@ def populate_dataset(
     for ep_idx in tqdm.tqdm(episodes):
         ep_path = hdf5_files[ep_idx]
 
-        imgs_per_cam, state, action, velocity, effort = load_raw_episode_data(ep_path)
+        imgs_per_cam, state, action, velocity, effort = load_raw_episode_data(ep_path, cameras)
         num_frames = state.shape[0]
 
         for i in range(num_frames):
             frame = {
                 "observation.state": state[i],
                 "action": action[i],
+                "task": task,
             }
 
             for camera, img_array in imgs_per_cam.items():
@@ -221,7 +208,7 @@ def populate_dataset(
 
             dataset.add_frame(frame)
 
-        dataset.save_episode(task=task)
+        dataset.save_episode()
 
     return dataset
 
@@ -229,40 +216,48 @@ def populate_dataset(
 def port_aloha(
     raw_dir: Path,
     repo_id: str,
-    raw_repo_id: str | None = None,
-    task: str = "DEBUG",
+    task: str,
     *,
     episodes: list[int] | None = None,
-    push_to_hub: bool = True,
+    append: bool = False,
+    push_to_hub: bool = False,
     is_mobile: bool = False,
     mode: Literal["video", "image"] = "image",
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ):
-    if (LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    # repo_path = HF_LEROBOT_HOME / repo_id
+    repo_path = "/mnt/8db2a567-4f07-490e-8f21-8de11a9b1521/aloha_dataset" / repo_id
+    if repo_path.exists() and not append:
+        shutil.rmtree(repo_path)
 
     if not raw_dir.exists():
-        if raw_repo_id is None:
-            raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        download_raw(raw_dir, repo_id=raw_repo_id)
+        raise ValueError(f"Raw directory {raw_dir} does not exist. Please provide a valid path to the raw data.")
 
     hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
+    
+    # Get camera names from the first episode
+    cameras = get_cameras(hdf5_files)
+    print(f"Detected cameras: {cameras}")
 
-    dataset = create_empty_dataset(
-        repo_id,
-        robot_type="mobile_aloha" if is_mobile else "aloha",
-        mode=mode,
-        has_effort=has_effort(hdf5_files),
-        has_velocity=has_velocity(hdf5_files),
-        dataset_config=dataset_config,
-    )
+    if repo_path.exists() and append:
+        dataset = LeRobotDataset(repo_id)
+    else:
+        dataset = create_empty_dataset(
+            repo_id,
+            robot_type="mobile_aloha" if is_mobile else "aloha",
+            cameras=cameras,
+            mode=mode,
+            has_effort=has_effort(hdf5_files),
+            has_velocity=has_velocity(hdf5_files),
+            dataset_config=dataset_config,
+        )
     dataset = populate_dataset(
         dataset,
         hdf5_files,
+        cameras=cameras,
         task=task,
         episodes=episodes,
     )
-    dataset.consolidate()
 
     if push_to_hub:
         dataset.push_to_hub()

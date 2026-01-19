@@ -1,0 +1,120 @@
+/*
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug train.py (pi0_libero_low_mem_finetune)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.90"
+      },
+      "args": [
+        "pi0_libero_low_mem_finetune",
+        "--exp-name=my_experiment",
+        "--overwrite"
+      ],
+      "justMyCode": false
+    }
+  ]
+}
+*/
+
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "/home/chenxinlei/cxl/openpi",
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        // {
+        //     "name": "Debug train.py (aloha_find_the_product_sku)",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "program": "${workspaceFolder}/scripts/train.py",
+        //     "console": "integratedTerminal",
+        //     "cwd": "${workspaceFolder}",
+        //     "env": {
+        //         "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"
+        //     },
+        //     "args": [
+        //         "aloha_find_the_product_sku",
+        //         "--exp-name=aloha_find_the_product_sku",
+        //         "--resume",
+        //         // "--overwrite"
+        //                ],
+        //     "justMyCode": false
+        // },        
+        {
+            "name": "Debug module examples.aloha_real.main",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "examples.aloha_real.main",
+            "cwd": "/home/chenxinlei/cxl/openpi",
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/examples/aloha_real/.venv/bin/python",
+            "preLaunchTask": "ros-env",
+            "envFile": "${workspaceFolder}/.vscode/ros.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}:${workspaceFolder}/src:${workspaceFolder}/packages/openpi-client/src:${env:PYTHONPATH}"
+            },
+            "args": [
+                "--args.host",
+                "0.0.0.0",
+                "--args.port",
+                "8000",
+                "--args.max-episode-steps",
+                "1800",
+                "--args.num-episodes",
+                "1000000",
+                "--args.prompt",
+                "First, take out a white product from the box, then locate the QR code on it, and place it into the box next to it"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "serve_policy.py aloha_find_the_product_sku",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/serve_policy.py",
+            "args": [
+                "policy:checkpoint",
+                "--policy.config=aloha_find_the_product_sku",
+                "--policy.dir=/home/chenxinlei/cxl/openpi/checkpoints/aloha_find_the_product_sku/aloha_find_the_product_sku/19999"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "subProcess": true,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+          "name": "Debug fsm_demo (--image warehouse)",
+          "type": "python",
+          "request": "launch",
+          "program": "${workspaceFolder}/../topk_mvp_code/fsm_demo.py",
+          "args": [
+            "--image",
+            "${workspaceFolder}/../topk_mvp_code/assets/warehouse.png"
+          ],
+          "cwd": "${workspaceFolder}",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "subProcess": true,
+          "env": {
+            "PYTHONUNBUFFERED": "1"
+          }
+        },
+        
+    ]
+}

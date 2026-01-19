@@ -121,12 +121,14 @@ def init_train_state(
 
     partial_params = _load_weights_and_validate(config.weight_loader, train_state_shape.params.to_pure_dict())
     replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    partial_params_sharding = sharding.fsdp_sharding(partial_params, mesh, log=False)
 
     # Initialize the train state and mix in the partial params.
     train_state = jax.jit(
         init,
         donate_argnums=(1,),  # donate the partial params buffer.
-        in_shardings=replicated_sharding,
+        # partial_params_sharding 是对部分参数进行分片，我已经在代码里把 partial_params 的输入改成按 FSDP 分片传入，避免每张卡先复制一整份 checkpoint 参数
+        in_shardings=(replicated_sharding, partial_params_sharding),
         out_shardings=state_sharding,
     )(init_rng, partial_params)
 

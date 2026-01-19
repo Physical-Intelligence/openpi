@@ -1,0 +1,702 @@
+... logging to /home/chenxinlei/.ros/log/fff0d542-cf49-11f0-b133-31afd78d9f8f/roslaunch-ubuntu-Precision-7960-Tower-144896.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;/home/chenxinlei/interbotix_ws/src/aloha2_pkg/aloha/launch/4arms_teleop.launch
+[1mstarted roslaunch server http://192.168.0.46:44239/[0m
+
+SUMMARY
+========
+
+PARAMETERS
+ * /master_left/robot_description: <?xml version="1....
+ * /master_left/xs_sdk/load_configs: True
+ * /master_left/xs_sdk/mode_configs: /home/chenxinlei/...
+ * /master_left/xs_sdk/motor_configs: /home/chenxinlei/...
+ * /master_right/robot_description: <?xml version="1....
+ * /master_right/xs_sdk/load_configs: True
+ * /master_right/xs_sdk/mode_configs: /home/chenxinlei/...
+ * /master_right/xs_sdk/motor_configs: /home/chenxinlei/...
+ * /puppet_left/robot_description: <?xml version="1....
+ * /puppet_left/xs_sdk/load_configs: True
+ * /puppet_left/xs_sdk/mode_configs: /home/chenxinlei/...
+ * /puppet_left/xs_sdk/motor_configs: /home/chenxinlei/...
+ * /puppet_right/robot_description: <?xml version="1....
+ * /puppet_right/xs_sdk/load_configs: True
+ * /puppet_right/xs_sdk/mode_configs: /home/chenxinlei/...
+ * /puppet_right/xs_sdk/motor_configs: /home/chenxinlei/...
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+ * /usb_cam_high/realsense2_camera/accel_fps: -1
+ * /usb_cam_high/realsense2_camera/accel_frame_id: usb_cam_high_acce...
+ * /usb_cam_high/realsense2_camera/accel_optical_frame_id: usb_cam_high_acce...
+ * /usb_cam_high/realsense2_camera/align_depth: False
+ * /usb_cam_high/realsense2_camera/aligned_depth_to_color_frame_id: usb_cam_high_alig...
+ * /usb_cam_high/realsense2_camera/aligned_depth_to_fisheye1_frame_id: usb_cam_high_alig...
+ * /usb_cam_high/realsense2_camera/aligned_depth_to_fisheye2_frame_id: usb_cam_high_alig...
+ * /usb_cam_high/realsense2_camera/aligned_depth_to_fisheye_frame_id: usb_cam_high_alig...
+ * /usb_cam_high/realsense2_camera/aligned_depth_to_infra1_frame_id: usb_cam_high_alig...
+ * /usb_cam_high/realsense2_camera/aligned_depth_to_infra2_frame_id: usb_cam_high_alig...
+ * /usb_cam_high/realsense2_camera/allow_no_texture_points: False
+ * /usb_cam_high/realsense2_camera/base_frame_id: usb_cam_high_link
+ * /usb_cam_high/realsense2_camera/calib_odom_file: 
+ * /usb_cam_high/realsense2_camera/clip_distance: -2.0
+ * /usb_cam_high/realsense2_camera/color_fps: 60
+ * /usb_cam_high/realsense2_camera/color_frame_id: usb_cam_high_colo...
+ * /usb_cam_high/realsense2_camera/color_height: 480
+ * /usb_cam_high/realsense2_camera/color_optical_frame_id: usb_cam_high_colo...
+ * /usb_cam_high/realsense2_camera/color_width: 640
+ * /usb_cam_high/realsense2_camera/confidence_fps: -1
+ * /usb_cam_high/realsense2_camera/confidence_height: -1
+ * /usb_cam_high/realsense2_camera/confidence_width: -1
+ * /usb_cam_high/realsense2_camera/depth_fps: -1
+ * /usb_cam_high/realsense2_camera/depth_frame_id: usb_cam_high_dept...
+ * /usb_cam_high/realsense2_camera/depth_height: -1
+ * /usb_cam_high/realsense2_camera/depth_optical_frame_id: usb_cam_high_dept...
+ * /usb_cam_high/realsense2_camera/depth_width: -1
+ * /usb_cam_high/realsense2_camera/device_type: 
+ * /usb_cam_high/realsense2_camera/enable_accel: False
+ * /usb_cam_high/realsense2_camera/enable_color: True
+ * /usb_cam_high/realsense2_camera/enable_confidence: True
+ * /usb_cam_high/realsense2_camera/enable_depth: False
+ * /usb_cam_high/realsense2_camera/enable_fisheye1: False
+ * /usb_cam_high/realsense2_camera/enable_fisheye2: False
+ * /usb_cam_high/realsense2_camera/enable_fisheye: False
+ * /usb_cam_high/realsense2_camera/enable_gyro: False
+ * /usb_cam_high/realsense2_camera/enable_infra1: False
+ * /usb_cam_high/realsense2_camera/enable_infra2: False
+ * /usb_cam_high/realsense2_camera/enable_infra: False
+ * /usb_cam_high/realsense2_camera/enable_pointcloud: False
+ * /usb_cam_high/realsense2_camera/enable_pose: False
+ * /usb_cam_high/realsense2_camera/enable_sync: False
+ * /usb_cam_high/realsense2_camera/filters: 
+ * /usb_cam_high/realsense2_camera/fisheye1_frame_id: usb_cam_high_fish...
+ * /usb_cam_high/realsense2_camera/fisheye1_optical_frame_id: usb_cam_high_fish...
+ * /usb_cam_high/realsense2_camera/fisheye2_frame_id: usb_cam_high_fish...
+ * /usb_cam_high/realsense2_camera/fisheye2_optical_frame_id: usb_cam_high_fish...
+ * /usb_cam_high/realsense2_camera/fisheye_fps: -1
+ * /usb_cam_high/realsense2_camera/fisheye_frame_id: usb_cam_high_fish...
+ * /usb_cam_high/realsense2_camera/fisheye_height: -1
+ * /usb_cam_high/realsense2_camera/fisheye_optical_frame_id: usb_cam_high_fish...
+ * /usb_cam_high/realsense2_camera/fisheye_width: -1
+ * /usb_cam_high/realsense2_camera/gyro_fps: -1
+ * /usb_cam_high/realsense2_camera/gyro_frame_id: usb_cam_high_gyro...
+ * /usb_cam_high/realsense2_camera/gyro_optical_frame_id: usb_cam_high_gyro...
+ * /usb_cam_high/realsense2_camera/imu_optical_frame_id: usb_cam_high_imu_...
+ * /usb_cam_high/realsense2_camera/infra1_frame_id: usb_cam_high_infr...
+ * /usb_cam_high/realsense2_camera/infra1_optical_frame_id: usb_cam_high_infr...
+ * /usb_cam_high/realsense2_camera/infra2_frame_id: usb_cam_high_infr...
+ * /usb_cam_high/realsense2_camera/infra2_optical_frame_id: usb_cam_high_infr...
+ * /usb_cam_high/realsense2_camera/infra_fps: 30
+ * /usb_cam_high/realsense2_camera/infra_height: 480
+ * /usb_cam_high/realsense2_camera/infra_rgb: False
+ * /usb_cam_high/realsense2_camera/infra_width: 848
+ * /usb_cam_high/realsense2_camera/initial_reset: False
+ * /usb_cam_high/realsense2_camera/json_file_path: 
+ * /usb_cam_high/realsense2_camera/linear_accel_cov: 0.01
+ * /usb_cam_high/realsense2_camera/odom_frame_id: usb_cam_high_odom...
+ * /usb_cam_high/realsense2_camera/ordered_pc: False
+ * /usb_cam_high/realsense2_camera/pointcloud_texture_index: 0
+ * /usb_cam_high/realsense2_camera/pointcloud_texture_stream: RS2_STREAM_COLOR
+ * /usb_cam_high/realsense2_camera/pose_frame_id: usb_cam_high_pose...
+ * /usb_cam_high/realsense2_camera/pose_optical_frame_id: usb_cam_high_pose...
+ * /usb_cam_high/realsense2_camera/publish_odom_tf: True
+ * /usb_cam_high/realsense2_camera/publish_tf: True
+ * /usb_cam_high/realsense2_camera/reconnect_timeout: 6.0
+ * /usb_cam_high/realsense2_camera/rosbag_filename: 
+ * /usb_cam_high/realsense2_camera/serial_no: 130322272425
+ * /usb_cam_high/realsense2_camera/stereo_module/exposure/1: 7500
+ * /usb_cam_high/realsense2_camera/stereo_module/exposure/2: 1
+ * /usb_cam_high/realsense2_camera/stereo_module/gain/1: 16
+ * /usb_cam_high/realsense2_camera/stereo_module/gain/2: 16
+ * /usb_cam_high/realsense2_camera/tf_publish_rate: 0.0
+ * /usb_cam_high/realsense2_camera/topic_odom_in: odom_in
+ * /usb_cam_high/realsense2_camera/unite_imu_method: 
+ * /usb_cam_high/realsense2_camera/usb_port_id: 
+ * /usb_cam_high/realsense2_camera/wait_for_device_timeout: -1.0
+ * /usb_cam_left_wrist/realsense2_camera/accel_fps: -1
+ * /usb_cam_left_wrist/realsense2_camera/accel_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/accel_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/align_depth: False
+ * /usb_cam_left_wrist/realsense2_camera/aligned_depth_to_color_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/aligned_depth_to_fisheye1_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/aligned_depth_to_fisheye2_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/aligned_depth_to_fisheye_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/aligned_depth_to_infra1_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/aligned_depth_to_infra2_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/allow_no_texture_points: False
+ * /usb_cam_left_wrist/realsense2_camera/base_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/calib_odom_file: 
+ * /usb_cam_left_wrist/realsense2_camera/clip_distance: -2.0
+ * /usb_cam_left_wrist/realsense2_camera/color_fps: 60
+ * /usb_cam_left_wrist/realsense2_camera/color_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/color_height: 480
+ * /usb_cam_left_wrist/realsense2_camera/color_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/color_width: 640
+ * /usb_cam_left_wrist/realsense2_camera/confidence_fps: -1
+ * /usb_cam_left_wrist/realsense2_camera/confidence_height: -1
+ * /usb_cam_left_wrist/realsense2_camera/confidence_width: -1
+ * /usb_cam_left_wrist/realsense2_camera/depth_fps: -1
+ * /usb_cam_left_wrist/realsense2_camera/depth_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/depth_height: -1
+ * /usb_cam_left_wrist/realsense2_camera/depth_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/depth_width: -1
+ * /usb_cam_left_wrist/realsense2_camera/device_type: 
+ * /usb_cam_left_wrist/realsense2_camera/enable_accel: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_color: True
+ * /usb_cam_left_wrist/realsense2_camera/enable_confidence: True
+ * /usb_cam_left_wrist/realsense2_camera/enable_depth: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_fisheye1: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_fisheye2: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_fisheye: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_gyro: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_infra1: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_infra2: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_infra: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_pointcloud: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_pose: False
+ * /usb_cam_left_wrist/realsense2_camera/enable_sync: False
+ * /usb_cam_left_wrist/realsense2_camera/filters: 
+ * /usb_cam_left_wrist/realsense2_camera/fisheye1_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/fisheye1_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/fisheye2_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/fisheye2_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/fisheye_fps: -1
+ * /usb_cam_left_wrist/realsense2_camera/fisheye_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/fisheye_height: -1
+ * /usb_cam_left_wrist/realsense2_camera/fisheye_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/fisheye_width: -1
+ * /usb_cam_left_wrist/realsense2_camera/gyro_fps: -1
+ * /usb_cam_left_wrist/realsense2_camera/gyro_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/gyro_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/imu_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/infra1_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/infra1_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/infra2_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/infra2_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/infra_fps: 30
+ * /usb_cam_left_wrist/realsense2_camera/infra_height: 480
+ * /usb_cam_left_wrist/realsense2_camera/infra_rgb: False
+ * /usb_cam_left_wrist/realsense2_camera/infra_width: 848
+ * /usb_cam_left_wrist/realsense2_camera/initial_reset: False
+ * /usb_cam_left_wrist/realsense2_camera/json_file_path: 
+ * /usb_cam_left_wrist/realsense2_camera/linear_accel_cov: 0.01
+ * /usb_cam_left_wrist/realsense2_camera/odom_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/ordered_pc: False
+ * /usb_cam_left_wrist/realsense2_camera/pointcloud_texture_index: 0
+ * /usb_cam_left_wrist/realsense2_camera/pointcloud_texture_stream: RS2_STREAM_COLOR
+ * /usb_cam_left_wrist/realsense2_camera/pose_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/pose_optical_frame_id: usb_cam_left_wris...
+ * /usb_cam_left_wrist/realsense2_camera/publish_odom_tf: True
+ * /usb_cam_left_wrist/realsense2_camera/publish_tf: True
+ * /usb_cam_left_wrist/realsense2_camera/reconnect_timeout: 6.0
+ * /usb_cam_left_wrist/realsense2_camera/rosbag_filename: 
+ * /usb_cam_left_wrist/realsense2_camera/serial_no: 130322272417
+ * /usb_cam_left_wrist/realsense2_camera/stereo_module/exposure/1: 7500
+ * /usb_cam_left_wrist/realsense2_camera/stereo_module/exposure/2: 1
+ * /usb_cam_left_wrist/realsense2_camera/stereo_module/gain/1: 16
+ * /usb_cam_left_wrist/realsense2_camera/stereo_module/gain/2: 16
+ * /usb_cam_left_wrist/realsense2_camera/tf_publish_rate: 0.0
+ * /usb_cam_left_wrist/realsense2_camera/topic_odom_in: odom_in
+ * /usb_cam_left_wrist/realsense2_camera/unite_imu_method: 
+ * /usb_cam_left_wrist/realsense2_camera/usb_port_id: 
+ * /usb_cam_left_wrist/realsense2_camera/wait_for_device_timeout: -1.0
+ * /usb_cam_low/realsense2_camera/accel_fps: -1
+ * /usb_cam_low/realsense2_camera/accel_frame_id: usb_cam_low_accel...
+ * /usb_cam_low/realsense2_camera/accel_optical_frame_id: usb_cam_low_accel...
+ * /usb_cam_low/realsense2_camera/align_depth: False
+ * /usb_cam_low/realsense2_camera/aligned_depth_to_color_frame_id: usb_cam_low_align...
+ * /usb_cam_low/realsense2_camera/aligned_depth_to_fisheye1_frame_id: usb_cam_low_align...
+ * /usb_cam_low/realsense2_camera/aligned_depth_to_fisheye2_frame_id: usb_cam_low_align...
+ * /usb_cam_low/realsense2_camera/aligned_depth_to_fisheye_frame_id: usb_cam_low_align...
+ * /usb_cam_low/realsense2_camera/aligned_depth_to_infra1_frame_id: usb_cam_low_align...
+ * /usb_cam_low/realsense2_camera/aligned_depth_to_infra2_frame_id: usb_cam_low_align...
+ * /usb_cam_low/realsense2_camera/allow_no_texture_points: False
+ * /usb_cam_low/realsense2_camera/base_frame_id: usb_cam_low_link
+ * /usb_cam_low/realsense2_camera/calib_odom_file: 
+ * /usb_cam_low/realsense2_camera/clip_distance: -2.0
+ * /usb_cam_low/realsense2_camera/color_fps: 60
+ * /usb_cam_low/realsense2_camera/color_frame_id: usb_cam_low_color...
+ * /usb_cam_low/realsense2_camera/color_height: 480
+ * /usb_cam_low/realsense2_camera/color_optical_frame_id: usb_cam_low_color...
+ * /usb_cam_low/realsense2_camera/color_width: 640
+ * /usb_cam_low/realsense2_camera/confidence_fps: -1
+ * /usb_cam_low/realsense2_camera/confidence_height: -1
+ * /usb_cam_low/realsense2_camera/confidence_width: -1
+ * /usb_cam_low/realsense2_camera/depth_fps: -1
+ * /usb_cam_low/realsense2_camera/depth_frame_id: usb_cam_low_depth...
+ * /usb_cam_low/realsense2_camera/depth_height: -1
+ * /usb_cam_low/realsense2_camera/depth_optical_frame_id: usb_cam_low_depth...
+ * /usb_cam_low/realsense2_camera/depth_width: -1
+ * /usb_cam_low/realsense2_camera/device_type: 
+ * /usb_cam_low/realsense2_camera/enable_accel: False
+ * /usb_cam_low/realsense2_camera/enable_color: True
+ * /usb_cam_low/realsense2_camera/enable_confidence: True
+ * /usb_cam_low/realsense2_camera/enable_depth: False
+ * /usb_cam_low/realsense2_camera/enable_fisheye1: False
+ * /usb_cam_low/realsense2_camera/enable_fisheye2: False
+ * /usb_cam_low/realsense2_camera/enable_fisheye: False
+ * /usb_cam_low/realsense2_camera/enable_gyro: False
+ * /usb_cam_low/realsense2_camera/enable_infra1: False
+ * /usb_cam_low/realsense2_camera/enable_infra2: False
+ * /usb_cam_low/realsense2_camera/enable_infra: False
+ * /usb_cam_low/realsense2_camera/enable_pointcloud: False
+ * /usb_cam_low/realsense2_camera/enable_pose: False
+ * /usb_cam_low/realsense2_camera/enable_sync: False
+ * /usb_cam_low/realsense2_camera/filters: 
+ * /usb_cam_low/realsense2_camera/fisheye1_frame_id: usb_cam_low_fishe...
+ * /usb_cam_low/realsense2_camera/fisheye1_optical_frame_id: usb_cam_low_fishe...
+ * /usb_cam_low/realsense2_camera/fisheye2_frame_id: usb_cam_low_fishe...
+ * /usb_cam_low/realsense2_camera/fisheye2_optical_frame_id: usb_cam_low_fishe...
+ * /usb_cam_low/realsense2_camera/fisheye_fps: -1
+ * /usb_cam_low/realsense2_camera/fisheye_frame_id: usb_cam_low_fishe...
+ * /usb_cam_low/realsense2_camera/fisheye_height: -1
+ * /usb_cam_low/realsense2_camera/fisheye_optical_frame_id: usb_cam_low_fishe...
+ * /usb_cam_low/realsense2_camera/fisheye_width: -1
+ * /usb_cam_low/realsense2_camera/gyro_fps: -1
+ * /usb_cam_low/realsense2_camera/gyro_frame_id: usb_cam_low_gyro_...
+ * /usb_cam_low/realsense2_camera/gyro_optical_frame_id: usb_cam_low_gyro_...
+ * /usb_cam_low/realsense2_camera/imu_optical_frame_id: usb_cam_low_imu_o...
+ * /usb_cam_low/realsense2_camera/infra1_frame_id: usb_cam_low_infra...
+ * /usb_cam_low/realsense2_camera/infra1_optical_frame_id: usb_cam_low_infra...
+ * /usb_cam_low/realsense2_camera/infra2_frame_id: usb_cam_low_infra...
+ * /usb_cam_low/realsense2_camera/infra2_optical_frame_id: usb_cam_low_infra...
+ * /usb_cam_low/realsense2_camera/infra_fps: 30
+ * /usb_cam_low/realsense2_camera/infra_height: 480
+ * /usb_cam_low/realsense2_camera/infra_rgb: False
+ * /usb_cam_low/realsense2_camera/infra_width: 848
+ * /usb_cam_low/realsense2_camera/initial_reset: False
+ * /usb_cam_low/realsense2_camera/json_file_path: 
+ * /usb_cam_low/realsense2_camera/linear_accel_cov: 0.01
+ * /usb_cam_low/realsense2_camera/odom_frame_id: usb_cam_low_odom_...
+ * /usb_cam_low/realsense2_camera/ordered_pc: False
+ * /usb_cam_low/realsense2_camera/pointcloud_texture_index: 0
+ * /usb_cam_low/realsense2_camera/pointcloud_texture_stream: RS2_STREAM_COLOR
+ * /usb_cam_low/realsense2_camera/pose_frame_id: usb_cam_low_pose_...
+ * /usb_cam_low/realsense2_camera/pose_optical_frame_id: usb_cam_low_pose_...
+ * /usb_cam_low/realsense2_camera/publish_odom_tf: True
+ * /usb_cam_low/realsense2_camera/publish_tf: True
+ * /usb_cam_low/realsense2_camera/reconnect_timeout: 6.0
+ * /usb_cam_low/realsense2_camera/rosbag_filename: 
+ * /usb_cam_low/realsense2_camera/serial_no: 130322274308
+ * /usb_cam_low/realsense2_camera/stereo_module/exposure/1: 7500
+ * /usb_cam_low/realsense2_camera/stereo_module/exposure/2: 1
+ * /usb_cam_low/realsense2_camera/stereo_module/gain/1: 16
+ * /usb_cam_low/realsense2_camera/stereo_module/gain/2: 16
+ * /usb_cam_low/realsense2_camera/tf_publish_rate: 0.0
+ * /usb_cam_low/realsense2_camera/topic_odom_in: odom_in
+ * /usb_cam_low/realsense2_camera/unite_imu_method: 
+ * /usb_cam_low/realsense2_camera/usb_port_id: 
+ * /usb_cam_low/realsense2_camera/wait_for_device_timeout: -1.0
+ * /usb_cam_right_wrist/realsense2_camera/accel_fps: -1
+ * /usb_cam_right_wrist/realsense2_camera/accel_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/accel_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/align_depth: False
+ * /usb_cam_right_wrist/realsense2_camera/aligned_depth_to_color_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/aligned_depth_to_fisheye1_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/aligned_depth_to_fisheye2_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/aligned_depth_to_fisheye_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/aligned_depth_to_infra1_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/aligned_depth_to_infra2_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/allow_no_texture_points: False
+ * /usb_cam_right_wrist/realsense2_camera/base_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/calib_odom_file: 
+ * /usb_cam_right_wrist/realsense2_camera/clip_distance: -2.0
+ * /usb_cam_right_wrist/realsense2_camera/color_fps: 60
+ * /usb_cam_right_wrist/realsense2_camera/color_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/color_height: 480
+ * /usb_cam_right_wrist/realsense2_camera/color_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/color_width: 640
+ * /usb_cam_right_wrist/realsense2_camera/confidence_fps: -1
+ * /usb_cam_right_wrist/realsense2_camera/confidence_height: -1
+ * /usb_cam_right_wrist/realsense2_camera/confidence_width: -1
+ * /usb_cam_right_wrist/realsense2_camera/depth_fps: -1
+ * /usb_cam_right_wrist/realsense2_camera/depth_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/depth_height: -1
+ * /usb_cam_right_wrist/realsense2_camera/depth_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/depth_width: -1
+ * /usb_cam_right_wrist/realsense2_camera/device_type: 
+ * /usb_cam_right_wrist/realsense2_camera/enable_accel: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_color: True
+ * /usb_cam_right_wrist/realsense2_camera/enable_confidence: True
+ * /usb_cam_right_wrist/realsense2_camera/enable_depth: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_fisheye1: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_fisheye2: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_fisheye: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_gyro: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_infra1: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_infra2: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_infra: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_pointcloud: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_pose: False
+ * /usb_cam_right_wrist/realsense2_camera/enable_sync: False
+ * /usb_cam_right_wrist/realsense2_camera/filters: 
+ * /usb_cam_right_wrist/realsense2_camera/fisheye1_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/fisheye1_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/fisheye2_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/fisheye2_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/fisheye_fps: -1
+ * /usb_cam_right_wrist/realsense2_camera/fisheye_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/fisheye_height: -1
+ * /usb_cam_right_wrist/realsense2_camera/fisheye_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/fisheye_width: -1
+ * /usb_cam_right_wrist/realsense2_camera/gyro_fps: -1
+ * /usb_cam_right_wrist/realsense2_camera/gyro_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/gyro_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/imu_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/infra1_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/infra1_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/infra2_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/infra2_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/infra_fps: 30
+ * /usb_cam_right_wrist/realsense2_camera/infra_height: 480
+ * /usb_cam_right_wrist/realsense2_camera/infra_rgb: False
+ * /usb_cam_right_wrist/realsense2_camera/infra_width: 848
+ * /usb_cam_right_wrist/realsense2_camera/initial_reset: False
+ * /usb_cam_right_wrist/realsense2_camera/json_file_path: 
+ * /usb_cam_right_wrist/realsense2_camera/linear_accel_cov: 0.01
+ * /usb_cam_right_wrist/realsense2_camera/odom_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/ordered_pc: False
+ * /usb_cam_right_wrist/realsense2_camera/pointcloud_texture_index: 0
+ * /usb_cam_right_wrist/realsense2_camera/pointcloud_texture_stream: RS2_STREAM_COLOR
+ * /usb_cam_right_wrist/realsense2_camera/pose_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/pose_optical_frame_id: usb_cam_right_wri...
+ * /usb_cam_right_wrist/realsense2_camera/publish_odom_tf: True
+ * /usb_cam_right_wrist/realsense2_camera/publish_tf: True
+ * /usb_cam_right_wrist/realsense2_camera/reconnect_timeout: 6.0
+ * /usb_cam_right_wrist/realsense2_camera/rosbag_filename: 
+ * /usb_cam_right_wrist/realsense2_camera/serial_no: 130322271447
+ * /usb_cam_right_wrist/realsense2_camera/stereo_module/exposure/1: 7500
+ * /usb_cam_right_wrist/realsense2_camera/stereo_module/exposure/2: 1
+ * /usb_cam_right_wrist/realsense2_camera/stereo_module/gain/1: 16
+ * /usb_cam_right_wrist/realsense2_camera/stereo_module/gain/2: 16
+ * /usb_cam_right_wrist/realsense2_camera/tf_publish_rate: 0.0
+ * /usb_cam_right_wrist/realsense2_camera/topic_odom_in: odom_in
+ * /usb_cam_right_wrist/realsense2_camera/unite_imu_method: 
+ * /usb_cam_right_wrist/realsense2_camera/usb_port_id: 
+ * /usb_cam_right_wrist/realsense2_camera/wait_for_device_timeout: -1.0
+
+NODES
+  /
+    master_left_transform_broadcaster (tf2_ros/static_transform_publisher)
+    master_right_transform_broadcaster (tf2_ros/static_transform_publisher)
+    puppet_left_transform_broadcaster (tf2_ros/static_transform_publisher)
+    puppet_right_transform_broadcaster (tf2_ros/static_transform_publisher)
+  /master_left/
+    robot_state_publisher (robot_state_publisher/robot_state_publisher)
+    xs_sdk (interbotix_xs_sdk/xs_sdk)
+  /master_right/
+    robot_state_publisher (robot_state_publisher/robot_state_publisher)
+    xs_sdk (interbotix_xs_sdk/xs_sdk)
+  /puppet_left/
+    robot_state_publisher (robot_state_publisher/robot_state_publisher)
+    xs_sdk (interbotix_xs_sdk/xs_sdk)
+  /puppet_right/
+    robot_state_publisher (robot_state_publisher/robot_state_publisher)
+    xs_sdk (interbotix_xs_sdk/xs_sdk)
+  /usb_cam_high/
+    realsense2_camera (nodelet/nodelet)
+    realsense2_camera_manager (nodelet/nodelet)
+  /usb_cam_left_wrist/
+    realsense2_camera (nodelet/nodelet)
+    realsense2_camera_manager (nodelet/nodelet)
+  /usb_cam_low/
+    realsense2_camera (nodelet/nodelet)
+    realsense2_camera_manager (nodelet/nodelet)
+  /usb_cam_right_wrist/
+    realsense2_camera (nodelet/nodelet)
+    realsense2_camera_manager (nodelet/nodelet)
+[0m[INFO] [1764657719.993441993]: Initializing nodelet with 56 worker threads.[0m
+[0m[INFO] [1764657720.706814492]: RealSense ROS v2.3.2[0m
+[0m[INFO] [1764657720.706850213]: Built with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.706860135]: Running with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.759173653]:  [0m
+[0m[INFO] [1764657720.839811396]: Device with serial number 130322272417 was found.
+[0m
+[0m[INFO] [1764657720.839831054]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.1/2-5.1:1.0/video4linux/video0 was found.[0m
+[0m[INFO] [1764657720.839837256]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.840110933]: Device with port number 2-5.1 was found.[0m
+[0m[INFO] [1764657720.893177387]: Device with serial number 130322272425 was found.
+[0m
+[0m[INFO] [1764657720.893198977]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.2/2-5.2:1.0/video4linux/video6 was found.[0m
+[0m[INFO] [1764657720.893204532]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.893377919]: Device with port number 2-5.2 was found.[0m
+[0m[INFO] [1764657720.893390569]: Device USB type: 3.2[0m
+[0m[INFO] [1764657720.895680547]: getParameters...[0m
+[0m[INFO] [1764657720.949017872]: setupDevice...[0m
+[0m[INFO] [1764657720.949042142]: JSON file is not provided[0m
+[0m[INFO] [1764657720.949054390]: ROS Node Namespace: usb_cam_high[0m
+[0m[INFO] [1764657720.949080638]: Device Name: Intel RealSense D405[0m
+[0m[INFO] [1764657720.949091812]: Device Serial No: 130322272425[0m
+[0m[INFO] [1764657720.949103989]: Device physical port: /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.2/2-5.2:1.0/video4linux/video6[0m
+[0m[INFO] [1764657720.949115729]: Device FW version: 5.12.14.100[0m
+[0m[INFO] [1764657720.949131362]: Device Product ID: 0x0B5B[0m
+[0m[INFO] [1764657720.949141662]: Enable PointCloud: Off[0m
+[0m[INFO] [1764657720.949151859]: Align Depth: Off[0m
+[0m[INFO] [1764657720.949162272]: Sync Mode: Off[0m
+[0m[INFO] [1764657720.949188801]: Device Sensors: [0m
+[0m[INFO] [1764657720.960073499]: Stereo Module was found.[0m
+[0m[INFO] [1764657720.960084811]: (Confidence, 0) sensor isn't supported by current device! -- Skipping...[0m
+[0m[INFO] [1764657720.960095771]: num_filters: 0[0m
+[0m[INFO] [1764657720.960101989]: Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657721.008898650]: Done Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657721.009506204]: color stream is enabled - width: 640, height: 480, fps: 60, Format: RGB8[0m
+[0m[INFO] [1764657721.009520774]: setupPublishers...[0m
+[0m[INFO] [1764657721.011318450]: Expected frequency for color = 60.00000[0m
+[0m[INFO] [1764657721.045403952]: setupStreams...[0m
+[0m[INFO] [1764657721.047353631]: SELECTED BASE:Depth, 0[0m
+[0m[INFO] [1764657721.061777104]: RealSense Node Is Up![0m
+ 02/12 14:42:02,061 ERROR [139694097413888] (ds-options.cpp:93) Asic Temperature value is not valid!
+[0m[INFO] [1764657719.986600030]: Initializing nodelet with 56 worker threads.[0m
+[0m[INFO] [1764657720.708290203]: RealSense ROS v2.3.2[0m
+[0m[INFO] [1764657720.708320574]: Built with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.708329323]: Running with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.779010132]:  [0m
+[0m[INFO] [1764657720.854313328]: Device with serial number 130322272417 was found.
+[0m
+[0m[INFO] [1764657720.854332087]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.1/2-5.1:1.0/video4linux/video0 was found.[0m
+[0m[INFO] [1764657720.854337734]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.854548575]: Device with port number 2-5.1 was found.[0m
+[0m[INFO] [1764657720.900426409]: Device with serial number 130322272425 was found.
+[0m
+[0m[INFO] [1764657720.900442063]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.2/2-5.2:1.0/video4linux/video6 was found.[0m
+[0m[INFO] [1764657720.900448516]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.900592528]: Device with port number 2-5.2 was found.[0m
+[0m[INFO] [1764657720.931421193]: Device with serial number 130322274308 was found.
+[0m
+[0m[INFO] [1764657720.931436847]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-6/2-6.4/2-6.4.3/2-6.4.3:1.0/video4linux/video12 was found.[0m
+[0m[INFO] [1764657720.931442107]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.931588485]: Device with port number 2-6.4.3 was found.[0m
+[0m[INFO] [1764657720.931601089]: Device USB type: 3.2[0m
+[0m[INFO] [1764657720.934175697]: getParameters...[0m
+[0m[INFO] [1764657721.001167299]: setupDevice...[0m
+[0m[INFO] [1764657721.001202203]: JSON file is not provided[0m
+[0m[INFO] [1764657721.001218455]: ROS Node Namespace: usb_cam_low[0m
+[0m[INFO] [1764657721.001240561]: Device Name: Intel RealSense D405[0m
+[0m[INFO] [1764657721.001258716]: Device Serial No: 130322274308[0m
+[0m[INFO] [1764657721.001282091]: Device physical port: /sys/devices/pci0000:00/0000:00:14.0/usb2/2-6/2-6.4/2-6.4.3/2-6.4.3:1.0/video4linux/video12[0m
+[0m[INFO] [1764657721.001305308]: Device FW version: 5.16.0.1[0m
+[0m[INFO] [1764657721.001326346]: Device Product ID: 0x0B5B[0m
+[0m[INFO] [1764657721.001345307]: Enable PointCloud: Off[0m
+[0m[INFO] [1764657721.001366633]: Align Depth: Off[0m
+[0m[INFO] [1764657721.001381705]: Sync Mode: Off[0m
+[0m[INFO] [1764657721.001422700]: Device Sensors: [0m
+[0m[INFO] [1764657721.011038559]: Stereo Module was found.[0m
+[0m[INFO] [1764657721.011051097]: (Confidence, 0) sensor isn't supported by current device! -- Skipping...[0m
+[0m[INFO] [1764657721.011062684]: num_filters: 0[0m
+[0m[INFO] [1764657721.011073558]: Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657721.039033052]: Done Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657721.039583276]: color stream is enabled - width: 640, height: 480, fps: 60, Format: RGB8[0m
+[0m[INFO] [1764657721.039596345]: setupPublishers...[0m
+[0m[INFO] [1764657721.041868420]: Expected frequency for color = 60.00000[0m
+[0m[INFO] [1764657721.071239435]: setupStreams...[0m
+[0m[INFO] [1764657721.073020068]: SELECTED BASE:Depth, 0[0m
+[0m[INFO] [1764657721.087214363]: RealSense Node Is Up![0m
+ 02/12 14:42:02,087 ERROR [140376434272000] (ds-options.cpp:93) Asic Temperature value is not valid!
+ 02/12 14:42:03,063 ERROR [139694097413888] (ds-options.cpp:93) Asic Temperature value is not valid!
+ 02/12 14:42:03,088 ERROR [140376434272000] (ds-options.cpp:93) Asic Temperature value is not valid!
+[0m[INFO] [1764657719.786254884]: [xs_sdk] Loaded mode configs from '/home/chenxinlei/interbotix_ws/src/aloha2_pkg/aloha/config/puppet_modes_left.yaml'.[0m
+[0m[INFO] [1764657719.787335820]: [xs_sdk] Loaded motor configs from '/home/chenxinlei/interbotix_ws/src/interbotix_ros_manipulators/interbotix_ros_xsarms/interbotix_xsarm_control/config/vx300s.yaml'.[0m
+[0m[INFO] [1764657719.788089198]: [xs_sdk] Pinging all motors specified in the motor_config file. (Attempt 1/3)[0m
+[0m[INFO] [1764657719.822736978]: [xs_sdk]	Found DYNAMIXEL ID:  8, Model: 'XM430-W350', Joint Name: 'wrist_rotate'.[0m
+[0m[INFO] [1764657719.868714528]: [xs_sdk]	Found DYNAMIXEL ID:  7, Model: 'XM540-W270', Joint Name: 'wrist_angle'.[0m
+[0m[INFO] [1764657719.914725932]: [xs_sdk]	Found DYNAMIXEL ID:  5, Model: 'XM540-W270', Joint Name: 'elbow_shadow'.[0m
+[0m[INFO] [1764657719.960714466]: [xs_sdk]	Found DYNAMIXEL ID:  4, Model: 'XM540-W270', Joint Name: 'elbow'.[0m
+[0m[INFO] [1764657720.006725997]: [xs_sdk]	Found DYNAMIXEL ID:  6, Model: 'XM540-W270', Joint Name: 'forearm_roll'.[0m
+[0m[INFO] [1764657720.052696039]: [xs_sdk]	Found DYNAMIXEL ID:  2, Model: 'XM540-W270', Joint Name: 'shoulder'.[0m
+[0m[INFO] [1764657720.098723411]: [xs_sdk]	Found DYNAMIXEL ID:  9, Model: 'XM430-W350', Joint Name: 'gripper'.[0m
+[0m[INFO] [1764657720.144785937]: [xs_sdk]	Found DYNAMIXEL ID:  3, Model: 'XM540-W270', Joint Name: 'shoulder_shadow'.[0m
+[0m[INFO] [1764657720.190791347]: [xs_sdk]	Found DYNAMIXEL ID:  1, Model: 'XM540-W270', Joint Name: 'waist'.[0m
+[0m[INFO] [1764657720.203239926]: [xs_sdk] Writing startup register values to EEPROM. This only needs to be done once on a robot. Set the `~load_configs` parameter to false from now on.[0m
+[0m[INFO] [1764657721.250674827]: [xs_sdk] The operating mode for the 'arm' group was changed to position.[0m
+[0m[INFO] [1764657721.306654764]: [xs_sdk] The operating mode for the 'gripper' joint was changed to linear_position.[0m
+[0m[INFO] [1764657721.514410192]: [xs_sdk] Interbotix 'xs_sdk' node is up![0m
+[0m[INFO] [1764657719.795488403]: [xs_sdk] Loaded mode configs from '/home/chenxinlei/interbotix_ws/src/aloha2_pkg/aloha/config/puppet_modes_right.yaml'.[0m
+[0m[INFO] [1764657719.796821414]: [xs_sdk] Loaded motor configs from '/home/chenxinlei/interbotix_ws/src/interbotix_ros_manipulators/interbotix_ros_xsarms/interbotix_xsarm_control/config/vx300s.yaml'.[0m
+[0m[INFO] [1764657719.797623512]: [xs_sdk] Pinging all motors specified in the motor_config file. (Attempt 1/3)[0m
+[0m[INFO] [1764657719.832767937]: [xs_sdk]	Found DYNAMIXEL ID:  8, Model: 'XM430-W350', Joint Name: 'wrist_rotate'.[0m
+[0m[INFO] [1764657719.878752056]: [xs_sdk]	Found DYNAMIXEL ID:  7, Model: 'XM540-W270', Joint Name: 'wrist_angle'.[0m
+[0m[INFO] [1764657719.924782638]: [xs_sdk]	Found DYNAMIXEL ID:  5, Model: 'XM540-W270', Joint Name: 'elbow_shadow'.[0m
+[0m[INFO] [1764657719.970792498]: [xs_sdk]	Found DYNAMIXEL ID:  4, Model: 'XM540-W270', Joint Name: 'elbow'.[0m
+[0m[INFO] [1764657720.016769981]: [xs_sdk]	Found DYNAMIXEL ID:  6, Model: 'XM540-W270', Joint Name: 'forearm_roll'.[0m
+[0m[INFO] [1764657720.062762100]: [xs_sdk]	Found DYNAMIXEL ID:  2, Model: 'XM540-W270', Joint Name: 'shoulder'.[0m
+[0m[INFO] [1764657720.108764791]: [xs_sdk]	Found DYNAMIXEL ID:  9, Model: 'XM430-W350', Joint Name: 'gripper'.[0m
+[0m[INFO] [1764657720.154761010]: [xs_sdk]	Found DYNAMIXEL ID:  3, Model: 'XM540-W270', Joint Name: 'shoulder_shadow'.[0m
+[0m[INFO] [1764657720.200751144]: [xs_sdk]	Found DYNAMIXEL ID:  1, Model: 'XM540-W270', Joint Name: 'waist'.[0m
+[0m[INFO] [1764657720.213459749]: [xs_sdk] Writing startup register values to EEPROM. This only needs to be done once on a robot. Set the `~load_configs` parameter to false from now on.[0m
+[0m[INFO] [1764657721.261724546]: [xs_sdk] The operating mode for the 'arm' group was changed to position.[0m
+[0m[INFO] [1764657721.317742827]: [xs_sdk] The operating mode for the 'gripper' joint was changed to linear_position.[0m
+[0m[INFO] [1764657721.526199317]: [xs_sdk] Interbotix 'xs_sdk' node is up![0m
+[0m[INFO] [1764657719.775556052]: [xs_sdk] Loaded mode configs from '/home/chenxinlei/interbotix_ws/src/aloha2_pkg/aloha/config/master_modes_right.yaml'.[0m
+[0m[INFO] [1764657719.777337447]: [xs_sdk] Loaded motor configs from '/home/chenxinlei/interbotix_ws/src/interbotix_ros_manipulators/interbotix_ros_xsarms/interbotix_xsarm_control/config/wx250s.yaml'.[0m
+[0m[INFO] [1764657719.778097895]: [xs_sdk] Pinging all motors specified in the motor_config file. (Attempt 1/3)[0m
+[0m[INFO] [1764657719.813467280]: [xs_sdk]	Found DYNAMIXEL ID:  8, Model: 'XL430-W250', Joint Name: 'wrist_rotate'.[0m
+[0m[INFO] [1764657719.859486389]: [xs_sdk]	Found DYNAMIXEL ID:  7, Model: 'XM430-W350', Joint Name: 'wrist_angle'.[0m
+[0m[INFO] [1764657719.905397848]: [xs_sdk]	Found DYNAMIXEL ID:  5, Model: 'XM430-W350', Joint Name: 'elbow_shadow'.[0m
+[0m[INFO] [1764657719.951419343]: [xs_sdk]	Found DYNAMIXEL ID:  4, Model: 'XM430-W350', Joint Name: 'elbow'.[0m
+[0m[INFO] [1764657719.997410609]: [xs_sdk]	Found DYNAMIXEL ID:  6, Model: 'XM430-W350', Joint Name: 'forearm_roll'.[0m
+[0m[INFO] [1764657720.043425621]: [xs_sdk]	Found DYNAMIXEL ID:  2, Model: 'XM430-W350', Joint Name: 'shoulder'.[0m
+[0m[INFO] [1764657720.089397221]: [xs_sdk]	Found DYNAMIXEL ID:  9, Model: 'XC430-W150', Joint Name: 'gripper'.[0m
+[0m[INFO] [1764657720.135454640]: [xs_sdk]	Found DYNAMIXEL ID:  3, Model: 'XM430-W350', Joint Name: 'shoulder_shadow'.[0m
+[0m[INFO] [1764657720.181413432]: [xs_sdk]	Found DYNAMIXEL ID:  1, Model: 'XM430-W350', Joint Name: 'waist'.[0m
+[0m[INFO] [1764657720.193774076]: [xs_sdk] Writing startup register values to EEPROM. This only needs to be done once on a robot. Set the `~load_configs` parameter to false from now on.[0m
+[0m[INFO] [1764657721.241390541]: [xs_sdk] The operating mode for the 'arm' group was changed to position.[0m
+[0m[INFO] [1764657721.307408194]: [xs_sdk] The 'arm' group was torqued off.[0m
+[0m[INFO] [1764657721.363389924]: [xs_sdk] The operating mode for the 'gripper' joint was changed to position.[0m
+[0m[INFO] [1764657721.374350086]: [xs_sdk] The 'gripper' joint was torqued off.[0m
+[0m[INFO] [1764657721.582321578]: [xs_sdk] Interbotix 'xs_sdk' node is up![0m
+[0m[INFO] [1764657719.768625795]: [xs_sdk] Loaded mode configs from '/home/chenxinlei/interbotix_ws/src/aloha2_pkg/aloha/config/master_modes_left.yaml'.[0m
+[0m[INFO] [1764657719.770007212]: [xs_sdk] Loaded motor configs from '/home/chenxinlei/interbotix_ws/src/interbotix_ros_manipulators/interbotix_ros_xsarms/interbotix_xsarm_control/config/wx250s.yaml'.[0m
+[0m[INFO] [1764657719.770837763]: [xs_sdk] Pinging all motors specified in the motor_config file. (Attempt 1/3)[0m
+[0m[INFO] [1764657719.805944007]: [xs_sdk]	Found DYNAMIXEL ID:  8, Model: 'XL430-W250', Joint Name: 'wrist_rotate'.[0m
+[0m[INFO] [1764657719.851929200]: [xs_sdk]	Found DYNAMIXEL ID:  7, Model: 'XM430-W350', Joint Name: 'wrist_angle'.[0m
+[0m[INFO] [1764657719.897937640]: [xs_sdk]	Found DYNAMIXEL ID:  5, Model: 'XM430-W350', Joint Name: 'elbow_shadow'.[0m
+[0m[INFO] [1764657719.943965250]: [xs_sdk]	Found DYNAMIXEL ID:  4, Model: 'XM430-W350', Joint Name: 'elbow'.[0m
+[0m[INFO] [1764657719.989936706]: [xs_sdk]	Found DYNAMIXEL ID:  6, Model: 'XM430-W350', Joint Name: 'forearm_roll'.[0m
+[0m[INFO] [1764657720.035966146]: [xs_sdk]	Found DYNAMIXEL ID:  2, Model: 'XM430-W350', Joint Name: 'shoulder'.[0m
+[0m[INFO] [1764657720.081942782]: [xs_sdk]	Found DYNAMIXEL ID:  9, Model: 'XC430-W150', Joint Name: 'gripper'.[0m
+[0m[INFO] [1764657720.127934777]: [xs_sdk]	Found DYNAMIXEL ID:  3, Model: 'XM430-W350', Joint Name: 'shoulder_shadow'.[0m
+[0m[INFO] [1764657720.173955306]: [xs_sdk]	Found DYNAMIXEL ID:  1, Model: 'XM430-W350', Joint Name: 'waist'.[0m
+[0m[INFO] [1764657720.186306779]: [xs_sdk] Writing startup register values to EEPROM. This only needs to be done once on a robot. Set the `~load_configs` parameter to false from now on.[0m
+[0m[INFO] [1764657721.233955456]: [xs_sdk] The operating mode for the 'arm' group was changed to position.[0m
+[0m[INFO] [1764657721.299919817]: [xs_sdk] The 'arm' group was torqued off.[0m
+[0m[INFO] [1764657721.355895370]: [xs_sdk] The operating mode for the 'gripper' joint was changed to position.[0m
+[0m[INFO] [1764657721.366873612]: [xs_sdk] The 'gripper' joint was torqued off.[0m
+[0m[INFO] [1764657721.573972825]: [xs_sdk] Interbotix 'xs_sdk' node is up![0m
+[0m[INFO] [1764657720.000342370]: Initializing nodelet with 56 worker threads.[0m
+[0m[INFO] [1764657720.708133696]: RealSense ROS v2.3.2[0m
+[0m[INFO] [1764657720.708162807]: Built with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.708171010]: Running with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.772409487]:  [0m
+[0m[INFO] [1764657720.850362199]: Device with serial number 130322272417 was found.
+[0m
+[0m[INFO] [1764657720.850381220]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.1/2-5.1:1.0/video4linux/video0 was found.[0m
+[0m[INFO] [1764657720.850386753]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.850598271]: Device with port number 2-5.1 was found.[0m
+[0m[INFO] [1764657720.850608438]: Device USB type: 3.2[0m
+[0m[INFO] [1764657720.852730184]: getParameters...[0m
+[0m[INFO] [1764657720.877508413]: setupDevice...[0m
+[0m[INFO] [1764657720.877520835]: JSON file is not provided[0m
+[0m[INFO] [1764657720.877526567]: ROS Node Namespace: usb_cam_left_wrist[0m
+[0m[INFO] [1764657720.877533501]: Device Name: Intel RealSense D405[0m
+[0m[INFO] [1764657720.877538560]: Device Serial No: 130322272417[0m
+[0m[INFO] [1764657720.877549832]: Device physical port: /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.1/2-5.1:1.0/video4linux/video0[0m
+[0m[INFO] [1764657720.877555527]: Device FW version: 5.12.14.100[0m
+[0m[INFO] [1764657720.877560799]: Device Product ID: 0x0B5B[0m
+[0m[INFO] [1764657720.877565303]: Enable PointCloud: Off[0m
+[0m[INFO] [1764657720.877570220]: Align Depth: Off[0m
+[0m[INFO] [1764657720.877577156]: Sync Mode: Off[0m
+[0m[INFO] [1764657720.877591699]: Device Sensors: [0m
+[0m[INFO] [1764657720.886240921]: Stereo Module was found.[0m
+[0m[INFO] [1764657720.886253154]: (Confidence, 0) sensor isn't supported by current device! -- Skipping...[0m
+[0m[INFO] [1764657720.886265157]: num_filters: 0[0m
+[0m[INFO] [1764657720.886274530]: Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657720.909248096]: Done Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657720.909731711]: color stream is enabled - width: 640, height: 480, fps: 60, Format: RGB8[0m
+[0m[INFO] [1764657720.909743955]: setupPublishers...[0m
+[0m[INFO] [1764657720.911561589]: Expected frequency for color = 60.00000[0m
+[0m[INFO] [1764657720.950395673]: setupStreams...[0m
+[0m[INFO] [1764657720.952497646]: SELECTED BASE:Depth, 0[0m
+[0m[INFO] [1764657720.968667190]: RealSense Node Is Up![0m
+[0m[INFO] [1764657720.005481033]: Initializing nodelet with 56 worker threads.[0m
+[0m[INFO] [1764657720.708376052]: RealSense ROS v2.3.2[0m
+[0m[INFO] [1764657720.708426402]: Built with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.708450373]: Running with LibRealSense v2.55.1[0m
+[0m[INFO] [1764657720.779692008]:  [0m
+[0m[INFO] [1764657720.853100675]: Device with serial number 130322272417 was found.
+[0m
+[0m[INFO] [1764657720.853117889]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.1/2-5.1:1.0/video4linux/video0 was found.[0m
+[0m[INFO] [1764657720.853124041]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.853335379]: Device with port number 2-5.1 was found.[0m
+[0m[INFO] [1764657720.899022113]: Device with serial number 130322272425 was found.
+[0m
+[0m[INFO] [1764657720.899037779]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-5/2-5.2/2-5.2:1.0/video4linux/video6 was found.[0m
+[0m[INFO] [1764657720.899042877]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.899197533]: Device with port number 2-5.2 was found.[0m
+[0m[INFO] [1764657720.932596070]: Device with serial number 130322274308 was found.
+[0m
+[0m[INFO] [1764657720.932611628]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-6/2-6.4/2-6.4.3/2-6.4.3:1.0/video4linux/video12 was found.[0m
+[0m[INFO] [1764657720.932616999]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.932769769]: Device with port number 2-6.4.3 was found.[0m
+[0m[INFO] [1764657720.955207591]: Device with serial number 130322271447 was found.
+[0m
+[0m[INFO] [1764657720.955220851]: Device with physical ID /sys/devices/pci0000:00/0000:00:14.0/usb2/2-6/2-6.4/2-6.4.4/2-6.4.4:1.0/video4linux/video18 was found.[0m
+[0m[INFO] [1764657720.955225893]: Device with name Intel RealSense D405 was found.[0m
+[0m[INFO] [1764657720.955378790]: Device with port number 2-6.4.4 was found.[0m
+[0m[INFO] [1764657720.955392372]: Device USB type: 3.2[0m
+[0m[INFO] [1764657720.957691046]: getParameters...[0m
+[0m[INFO] [1764657721.015988684]: setupDevice...[0m
+[0m[INFO] [1764657721.016004478]: JSON file is not provided[0m
+[0m[INFO] [1764657721.016013802]: ROS Node Namespace: usb_cam_right_wrist[0m
+[0m[INFO] [1764657721.016024148]: Device Name: Intel RealSense D405[0m
+[0m[INFO] [1764657721.016037062]: Device Serial No: 130322271447[0m
+[0m[INFO] [1764657721.016050943]: Device physical port: /sys/devices/pci0000:00/0000:00:14.0/usb2/2-6/2-6.4/2-6.4.4/2-6.4.4:1.0/video4linux/video18[0m
+[0m[INFO] [1764657721.016062483]: Device FW version: 5.12.14.100[0m
+[0m[INFO] [1764657721.016076991]: Device Product ID: 0x0B5B[0m
+[0m[INFO] [1764657721.016088732]: Enable PointCloud: Off[0m
+[0m[INFO] [1764657721.016101711]: Align Depth: Off[0m
+[0m[INFO] [1764657721.016113582]: Sync Mode: Off[0m
+[0m[INFO] [1764657721.016138328]: Device Sensors: [0m
+[0m[INFO] [1764657721.025869674]: Stereo Module was found.[0m
+[0m[INFO] [1764657721.025881321]: (Confidence, 0) sensor isn't supported by current device! -- Skipping...[0m
+[0m[INFO] [1764657721.025892422]: num_filters: 0[0m
+[0m[INFO] [1764657721.025903647]: Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657721.058525954]: Done Setting Dynamic reconfig parameters.[0m
+[0m[INFO] [1764657721.059004018]: color stream is enabled - width: 640, height: 480, fps: 60, Format: RGB8[0m
+[0m[INFO] [1764657721.059015579]: setupPublishers...[0m
+[0m[INFO] [1764657721.060959892]: Expected frequency for color = 60.00000[0m
+[0m[INFO] [1764657721.079099972]: setupStreams...[0m
+[0m[INFO] [1764657721.091796925]: SELECTED BASE:Depth, 0[0m
+[0m[INFO] [1764657721.105908598]: RealSense Node Is Up![0m
+
+auto-starting new master
+[1mprocess[master]: started with pid [144918][0m
+[1mROS_MASTER_URI=http://localhost:11311[0m
+]2;/home/chenxinlei/interbotix_ws/src/aloha2_pkg/aloha/launch/4arms_teleop.launch http://localhost:11311
+[1msetting /run_id to fff0d542-cf49-11f0-b133-31afd78d9f8f[0m
+[1mprocess[rosout-1]: started with pid [144928][0m
+started core service [/rosout]
+[1mprocess[master_left/robot_state_publisher-2]: started with pid [144935][0m
+[1mprocess[master_left/xs_sdk-3]: started with pid [144936][0m
+[1mprocess[master_right/robot_state_publisher-4]: started with pid [144937][0m
+[1mprocess[master_right/xs_sdk-5]: started with pid [144938][0m
+[1mprocess[puppet_left/robot_state_publisher-6]: started with pid [144947][0m
+[1mprocess[puppet_left/xs_sdk-7]: started with pid [144955][0m
+[1mprocess[puppet_right/robot_state_publisher-8]: started with pid [144961][0m
+[1mprocess[puppet_right/xs_sdk-9]: started with pid [144967][0m
+[1mprocess[master_left_transform_broadcaster-10]: started with pid [144974][0m
+[1mprocess[master_right_transform_broadcaster-11]: started with pid [144981][0m
+[1mprocess[puppet_left_transform_broadcaster-12]: started with pid [144988][0m
+[1mprocess[puppet_right_transform_broadcaster-13]: started with pid [144994][0m
+[1mprocess[usb_cam_low/realsense2_camera_manager-14]: started with pid [145004][0m
+[1mprocess[usb_cam_low/realsense2_camera-15]: started with pid [145011][0m
+[1mprocess[usb_cam_high/realsense2_camera_manager-16]: started with pid [145013][0m
+[1mprocess[usb_cam_high/realsense2_camera-17]: started with pid [145014][0m
+[1mprocess[usb_cam_left_wrist/realsense2_camera_manager-18]: started with pid [145020][0m
+[1mprocess[usb_cam_left_wrist/realsense2_camera-19]: started with pid [145025][0m
+[1mprocess[usb_cam_right_wrist/realsense2_camera_manager-20]: started with pid [145027][0m
+[1mprocess[usb_cam_right_wrist/realsense2_camera-21]: started with pid [145029][0m
+[usb_cam_right_wrist/realsense2_camera-21] killing on exit
+[usb_cam_right_wrist/realsense2_camera_manager-20] killing on exit
+[usb_cam_left_wrist/realsense2_camera-19] killing on exit
+[usb_cam_left_wrist/realsense2_camera_manager-18] killing on exit
+[usb_cam_high/realsense2_camera-17] killing on exit
+[usb_cam_high/realsense2_camera_manager-16] killing on exit
+[usb_cam_low/realsense2_camera-15] killing on exit
+[usb_cam_low/realsense2_camera_manager-14] killing on exit
+[puppet_right_transform_broadcaster-13] killing on exit
+[puppet_left_transform_broadcaster-12] killing on exit
+[master_right_transform_broadcaster-11] killing on exit
+[master_left_transform_broadcaster-10] killing on exit
+[puppet_right/xs_sdk-9] killing on exit
+[puppet_right/robot_state_publisher-8] killing on exit
+[puppet_left/xs_sdk-7] killing on exit
+[puppet_left/robot_state_publisher-6] killing on exit
+[master_right/xs_sdk-5] killing on exit
+[master_right/robot_state_publisher-4] killing on exit
+[master_left/xs_sdk-3] killing on exit
+[master_left/robot_state_publisher-2] killing on exit
+[rosout-1] killing on exit
+[master] killing on exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

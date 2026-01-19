@@ -60,6 +60,10 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.ALOHA: Checkpoint(
         config="pi05_aloha",
         dir="gs://openpi-assets/checkpoints/pi05_base",
+        # config="pi0_aloha",
+        # dir="gs://openpi-assets/checkpoints/pi0_base", 
+        # config="pi0_aloha_towel",
+        # dir="gs://openpi-assets/checkpoints/pi0_aloha_towel",
     ),
     EnvMode.ALOHA_SIM: Checkpoint(
         config="pi0_aloha_sim",

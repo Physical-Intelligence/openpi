@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ros-env",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "source /opt/ros/noetic/setup.sh && source ~/cxl/interbotix_ws/devel/setup.sh && env > .vscode/ros.env"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
