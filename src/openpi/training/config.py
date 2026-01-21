@@ -494,6 +494,11 @@ class LeRobotSO101DataConfig(DataConfigFactory):
     # Action keys that will be used to read the action sequence from the dataset.
     action_sequence_keys: Sequence[str] = ("action",)
 
+    # Whether to apply delta action transforms.
+    # Set True if your data stores ABSOLUTE joint positions (most common).
+    # Set False if your data already stores DELTA actions.
+    use_delta_joint_actions: bool = True
+
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
@@ -501,8 +506,17 @@ class LeRobotSO101DataConfig(DataConfigFactory):
             outputs=[so101_policy.SO101Outputs()],
         )
 
-        # Since SO-101 uses joint deltas, no DeltaActions transform is needed
-        # (data is already in delta format).
+        # SO-101 has 5 joints + 1 gripper = 6 DOF
+        # Mask: joints (0-4) = True (apply delta conversion), gripper (5) = False (keep absolute)
+        # Pi0 models are trained on delta actions for joints (better generalization).
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(5, -1)  # 5 joints delta, 1 gripper absolute
+            data_transforms = data_transforms.push(
+                # DeltaActions on input: convert absolute data to delta for training
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                # AbsoluteActions on output: convert delta predictions back to absolute for robot
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
 
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
