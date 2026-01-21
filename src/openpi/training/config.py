@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.so101_policy as so101_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -459,6 +460,58 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotSO101DataConfig(DataConfigFactory):
+    """
+    Data config for SO-101 single arm robot.
+
+    SO-101 is a 6-DOF robot (5 joints + 1 gripper) with a single wrist camera.
+    This config assumes the dataset is in LeRobot format with joint delta actions.
+    """
+
+    # Default prompt if not in dataset.
+    default_prompt: str | None = None
+
+    # Repack transform to map dataset keys to expected format.
+    # Adjust these mappings based on your actual LeRobot dataset key names.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/wrist_image": "observation.images.wrist",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+    )
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[so101_policy.SO101Inputs(model_type=model_config.model_type)],
+            outputs=[so101_policy.SO101Outputs()],
+        )
+
+        # Since SO-101 uses joint deltas, no DeltaActions transform is needed
+        # (data is already in delta format).
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
         )
 
 
@@ -929,6 +982,27 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # SO-101 configs. Single arm robot with 6 DOF (5 joints + gripper) and wrist camera.
+    #
+    TrainConfig(
+        name="pi05_so101",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,      # Padded to model's expected dim
+            action_horizon=50,  # Adjust based on your task
+        ),
+        data=LeRobotSO101DataConfig(
+            repo_id="your-hf-username/so101-dataset",  # Replace with your LeRobot dataset
+            default_prompt="your default task description",  # Replace with your task
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=20_000,
+        batch_size=32,
     ),
     #
     # Debugging configs.
