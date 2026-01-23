@@ -20,6 +20,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Callable, Optional, Union
+import os
+
+# Global flag to enable aiter attention (AMD optimized kernels)
+# Set via environment variable or programmatically
+USE_AITER_ATTENTION = os.environ.get("USE_AITER_ATTENTION", "0") == "1"
+AITER_AVAILABLE = False
+
+try:
+    import aiter
+    AITER_AVAILABLE = True
+except ImportError:
+    AITER_AVAILABLE = False
+
+def set_use_aiter_attention(enabled: bool):
+    """Enable or disable aiter attention globally."""
+    global USE_AITER_ATTENTION
+    USE_AITER_ATTENTION = enabled
+    if enabled and not AITER_AVAILABLE:
+        raise ImportError("aiter is not installed. Install it to use aiter attention.")
+
+def get_use_aiter_attention() -> bool:
+    """Check if aiter attention is enabled."""
+    return USE_AITER_ATTENTION and AITER_AVAILABLE
 
 import torch
 from torch import nn
@@ -253,6 +276,116 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
+def aiter_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    """
+    Attention forward using aiter's optimized bf16 ASM kernels.
+    Uses flash_attn_func for efficient attention computation on AMD GPUs.
+    
+    Flash attention only supports:
+    - Pure causal attention (lower triangular)
+    - Full bidirectional attention (no masking)
+    
+    For cases with complex masking (padding, prefix-LM, cross-attention),
+    falls back to eager attention for correctness.
+    
+    Args:
+        module: The attention module (for num_key_value_groups)
+        query: Query tensor [batch, num_heads, seq_len, head_dim]
+        key: Key tensor [batch, num_kv_heads, seq_len, head_dim]
+        value: Value tensor [batch, num_kv_heads, seq_len, head_dim]
+        attention_mask: Optional attention mask [batch, 1, q_len, k_len]
+        scaling: Softmax scaling factor (typically 1/sqrt(head_dim))
+        dropout: Dropout probability
+    """
+    if not AITER_AVAILABLE:
+        raise RuntimeError("aiter is not available. Please install aiter for AMD optimized attention.")
+    
+    q_len = query.shape[2]
+    k_len = key.shape[2]
+    
+    # For cross-attention with KV cache (Q_len != K_len), flash attention's causal mode
+    # doesn't work correctly. Fall back to eager.
+    if q_len != k_len:
+        return eager_attention_forward(
+            module, query, key, value, attention_mask, scaling, dropout, **kwargs
+        )
+    
+    # Check if we can use flash attention
+    # Flash attention only supports: pure causal OR full bidirectional (no padding mask)
+    can_use_flash = False
+    use_causal = True
+    
+    if attention_mask is None:
+        # No mask = full bidirectional, can use flash
+        can_use_flash = True
+        use_causal = False
+    elif attention_mask is not None:
+        # Check if mask is pure causal (all -inf above diagonal, all 0 on/below)
+        # or full bidirectional (all 0)
+        mask_2d = attention_mask[0, 0]  # [seq_len, seq_len]
+        unique_vals = torch.unique(mask_2d)
+        
+        if len(unique_vals) == 1 and unique_vals[0].item() == 0.0:
+            # All zeros = full bidirectional, can use flash
+            can_use_flash = True
+            use_causal = False
+        elif len(unique_vals) <= 2:
+            # Check if it's pure causal mask
+            is_lower_tri = torch.tril(torch.ones_like(mask_2d, dtype=torch.bool))
+            upper_vals = mask_2d[~is_lower_tri]
+            lower_vals = mask_2d[is_lower_tri]
+            
+            # Pure causal: upper triangle all -inf, lower triangle all 0
+            if (upper_vals < -1e9).all() and (lower_vals == 0).all():
+                can_use_flash = True
+                use_causal = True
+    
+    # Fall back to eager if mask is complex (e.g., has padding)
+    if not can_use_flash:
+        return eager_attention_forward(
+            module, query, key, value, attention_mask, scaling, dropout, **kwargs
+        )
+    
+    # Expand KV heads if needed (GQA support)
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+    
+    # Transpose to [batch, seq_len, num_heads, head_dim]
+    query_states = query.transpose(1, 2).contiguous()
+    key_states = key_states.transpose(1, 2).contiguous()
+    value_states = value_states.transpose(1, 2).contiguous()
+    
+    # Use aiter's flash attention
+    result = aiter.flash_attn_func(
+        query_states,
+        key_states,
+        value_states,
+        dropout_p=dropout if module.training else 0.0,
+        softmax_scale=scaling,
+        causal=use_causal,
+        return_lse=True,
+    )
+    
+    attn_output = result[0] if isinstance(result, tuple) else result
+    return attn_output, None
+
+
+def get_attention_forward_fn():
+    """Get the appropriate attention forward function based on settings."""
+    if get_use_aiter_attention():
+        return aiter_attention_forward
+    return eager_attention_forward
+
+
 class GemmaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -309,9 +442,13 @@ class GemmaAttention(nn.Module):
                 key_states = torch.cat([past_key_value[self.layer_idx][0], key_states], dim=2)
                 value_states = torch.cat([past_key_value[self.layer_idx][1], value_states], dim=2)
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
+        # Select attention implementation: aiter (if enabled) > config-specified > eager
+        if get_use_aiter_attention():
+            attention_interface: Callable = aiter_attention_forward
+        elif self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        else:
+            attention_interface = eager_attention_forward
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -859,4 +996,9 @@ __all__ = [
     "GemmaForSequenceClassification",
     "GemmaForTokenClassification",
     "GemmaPreTrainedModel",
+    # aiter attention utilities
+    "set_use_aiter_attention",
+    "get_use_aiter_attention",
+    "aiter_attention_forward",
+    "AITER_AVAILABLE",
 ]
