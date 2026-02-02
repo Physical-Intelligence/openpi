@@ -2,7 +2,11 @@
 assets/
 checkpoints/
 data/
+traces/
 wandb/
+
+# Crash/core dumps
+gpucore.*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
