@@ -266,7 +266,7 @@ def main(args: Args) -> None:
     if args.benchmark_pytorch:
         results["PyTorch"] = benchmark_model(
             model_name="PyTorch",
-            checkpoint_dir="/home/ubuntu/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch",
+            checkpoint_dir="gs://openpi-assets/checkpoints/pi05_droid_pytorch",
             args=args,
             observations=observations,
             fixed_noise=fixed_noise,
@@ -275,7 +275,7 @@ def main(args: Args) -> None:
     if args.benchmark_cuda:
         results["CUDA"] = benchmark_model(
             model_name="CUDA",
-            checkpoint_dir="/home/ubuntu/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch",
+            checkpoint_dir="gs://openpi-assets/checkpoints/pi05_droid_pytorch",
             args=args,
             observations=observations,
             fixed_noise=fixed_noise,

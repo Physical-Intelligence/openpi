@@ -107,7 +107,7 @@ class PI0CUDA(nn.Module):
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
-        # self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
+        self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
         msg = "transformers_replace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`."
         try:
