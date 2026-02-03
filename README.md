@@ -19,6 +19,17 @@ GIT_LFS_SKIP_SMUDGE=1 uv sync
 GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ```
 
+## Setup
+
+```
+# Convert JAX weights -> pytorch weights
+uv run python examples/convert_jax_model_to_pytorch.py --checkpoint_dir ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch --config_name pi05_droid
+cp -r ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid/assets/ ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch/
+
+# PyTorch Hacks
+cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/
+```
+
 ## Benchmarking
 ```
 uv run scripts/benchmark.py
