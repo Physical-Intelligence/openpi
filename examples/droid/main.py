@@ -72,9 +72,9 @@ def prevent_keyboard_interrupt():
 
 def main(args: Args):
     # Make sure external camera is specified by user -- we only use one external camera for the policy
-    assert (
-        args.external_camera is not None and args.external_camera in ["left", "right"]
-    ), f"Please specify an external camera to use for the policy, choose from ['left', 'right'], but got {args.external_camera}"
+    assert args.external_camera is not None and args.external_camera in ["left", "right"], (
+        f"Please specify an external camera to use for the policy, choose from ['left', 'right'], but got {args.external_camera}"
+    )
 
     # Initialize the Panda environment. Using joint velocity action space and gripper position action space is very important.
     env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")

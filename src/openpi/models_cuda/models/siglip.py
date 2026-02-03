@@ -22,9 +22,16 @@ SiglipVisionConfig {
 
 from dataclasses import dataclass
 
-import openpi_cuda_lib as cuda_ops
 import torch
 import torch.nn as nn
+
+# Import to register custom ops with torch.library for torch.compile compatibility
+try:
+    import openpi_cuda.ops  # noqa: F401
+
+    CUDA_OPS_AVAILABLE = True
+except ImportError:
+    CUDA_OPS_AVAILABLE = False
 
 from openpi.models_cuda.models.attn import sdpa_attention_forward
 from openpi.models_cuda.models.config import SiglipVisionConfig
@@ -61,10 +68,10 @@ class SiglipMLP(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # Apply fc1 (without bias if using fused kernel)
-        if self.config.use_fused_bias_gelu:
+        if self.config.use_fused_bias_gelu and CUDA_OPS_AVAILABLE:
             # Compute linear without bias, then fuse bias+GELU
             hidden_states = nn.functional.linear(hidden_states, self.fc1.weight)
-            hidden_states = cuda_ops.fused_bias_gelu(hidden_states, self.fc1.bias)
+            hidden_states = torch.ops.openpi_cuda.fused_bias_gelu(hidden_states, self.fc1.bias)
         else:
             # Standard path
             hidden_states = self.fc1(hidden_states)
@@ -159,8 +166,8 @@ class SiglipEncoderLayer(nn.Module):
             attention_mask=attention_mask,
             output_attentions=output_attentions,
         )
-        if self.config.use_fused_add_layernorm:
-            hidden_states, residual = cuda_ops.fused_add_layernorm(
+        if self.config.use_fused_add_layernorm and CUDA_OPS_AVAILABLE:
+            hidden_states, residual = torch.ops.openpi_cuda.fused_add_layernorm(
                 hidden_states,
                 residual,
                 self.layer_norm2.weight,

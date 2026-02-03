@@ -1,3 +1,4 @@
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
 #include <cuda_bf16.h>
@@ -282,13 +283,16 @@ torch::Tensor rmsnorm_cuda(torch::Tensor input, torch::Tensor weight, float eps)
     // Flatten batch dimensions
     const int num_tokens = input.numel() / hidden_size;
 
+    // Get current CUDA stream for torch.compile compatibility
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     // Use specialized kernel for Gemma hidden_size (2048)
     if (hidden_size == 2048) {
         const int threads = 256;
         const int blocks = num_tokens;
 
         if (input.scalar_type() == at::ScalarType::Float) {
-            rmsnorm_kernel_f32<2048><<<blocks, threads>>>(
+            rmsnorm_kernel_f32<2048><<<blocks, threads, 0, stream>>>(
                 input.data_ptr<float>(),
                 weight.data_ptr<float>(),
                 output.data_ptr<float>(),
@@ -296,7 +300,7 @@ torch::Tensor rmsnorm_cuda(torch::Tensor input, torch::Tensor weight, float eps)
                 eps);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else if (input.scalar_type() == at::ScalarType::BFloat16) {
-            rmsnorm_kernel_bf16<2048><<<blocks, threads>>>(
+            rmsnorm_kernel_bf16<2048><<<blocks, threads, 0, stream>>>(
                 reinterpret_cast<const __nv_bfloat16*>(input.data_ptr<at::BFloat16>()),
                 reinterpret_cast<const __nv_bfloat16*>(weight.data_ptr<at::BFloat16>()),
                 reinterpret_cast<__nv_bfloat16*>(output.data_ptr<at::BFloat16>()),
@@ -304,7 +308,7 @@ torch::Tensor rmsnorm_cuda(torch::Tensor input, torch::Tensor weight, float eps)
                 eps);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else if (input.scalar_type() == at::ScalarType::Half) {
-            rmsnorm_kernel_f16<2048><<<blocks, threads>>>(
+            rmsnorm_kernel_f16<2048><<<blocks, threads, 0, stream>>>(
                 reinterpret_cast<const __half*>(input.data_ptr<at::Half>()),
                 reinterpret_cast<const __half*>(weight.data_ptr<at::Half>()),
                 reinterpret_cast<__half*>(output.data_ptr<at::Half>()),

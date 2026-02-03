@@ -51,14 +51,14 @@ def test_correctness():
     mean_diff = torch.mean(torch.abs(output_ref - output_cuda)).item()
     relative_diff = torch.mean(torch.abs(output_ref - output_cuda) / (torch.abs(output_ref) + 1e-8)).item()
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Correctness Results:")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Output shape: {output_cuda.shape}")
     print(f"Max absolute difference: {max_diff:.6e}")
     print(f"Mean absolute difference: {mean_diff:.6e}")
     print(f"Mean relative difference: {relative_diff:.6e}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Check if results are close
     tolerance_atol = 1e-5
@@ -129,10 +129,10 @@ def test_different_shapes():
     eps = 1e-6
 
     test_shapes = [
-        (1, 2048),           # 2D: single token
-        (10, 2048),          # 2D: batch of tokens
-        (2, 128, 2048),      # 3D: batch, seq_len, hidden
-        (4, 64, 2048),       # 3D: different batch size
+        (1, 2048),  # 2D: single token
+        (10, 2048),  # 2D: batch of tokens
+        (2, 128, 2048),  # 3D: batch, seq_len, hidden
+        (4, 64, 2048),  # 3D: different batch size
     ]
 
     for shape in test_shapes:
@@ -154,9 +154,9 @@ def test_different_shapes():
 
 def benchmark():
     """Benchmark RMSNorm kernel vs PyTorch."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Performance Benchmark")
-    print("="*60)
+    print("=" * 60)
 
     try:
         import openpi_cuda_lib as cuda_ops
@@ -237,9 +237,9 @@ def benchmark():
 
 
 if __name__ == "__main__":
-    print("="*60)
+    print("=" * 60)
     print("RMSNorm CUDA Kernel Tests")
-    print("="*60)
+    print("=" * 60)
 
     test_correctness()
     test_different_dtypes()

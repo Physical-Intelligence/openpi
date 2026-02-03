@@ -1,3 +1,4 @@
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
 #include <cuda_bf16.h>
@@ -320,19 +321,22 @@ std::tuple<torch::Tensor, torch::Tensor> fused_add_layernorm_cuda(torch::Tensor 
 
     const int num_tokens = batch_size * seq_len;
 
+    // Get current CUDA stream for torch.compile compatibility
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     // Check if we should use specialized SiGLIP kernel (hidden_size = 1152)
     if (hidden_size == 1152) {
         const int threads = 256;
         const int blocks = num_tokens;
 
         if (x.scalar_type() == at::ScalarType::Float) {
-            fused_add_layernorm_kernel_f32<1152><<<blocks, threads>>>(
+            fused_add_layernorm_kernel_f32<1152><<<blocks, threads, 0, stream>>>(
                 x.data_ptr<float>(), residual.data_ptr<float>(), gamma.data_ptr<float>(),
                 beta.data_ptr<float>(), output.data_ptr<float>(), sum_output.data_ptr<float>(),
                 num_tokens, eps);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else if (x.scalar_type() == at::ScalarType::BFloat16) {
-            fused_add_layernorm_kernel_bf16<1152><<<blocks, threads>>>(
+            fused_add_layernorm_kernel_bf16<1152><<<blocks, threads, 0, stream>>>(
                 reinterpret_cast<const __nv_bfloat16*>(x.data_ptr<at::BFloat16>()),
                 reinterpret_cast<const __nv_bfloat16*>(residual.data_ptr<at::BFloat16>()),
                 reinterpret_cast<const __nv_bfloat16*>(gamma.data_ptr<at::BFloat16>()),

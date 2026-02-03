@@ -47,14 +47,14 @@ def test_correctness():
     mean_diff = torch.mean(torch.abs(output_ref - output_cuda)).item()
     relative_diff = torch.mean(torch.abs(output_ref - output_cuda) / (torch.abs(output_ref) + 1e-8)).item()
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Correctness Results:")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Output shape: {output_cuda.shape}")
     print(f"Max absolute difference: {max_diff:.6e}")
     print(f"Mean absolute difference: {mean_diff:.6e}")
     print(f"Mean relative difference: {relative_diff:.6e}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Check if results are close
     tolerance_atol = 1e-5
@@ -111,9 +111,9 @@ def test_different_dtypes():
 
 def benchmark():
     """Benchmark fused operation vs separate operations."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Performance Benchmark")
-    print("="*60)
+    print("=" * 60)
 
     try:
         import openpi_cuda_lib as cuda_ops
@@ -172,9 +172,9 @@ def benchmark():
 
 
 if __name__ == "__main__":
-    print("="*60)
+    print("=" * 60)
     print("Fused Bias + GELU CUDA Kernel Tests")
-    print("="*60)
+    print("=" * 60)
 
     test_correctness()
     test_different_dtypes()

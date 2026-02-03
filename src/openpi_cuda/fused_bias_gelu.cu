@@ -1,3 +1,4 @@
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
 #include <cuda_bf16.h>
@@ -278,6 +279,9 @@ torch::Tensor fused_bias_gelu_cuda(torch::Tensor input, torch::Tensor bias) {
     const int total_elements = input.numel();
     const int num_tokens = total_elements / features;
 
+    // Get current CUDA stream for torch.compile compatibility
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     // 5. Choose kernel based on feature size
     const int max_threads_per_block = 1024;
 
@@ -289,17 +293,17 @@ torch::Tensor fused_bias_gelu_cuda(torch::Tensor input, torch::Tensor bias) {
 
         if (input.scalar_type() == at::ScalarType::Float) {
             fused_bias_gelu_kernel_siglip_f32<4304>
-                <<<blocks, threads>>>(input.data_ptr<float>(), bias.data_ptr<float>(),
+                <<<blocks, threads, 0, stream>>>(input.data_ptr<float>(), bias.data_ptr<float>(),
                                       output.data_ptr<float>(), num_tokens);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else if (input.scalar_type() == at::ScalarType::BFloat16) {
-            fused_bias_gelu_kernel_siglip_bf16<4304><<<blocks, threads>>>(
+            fused_bias_gelu_kernel_siglip_bf16<4304><<<blocks, threads, 0, stream>>>(
                 reinterpret_cast<const __nv_bfloat16*>(input.data_ptr<at::BFloat16>()),
                 reinterpret_cast<const __nv_bfloat16*>(bias.data_ptr<at::BFloat16>()),
                 reinterpret_cast<__nv_bfloat16*>(output.data_ptr<at::BFloat16>()), num_tokens);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else if (input.scalar_type() == at::ScalarType::Half) {
-            fused_bias_gelu_kernel_siglip_f16<4304><<<blocks, threads>>>(
+            fused_bias_gelu_kernel_siglip_f16<4304><<<blocks, threads, 0, stream>>>(
                 reinterpret_cast<const __half*>(input.data_ptr<at::Half>()),
                 reinterpret_cast<const __half*>(bias.data_ptr<at::Half>()),
                 reinterpret_cast<__half*>(output.data_ptr<at::Half>()), num_tokens);
@@ -316,7 +320,7 @@ torch::Tensor fused_bias_gelu_cuda(torch::Tensor input, torch::Tensor bias) {
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
             "fused_bias_gelu_cuda_vectorized", ([&] {
                 fused_bias_gelu_kernel_vectorized<scalar_t>
-                    <<<blocks, threads>>>(input.data_ptr<scalar_t>(), bias.data_ptr<scalar_t>(),
+                    <<<blocks, threads, 0, stream>>>(input.data_ptr<scalar_t>(), bias.data_ptr<scalar_t>(),
                                           output.data_ptr<scalar_t>(), num_tokens, features);
                 C10_CUDA_KERNEL_LAUNCH_CHECK();
             }));
@@ -329,7 +333,7 @@ torch::Tensor fused_bias_gelu_cuda(torch::Tensor input, torch::Tensor bias) {
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
             "fused_bias_gelu_cuda", ([&] {
                 fused_bias_gelu_kernel<scalar_t>
-                    <<<blocks, threads>>>(input.data_ptr<scalar_t>(), bias.data_ptr<scalar_t>(),
+                    <<<blocks, threads, 0, stream>>>(input.data_ptr<scalar_t>(), bias.data_ptr<scalar_t>(),
                                           output.data_ptr<scalar_t>(), total_elements, features);
                 C10_CUDA_KERNEL_LAUNCH_CHECK();
             }));

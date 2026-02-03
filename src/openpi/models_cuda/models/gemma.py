@@ -12,10 +12,13 @@ from transformers.masking_utils import create_causal_mask
 
 from openpi.models_cuda.models.config import GemmaTextConfig
 
+# Import to register custom ops with torch.library for torch.compile compatibility
 try:
-    import openpi_cuda_lib as cuda_ops
+    import openpi_cuda.ops  # noqa: F401
+
+    CUDA_OPS_AVAILABLE = True
 except ImportError:
-    cuda_ops = None
+    CUDA_OPS_AVAILABLE = False
 
 
 @dataclass
@@ -281,8 +284,8 @@ class GemmaMLP(nn.Module):
         up = self.up_proj(x)
 
         # Use fused GeGLU kernel if enabled and available
-        if self.config.use_fused_geglu and cuda_ops is not None:
-            intermediate = cuda_ops.fused_geglu(gate, up)
+        if self.config.use_fused_geglu and CUDA_OPS_AVAILABLE:
+            intermediate = torch.ops.openpi_cuda.fused_geglu(gate, up)
         else:
             intermediate = self.act_fn(gate) * up
 
@@ -387,14 +390,14 @@ class GemmaRMSNorm(nn.Module):
             use_cuda = (
                 self.config is not None
                 and getattr(self.config, "use_cuda_rmsnorm", False)
-                and cuda_ops is not None
+                and CUDA_OPS_AVAILABLE
                 and self.dense is None  # Only for non-ADARMS
             )
 
             if use_cuda:
                 # Use CUDA kernel - ensure weight matches input dtype
                 weight = self.weight.to(x.dtype)
-                normed_inputs = cuda_ops.rmsnorm(x, weight, self.eps)
+                normed_inputs = torch.ops.openpi_cuda.rmsnorm(x, weight, self.eps)
                 return normed_inputs.to(dtype), None
             # PyTorch fallback
             normed_inputs = self._norm(x)

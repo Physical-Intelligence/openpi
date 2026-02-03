@@ -1,3 +1,4 @@
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda.h>
 #include <cuda_bf16.h>
@@ -166,19 +167,22 @@ torch::Tensor fused_geglu_cuda(torch::Tensor gate, torch::Tensor up) {
 
     const int total_elements = gate.numel();
 
+    // Get current CUDA stream for torch.compile compatibility
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     // 5. Launch kernel based on dtype
     const int threads = 256;
 
     if (gate.scalar_type() == at::ScalarType::Float) {
         // Process 4 floats per thread
         const int blocks = (total_elements + threads * 4 - 1) / (threads * 4);
-        fused_geglu_kernel_f32_vec4<<<blocks, threads>>>(
+        fused_geglu_kernel_f32_vec4<<<blocks, threads, 0, stream>>>(
             gate.data_ptr<float>(), up.data_ptr<float>(), output.data_ptr<float>(), total_elements);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     } else if (gate.scalar_type() == at::ScalarType::BFloat16) {
         // Process 4 bf16 per thread
         const int blocks = (total_elements + threads * 4 - 1) / (threads * 4);
-        fused_geglu_kernel_bf16<<<blocks, threads>>>(
+        fused_geglu_kernel_bf16<<<blocks, threads, 0, stream>>>(
             reinterpret_cast<const __nv_bfloat16*>(gate.data_ptr<at::BFloat16>()),
             reinterpret_cast<const __nv_bfloat16*>(up.data_ptr<at::BFloat16>()),
             reinterpret_cast<__nv_bfloat16*>(output.data_ptr<at::BFloat16>()), total_elements);
@@ -186,7 +190,7 @@ torch::Tensor fused_geglu_cuda(torch::Tensor gate, torch::Tensor up) {
     } else if (gate.scalar_type() == at::ScalarType::Half) {
         // Process 8 fp16 per thread
         const int blocks = (total_elements + threads * 8 - 1) / (threads * 8);
-        fused_geglu_kernel_f16<<<blocks, threads>>>(
+        fused_geglu_kernel_f16<<<blocks, threads, 0, stream>>>(
             reinterpret_cast<const __half*>(gate.data_ptr<at::Half>()),
             reinterpret_cast<const __half*>(up.data_ptr<at::Half>()),
             reinterpret_cast<__half*>(output.data_ptr<at::Half>()), total_elements);
