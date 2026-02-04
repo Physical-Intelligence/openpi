@@ -153,6 +153,46 @@ class PytorchGELUTanh(nn.Module):
         return nn.functional.gelu(input, approximate="tanh")
 
 
+def sdpa_attention_forward(
+    query: torch.Tensor,  # [B, Hq, Lq, D]
+    key: torch.Tensor,  # [B, Hkv, Lk, D]
+    value: torch.Tensor,  # [B, Hkv, Lk, D]
+    attention_mask: torch.Tensor | None,  # additive mask broadcastable to [B, Hq, Lq, Lk]
+    dropout_p: float,
+) -> torch.Tensor:
+    # enable_gqa requires Hq % Hkv == 0 (true for your Gemma config)
+    use_gqa = query.shape[1] != key.shape[1]
+
+    # SDPA restriction: cannot set is_causal=True if attn_mask is not None.
+    # Also: is_causal=True is NOT correct for KV-cache rectangular shapes (Lq < Lk) unless you provide a shifted mask.
+    if attention_mask is None and query.shape[-2] == key.shape[-2]:
+        # safe "pure" causal case (prefill, square)
+        return nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=None,
+            dropout_p=dropout_p,
+            is_causal=True,
+            enable_gqa=use_gqa,
+        )
+
+    # General case: use additive mask (your create_causal_mask already produces this)
+    # Make sure the mask is sliced to Lk (HF sometimes creates a larger last dim)
+    if attention_mask is not None:
+        attention_mask = attention_mask[..., : key.shape[-2]]
+
+    return nn.functional.scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask=attention_mask,
+        dropout_p=dropout_p,
+        is_causal=False,
+        enable_gqa=use_gqa,
+    )
+
+
 def eager_attention_forward(
     module: nn.Module,
     query: torch.Tensor,
@@ -248,6 +288,24 @@ class GemmaAttention(nn.Module):
                 key_states = torch.cat([past_key_value[self.layer_idx][0], key_states], dim=2)
                 value_states = torch.cat([past_key_value[self.layer_idx][1], value_states], dim=2)
 
+        if self.config.use_flash_attn:
+            # Use SDPA attention
+            dropout_p = 0.0 if not self.training else self.attention_dropout
+            # SDPA returns [B, Hq, Lq, D]
+            attn_output = sdpa_attention_forward(
+                query_states,
+                key_states,
+                value_states,
+                attention_mask=attention_mask,
+                dropout_p=dropout_p,
+            )
+            attn_weights = None  # SDPA does not return weights
+            attn_output = attn_output.transpose(1, 2)  # -> [B, Lq, Hq, D]
+            attn_output = attn_output.reshape(*input_shape, -1)
+            attn_output = self.o_proj(attn_output)
+            return attn_output, attn_weights
+
+        print("NOT USING FLASH ATTENTION")
         attention_interface = eager_attention_forward
         # if self.config._attn_implementation != "eager":
         # attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
@@ -535,14 +593,27 @@ class GemmaModel(nn.Module):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = create_causal_mask(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
+        # causal_mask = create_causal_mask(
+        #     config=self.config,
+        #     input_embeds=inputs_embeds,
+        #     attention_mask=attention_mask,
+        #     cache_position=cache_position,
+        #     past_key_values=past_key_values,
+        #     position_ids=position_ids,
+        # )
+
+        # If no padding mask and we're doing a square prefill (no past), let SDPA use is_causal=True
+        if attention_mask is None and (past_key_values is None or past_key_values.get_seq_length() == 0):
+            causal_mask = None
+        else:
+            causal_mask = create_causal_mask(
+                config=self.config,
+                input_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                cache_position=cache_position,
+                past_key_values=past_key_values,
+                position_ids=position_ids,
+            )
 
         # embed positions
         hidden_states = inputs_embeds
@@ -600,5 +671,16 @@ class GemmaModel(nn.Module):
 
 
 if __name__ == "__main__":
-    model = GemmaModel(GemmaTextConfig())
-    print(model)
+    from torch.nn.attention import SDPBackend
+    from torch.nn.attention import sdpa_kernel
+
+    device = "cuda"
+    # Flash Attention
+    model = GemmaModel(GemmaTextConfig()).to(device).to(torch.bfloat16).eval()
+
+    input_ids = torch.randint(0, model.vocab_size, (1, 968), device=device, dtype=torch.long)
+
+    with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+        out = model(input_ids=input_ids, attention_mask=None, use_cache=True)
+
+    print("FLASH-only run succeeded")

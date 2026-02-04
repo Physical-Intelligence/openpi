@@ -35,6 +35,7 @@ class GemmaTextConfig:
     output_hidden_states: bool = False
     use_fused_geglu: bool = True
     use_cuda_rmsnorm: bool = True
+    use_flash_attn: bool = True
 
 
 @dataclass
@@ -68,6 +69,7 @@ class GemmaExpertConfig:
     output_hidden_states: bool = False
     use_fused_geglu: bool = True
     use_cuda_rmsnorm: bool = True
+    use_flash_attn: bool = True
 
 
 @dataclass
