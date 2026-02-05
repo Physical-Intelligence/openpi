@@ -23,7 +23,7 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 
 ```
 # Convert JAX weights -> pytorch weights
-uv run python examples/convert_jax_model_to_pytorch.py --checkpoint_dir ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch --config_name pi05_droid
+uv run python examples/convert_jax_model_to_pytorch.py --checkpoint_dir ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch --config_name pi05_droid --precision float32
 cp -r ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid/assets/ ~/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch/
 
 # PyTorch Hacks
