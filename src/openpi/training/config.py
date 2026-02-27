@@ -413,6 +413,59 @@ class RLDSDroidDataConfig(DataConfigFactory):
             filter_dict_path=self.filter_dict_path,
         )
 
+@dataclasses.dataclass(frozen=True)
+class FlatDroidDataConfig(DataConfigFactory):
+    """
+    Config for training on the pre-shuffled, flattened DROID dataset.
+    """
+    flat_data_dir: str | None = None
+    action_space: droid_rlds_dataset.DroidActionSpace | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/exterior_image_1_left": "observation/image",
+                        "observation/wrist_image_left": "observation/wrist_image",
+                        "observation/joint_position": "observation/joint_position",
+                        "observation/gripper_position": "observation/gripper_position",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[droid_policy.DroidInputs(model_type=model_config.model_type)],
+            outputs=[droid_policy.DroidOutputs()],
+        )
+
+        if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
+            delta_action_mask = _transforms.make_bool_mask(7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        assert self.flat_data_dir is not None, "Need to set flat_data_dir for Flat Droid Data."
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # 复用 rlds_data_dir 字段来传递扁平化数据集的路径
+            rlds_data_dir=self.flat_data_dir,
+            action_space=self.action_space,
+            # 过滤已经在第一阶段完成了，所以这里置空
+            filter_dict_path=None, 
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotDROIDDataConfig(DataConfigFactory):
@@ -869,6 +922,15 @@ _CONFIGS = [
                 asset_id="droid",
             ),
         ),
+        # data=FlatDroidDataConfig(
+        #     repo_id="droid",
+        #     flat_data_dir="/data/droid_shuffled/", 
+        #     action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+        #     assets=AssetsConfig(
+        #         assets_dir="/data/openpi_assets/pi05_droid/assets",
+        #         asset_id="droid",
+        #     ),
+        # ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,

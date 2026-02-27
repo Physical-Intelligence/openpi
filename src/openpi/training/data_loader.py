@@ -14,6 +14,7 @@ import torch
 import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
+from openpi.training.flat_droid_rlds_dataset import FlatDroidDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
@@ -159,6 +160,13 @@ def create_rlds_dataset(
     shuffle: bool = False,
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
+    if data_config.rlds_data_dir and "shuffled" in data_config.rlds_data_dir:
+        return FlatDroidDataset(
+            data_dir=data_config.rlds_data_dir,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            action_chunk_size=action_horizon,
+        )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
         batch_size=batch_size,
