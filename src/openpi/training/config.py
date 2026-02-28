@@ -556,6 +556,14 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
+
+
+def _get_spacecil_configs():
+    """Lazy import to avoid circular: spacecil/config → rm75_policy → training/config."""
+    import openpi.research.spacecil.config as spacecil_config
+
+    return spacecil_config.get_spacecil_configs()
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     #
@@ -993,9 +1001,10 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    # RoboArena & PolaRiS configs.
+    # RoboArena, PolaRiS, & SpaceCIL configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
+    *_get_spacecil_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

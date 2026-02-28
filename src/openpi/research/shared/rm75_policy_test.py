@@ -4,6 +4,7 @@ import numpy as np
 
 from openpi.models import model as _model
 from openpi.research.shared.action_transforms import ACTION_DIM
+from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
 from openpi.research.shared.rm75_policy import RM75Inputs
 from openpi.research.shared.rm75_policy import RM75Outputs
 from openpi.research.shared.rm75_policy import make_rm75_example
@@ -158,3 +159,8 @@ def test_rm75_outputs_exact_dim():
 def test_action_dim_is_8():
     """Verify ACTION_DIM constant from action_transforms is 8."""
     assert ACTION_DIM == 8
+
+
+def test_lerobot_rm75_data_config_instantiation():
+    config = LeRobotRM75DataConfig(repo_id="dummy/repo")
+    assert config.repo_id == "dummy/repo"

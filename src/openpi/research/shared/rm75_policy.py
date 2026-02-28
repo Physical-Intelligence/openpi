@@ -14,18 +14,48 @@ RM75 robot platform:
 
 import dataclasses
 import pathlib
+from typing import Any
 
 import einops
 import numpy as np
-from typing_extensions import override
 
 from openpi import transforms
 from openpi.models import model as _model
+from openpi.research.shared.action_transforms import RM75_DELTA_MASK
 from openpi.research.shared.action_transforms import RM75AbsoluteActions
 from openpi.research.shared.action_transforms import RM75DeltaActions
-from openpi.training.config import DataConfig
-from openpi.training.config import DataConfigFactory
-from openpi.training.config import ModelTransformFactory
+
+
+def _resolve_training_config_types() -> tuple[Any, Any]:
+    try:
+        from openpi.training.config import DataConfigFactory as RealDataConfigFactory
+        from openpi.training.config import ModelTransformFactory as RealModelTransformFactory
+    except ImportError as training_import_error:
+        import_error = training_import_error
+
+        @dataclasses.dataclass(frozen=True)
+        class FallbackDataConfigFactoryBase:
+            repo_id: str
+            assets: Any = dataclasses.field(default_factory=lambda: None)
+            base_config: Any = None
+
+            def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> Any:
+                raise ImportError("DataConfigFactory unavailable due to import cycle") from import_error
+
+            def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> Any:
+                raise ImportError("DataConfigFactory unavailable due to import cycle") from import_error
+
+        @dataclasses.dataclass(frozen=True)
+        class FallbackModelTransformFactory:
+            def __call__(self, model_config: _model.BaseModelConfig) -> Any:
+                raise ImportError("ModelTransformFactory unavailable due to import cycle") from import_error
+
+        return FallbackDataConfigFactoryBase, FallbackModelTransformFactory
+
+    return RealDataConfigFactory, RealModelTransformFactory
+
+
+_RM75DataConfigFactoryBase, _RM75ModelTransformFactory = _resolve_training_config_types()
 
 
 def make_rm75_example() -> dict:
@@ -119,7 +149,7 @@ class RM75Outputs(transforms.DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
-class LeRobotRM75DataConfig(DataConfigFactory):
+class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
     """Data config factory for RM75 robot datasets in LeRobot format.
 
     Wires up:
@@ -128,8 +158,7 @@ class LeRobotRM75DataConfig(DataConfigFactory):
     - Delta action conversion (absolute joint → delta for training, delta → absolute for inference)
     """
 
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> Any:
         # Repack: identity mapping since RM75 dataset keys match inference keys.
         repack_transform = transforms.Group(
             inputs=[
@@ -155,12 +184,12 @@ class LeRobotRM75DataConfig(DataConfigFactory):
         # RM75 uses absolute joint position actions — convert to delta for training.
         # Joint dims (0:7) get delta conversion; gripper dim (7) stays absolute.
         data_transforms = data_transforms.push(
-            inputs=[RM75DeltaActions()],
-            outputs=[RM75AbsoluteActions()],
+            inputs=[RM75DeltaActions(mask=RM75_DELTA_MASK)],
+            outputs=[RM75AbsoluteActions(mask=RM75_DELTA_MASK)],
         )
 
         # Model transforms (tokenization, etc.) — standard, no customization needed.
-        model_transforms = ModelTransformFactory()(model_config)
+        model_transforms = _RM75ModelTransformFactory()(model_config)
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
