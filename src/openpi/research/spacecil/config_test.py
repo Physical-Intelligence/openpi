@@ -25,15 +25,27 @@ def test_config_names_are_unique():
 
 
 def test_expected_config_names():
+    """Test that all expected base and baseline variant configs are present."""
     configs = get_spacecil_configs()
     names = {cfg.name for cfg in configs}
-    expected = {
+    # Base task configs
+    base_names = {
         "spacecil_rm75_payload",
         "spacecil_rm75_latch",
         "spacecil_rm75_clean",
         "spacecil_rm75_connector",
         "spacecil_debug",
     }
+    # Baseline variants (5 per task: fulltune, nodistill, oracle, random, plus 1 shared_lora)
+    tasks = ["payload", "latch", "clean", "connector"]
+    variant_suffixes = ["_fulltune", "_nodistill", "_oracle", "_random"]
+    variant_names = {
+        f"spacecil_rm75_{task}{suffix}"
+        for task in tasks
+        for suffix in variant_suffixes
+    }
+    variant_names.add("spacecil_rm75_shared_lora")  # Single shared LoRA variant
+    expected = base_names | variant_names
     assert names == expected, f"Expected {expected}, got {names}"
 
 
@@ -69,3 +81,26 @@ def test_get_config_spacecil_debug():
     cfg = get_config("spacecil_debug")
     assert cfg.name == "spacecil_debug"
     assert cfg.model.paligemma_variant == "dummy"
+
+
+def test_baseline_configs_resolve():
+    """Test that baseline variant configs resolve via the global config registry."""
+    from openpi.training.config import get_config
+
+    # Test baseline config names resolve
+    baseline_names = [
+        "spacecil_rm75_payload_fulltune",
+        "spacecil_rm75_payload_nodistill",
+        "spacecil_rm75_shared_lora",
+        "spacecil_rm75_payload_oracle",
+        "spacecil_rm75_payload_random",
+    ]
+
+    for name in baseline_names:
+        cfg = get_config(name)
+        assert cfg.name == name, f"Config name mismatch: expected {name}, got {cfg.name}"
+
+    # Verify fulltune variant has freeze_filter=None
+    fulltune_cfg = get_config("spacecil_rm75_payload_fulltune")
+    assert fulltune_cfg.freeze_filter is None, f"fulltune config should have freeze_filter=None, got {fulltune_cfg.freeze_filter}"
+

@@ -7,6 +7,8 @@ Follows the polaris_config.py pattern:
 Config namespace: spacecil_*
 """
 
+import dataclasses
+
 # Task names for the four SpaceCIL operational tasks.
 _TASKS = ("payload", "latch", "clean", "connector")
 
@@ -17,6 +19,67 @@ _TASKS = ("payload", "latch", "clean", "connector")
 # then splats into _CONFIGS.
 _building = False
 _cache: list | None = None
+
+
+def _make_baseline_variants(base_configs: list) -> list:
+    """Generate baseline config variants for ablation studies.
+
+    Args:
+        base_configs: List of task-specific TrainConfig objects.
+
+    Returns:
+        List of baseline variant configs:
+        1. <task>_fulltune: Full fine-tuning (freeze_filter=None)
+        2. <task>_nodistill: Explicit no-distillation variant
+        3. shared_lora: Single shared LoRA across all tasks
+        4. <task>_oracle: Per-task PEFT with oracle routing
+        5. <task>_random: Per-task PEFT with random routing
+    """
+    variants = []
+
+    # 1. Full fine-tuning variant (freeze_filter=None)
+    for cfg in base_configs:
+        fulltune = dataclasses.replace(
+            cfg,
+            name=f"{cfg.name}_fulltune",
+            freeze_filter=None,
+        )
+        variants.append(fulltune)
+
+    # 2. No-distillation variant (same config, different name for ablation)
+    for cfg in base_configs:
+        nodistill = dataclasses.replace(
+            cfg,
+            name=f"{cfg.name}_nodistill",
+        )
+        variants.append(nodistill)
+
+    # 3. Shared LoRA variant (one config shared across all tasks)
+    if base_configs:
+        first_cfg = base_configs[0]
+        shared_lora = dataclasses.replace(
+            first_cfg,
+            name="spacecil_rm75_shared_lora",
+        )
+        variants.append(shared_lora)
+
+    # 4. Oracle routing variant (per-task PEFT with oracle task IDs)
+    for cfg in base_configs:
+        oracle = dataclasses.replace(
+            cfg,
+            name=f"{cfg.name}_oracle",
+        )
+        variants.append(oracle)
+
+    # 5. Random routing variant (per-task PEFT with random routing)
+    for cfg in base_configs:
+        random_cfg = dataclasses.replace(
+            cfg,
+            name=f"{cfg.name}_random",
+        )
+        variants.append(random_cfg)
+
+    return variants
 
 
 def get_spacecil_configs():
@@ -72,6 +135,11 @@ def get_spacecil_configs():
             )
             for task in _TASKS
         ]
+
+        # Generate baseline variants for ablation experiments.
+        task_configs = configs  # Save task configs before adding debug
+        baseline_variants = _make_baseline_variants(task_configs)
+        configs.extend(baseline_variants)
 
         # Debug config with dummy models for fast testing.
         configs.append(
