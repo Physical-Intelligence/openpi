@@ -28,7 +28,7 @@ class SpaceCILArgs:
     task_sequence: list[str]  # ordered list of task IDs
     num_steps_per_task: int = 10_000  # training steps per task
     distillation_alpha: float = 0.5  # weight of distillation loss
-    enable_distillation: bool = True  # whether to use behavior distillation
+    enable_distillation: bool = False  # whether to use behavior distillation
     checkpoint_dir: str = "checkpoints"  # where to save adapter checkpoints
     seed: int = 42
     exp_name: str = "spacecil_run"
@@ -58,37 +58,86 @@ def parse_args() -> SpaceCILArgs:
     )
 
 
-def make_train_fn(config: Any, train_state: Any, state_sharding: Any, mesh: Any, rng: Any) -> Any:
+def make_train_fn(
+    config: Any, train_state: Any, state_sharding: Any, mesh: Any, rng: Any, num_steps_per_task: int
+) -> Any:
     """Create a train_fn closure for ContinualHarness.
 
     This returns a callable that:
     1. Gets data loader for the task
     2. Runs N steps of openpi's train_step
     3. Returns (model, training_info_list)
+
+    Args:
+        config: Base TrainConfig (used for debug_task fallback).
+        train_state: Initialized TrainState (mutated across tasks via nonlocal).
+        state_sharding: Sharding spec for train_state pytree.
+        mesh: JAX device mesh.
+        rng: PRNG key for training randomness.
+        num_steps_per_task: Number of gradient steps per task.
     """
     # Defer JAX imports to function scope
+    import functools
+
     import flax.nnx as nnx
-    import jax  # noqa: F401
+    import jax
 
-    from openpi.training import data_loader as _data_loader  # noqa: F401
+    from openpi.training import config as _config
+    from openpi.training import data_loader as _data_loader
+    from openpi.training import sharding as _sharding
 
-    from scripts.train import init_train_state, train_step  # noqa: F401
+    from scripts.train import train_step
+
+    num_steps = num_steps_per_task
 
     def train_fn(task_id: str) -> tuple[nnx.Module, list[dict[str, Any]]]:
         """Inner training loop for a single task."""
-        logger.info(f"Training task: {task_id}")
+        nonlocal train_state
 
-        # TODO: In real usage, this would:
-        # 1. Get the data config for this task
-        # 2. Create data loader
-        # 3. Run train_step for N steps
-        # 4. Return (model_from_state, info_list)
+        logger.info(f"Training task: {task_id} for {num_steps} steps")
 
-        # For now, this is a skeleton that shows the intended structure
-        raise NotImplementedError(
-            f"Real training for task '{task_id}' requires GPU and data. "
-            "Use ContinualHarness directly with a custom train_fn for testing."
+        # 1. Resolve per-task config (debug_task uses the passed-in config directly).
+        if task_id == "debug_task":
+            task_config = config
+        else:
+            task_config = _config.get_config(f"spacecil_rm75_{task_id}")
+
+        # 2. Compute shardings.
+        replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+        data_sharding = jax.sharding.NamedSharding(
+            mesh, jax.sharding.PartitionSpec(_sharding.DATA_AXIS)
         )
+        train_state_sharding = state_sharding
+
+        # 3. Create data loader for this task.
+        data_loader = _data_loader.create_data_loader(
+            task_config, sharding=data_sharding, shuffle=True
+        )
+        data_iter = iter(data_loader)
+
+        # 4. JIT-compile train_step with exact upstream sharding pattern.
+        ptrain_step = jax.jit(
+            functools.partial(train_step, task_config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+            out_shardings=(train_state_sharding, replicated_sharding),
+            donate_argnums=(1,),
+        )
+
+        # 5. Run training loop.
+        collected_infos: list[dict[str, Any]] = []
+        for i in range(num_steps):
+            batch = next(data_iter)
+            with _sharding.set_mesh(mesh):
+                train_state, info = ptrain_step(rng, train_state, batch)
+            collected_infos.append(info)
+            if i % max(1, num_steps // 10) == 0:
+                logger.info(f"Task {task_id} step {i}/{num_steps} loss={info['loss']:.4f}")
+
+        logger.info(f"Task {task_id} training complete ({num_steps} steps)")
+
+        # 6. Extract model from final state.
+        model = nnx.merge(train_state.model_def, train_state.params)
+        return model, collected_infos
 
     return train_fn
 
