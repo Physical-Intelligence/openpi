@@ -198,3 +198,83 @@ For every module, classify as one of:
 ## Reference Documents
 - `customized_docs/Research_Idea_Blueprint_SpaceCIL_LunarCompose.md` — Scientific problem, claims, evaluation logic
 - `customized_docs/Implementation_Masterplan_SpaceCIL_LunarCompose.md` — Repo strategy, module list, build order, doctrines
+
+## Version Control
+
+### Git Remotes
+| Remote | URL | Purpose |
+|--------|-----|---------|
+| `origin` | `git@github.com:Physical-Intelligence/openpi.git` | Upstream openpi (READ-ONLY — never push here) |
+| `lunarbot` | `git@github.com:DsslRobot/openpi-lunarbot.git` | Our research fork (push all work here) |
+
+### Branch Strategy
+- **`lunarbot-research`** — Main working branch, tracked on `lunarbot` remote
+- All research work happens on this branch (or feature branches off it)
+- `main` tracks upstream openpi — do NOT commit research code to `main`
+
+### Git Workflow (MANDATORY for all agents)
+
+**Before starting any implementation work:**
+```bash
+git status                    # Check for uncommitted changes
+git stash                     # Stash if needed before switching context
+```
+
+**After completing a logical unit of work:**
+```bash
+git add <changed files>       # Stage specific files (never blind `git add .`)
+git commit -m "type: description"  # Commit with conventional message
+git push lunarbot lunarbot-research # Push to our fork
+```
+
+**Commit Message Format:**
+```
+feat: add episode schema dataclass with obs/action/meta fields
+fix: correct delta action normalization bounds
+test: add scorer_base protocol compliance tests
+refactor: extract common transform logic to shared/
+docs: update PLAN.md with revised build order
+chore: update .gitignore for checkpoint dirs
+```
+
+**Commit Granularity:**
+- One commit per logical unit (one module, one bug fix, one test suite)
+- NEVER commit broken code — all tests must pass before committing
+- NEVER commit large unrelated changes in a single commit
+- Commit early and often — small, traceable, reversible changes
+
+### Safety Rules
+- **NEVER push to `origin`** (upstream Physical-Intelligence/openpi)
+- **ALWAYS push to `lunarbot`** remote only
+- **NEVER force-push** unless explicitly requested by the user
+- **NEVER commit secrets**, credentials, API keys, or `.env` files
+- **NEVER commit large binary files** (checkpoints, datasets, model weights)
+- Run `uv run pytest src/openpi/research/ -x -q` before every push
+- If tests fail, fix before committing — do not push broken code
+
+### Recovery
+```bash
+# View recent history
+git log --oneline -10
+
+# Undo last commit (keep changes staged)
+git reset --soft HEAD~1
+
+# Revert a specific commit (safe, creates new commit)
+git revert <commit-hash>
+
+# See what changed in a file
+git log --oneline -5 -- <filepath>
+git diff HEAD~1 -- <filepath>
+```
+
+### .gitignore Essentials (already configured)
+```
+assets/               # Downloaded model assets
+checkpoints/          # Training checkpoints
+data/                 # Local datasets
+wandb/                # W&B logs
+.opencode/            # OpenCode local config
+.venv/                # Virtual environment
+__pycache__/          # Python bytecode
+```
