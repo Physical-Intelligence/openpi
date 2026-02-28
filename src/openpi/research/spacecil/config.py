@@ -34,7 +34,9 @@ def get_spacecil_configs():
     _building = True
     try:
         # ALL imports deferred inside function to avoid circular imports.
+        import os
         import openpi.models.pi0_config as pi0_config
+
         from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
         from openpi.training.config import DataConfig
         from openpi.training.config import FakeDataConfig
@@ -58,7 +60,7 @@ def get_spacecil_configs():
                     action_expert_variant="gemma_300m_lora",
                 ),
                 data=LeRobotRM75DataConfig(
-                    repo_id=f"placeholder/spacecil_{task}",
+                    repo_id=os.environ.get("SPACECIL_DATA_PREFIX", "placeholder") + f"/spacecil_{task}",
                     base_config=DataConfig(prompt_from_task=True),
                 ),
                 weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),

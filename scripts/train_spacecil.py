@@ -71,7 +71,8 @@ def make_train_fn(config: Any, train_state: Any, state_sharding: Any, mesh: Any,
     import jax  # noqa: F401
 
     from openpi.training import data_loader as _data_loader  # noqa: F401
-    from scripts.train import train_step  # noqa: F401
+
+    from scripts.train import init_train_state, train_step  # noqa: F401
 
     def train_fn(task_id: str) -> tuple[nnx.Module, list[dict[str, Any]]]:
         """Inner training loop for a single task."""
