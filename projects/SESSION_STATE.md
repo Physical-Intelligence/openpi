@@ -16,9 +16,9 @@
   - Section 4 (Key Facts) is stable reference data — rarely changes.
 -->
 
-**Last Updated:** 2026-03-01T01:55:00+08:00  
+**Last Updated:** 2026-03-01T01:45:00+08:00  
 **Updated By:** Sisyphus (opencode session)  
-**Git State:** branch `lunarbot-research` at commit `10a0a5b` — clean working tree  
+**Git State:** branch `lunarbot-research` at commit `6b17de2` — untracked: `.sisyphus/`, `opencode.json`  
 **Tests:** 285 passing (`JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q`)
 
 ---
@@ -70,36 +70,56 @@
 
 ## 2. Next Steps (Current Frontier)
 
-The code infrastructure is fully built. The project now transitions from **infrastructure building** to **real-robot experimentation**. The user wants to start with Paper A (SpaceCIL).
+The code infrastructure is fully built. A **detailed experimentation plan** has been generated, Metis-reviewed, and Momus-approved.
 
-### Immediate Next Actions (Paper A: SpaceCIL)
+### Experimentation Plan
+- **Plan file**: `.sisyphus/plans/spacecil-experimentation.md` (1,306 lines, Momus-approved OKAY)
+- **Scope**: Paper A (SpaceCIL) only — 12 implementation tasks + 4 final verification tasks
+- **Structure**: 4 parallel waves → critical path: T1 → T2 → T5 → T8 → T12
+- **Key decisions made this session**:
+  - Teleop format: HDF5 per-episode files (matches ALOHA/DROID patterns)
+  - Router integration: DEFERRED — only oracle/random routing via CLI flags for initial experiments
+  - Distillation: Optional code path (`--enable-distillation`, disabled by default)
+  - Baselines: 5 variants via `dataclasses.replace` (fulltune, nodistill, shared_lora, oracle, random)
+  - Model state: `init_train_state` called ONCE, LoRA swapped per task, optimizer reset per task
 
-1. **Hardware setup** — Set up RM75 arm + gripper + wrist camera, calibrate hand-eye, document workspace for 4 tasks
-2. **Data collection** — Teleoperate 50-100 demos per task (payload, latch, clean, connector) in nominal environment
-3. **Data conversion script** — Write a script to convert raw teleop recordings into LeRobot format using our episode schema (this is the ONE piece of glue code not yet written — depends on the user's teleop recording format)
-4. **Scorer validation** — Run scorers on 20+ manually-labeled pilot episodes, check precision/recall
-5. **Single-task training (G1 real)** — `uv run scripts/train.py spacecil_rm75_payload` with real data
-6. **Fill in `make_train_fn()`** — The `train_spacecil.py` skeleton has a `NotImplementedError` in the train_fn body that needs to be completed for real GPU training
-7. **Continual training (G2 real)** — Run full task sequence with adapter bank, distillation, router
+### To Start Execution
+Run `/start-work` in the next session — the plan is ready for immediate execution.
+
+### Wave Summary
+| Wave | Tasks | Description |
+|------|-------|-------------|
+| 1 (parallel) | T1-T4 | Fix imports, implement `make_train_fn`, data conversion script, scorer validation utility |
+| 2 (after W1) | T5-T8 | Wire main() flow, scorers/eval, baseline configs, distillation integration |
+| 3 (after W2) | T9-T12 | CLI flags, metrics/save, norm stats helper, integration tests |
+| Final | F1-F4 | Compliance audit, code quality, full QA, scope fidelity |
+
+### 10 Blockers Identified and Addressed in Plan
+1. `make_train_fn` NotImplementedError → Task 2
+2. `repo_id` placeholders → Task 1 (env var configurable)
+3. Scorers/eval_episodes empty → Task 6
+4. Metrics/save commented out → Task 10
+5. `run_sequence()` never called → Task 5
+6. Baseline configs missing → Task 7
+7. CLI routing flags missing → Task 9
+8. Router not integrated → Deferred (oracle/random only via CLI)
+9. Distillation loss not called → Task 8
+10. Physical sensor augmentation → Out of scope (hardware)
 
 ### Blocked On (user action required)
-- Teleop recording format (ROS bags? HDF5? CSV + images?) — needed to write conversion script
-- Physical robot access for data collection
-- GPU access for training (JAX crashes on GPU init on current machine — may need different hardware)
-
-### Future (after Paper A)
-- Paper B (LunarCompose) experiments: set up 3 environment conditions, collect data per cell, run missing-corner protocol
-- Paper writing for both papers
+- Physical robot access for data collection (robot "available soon" per user)
+- GPU machine setup: User confirmed separate machine with working JAX GPU exists — need to set up data transfer workflow
+- Teleop recording format: Decided HDF5 per-episode, but actual recorder software TBD
 
 ---
 
-## 3. Active Context (Decisions & Gotchas)
+### Experimentation Plan Details
+- **Plan generated**: `.sisyphus/plans/spacecil-experimentation.md`
+- **Metis review**: Identified 6 unasked questions, 7 guardrails, 4 scope creep risks — all addressed in plan
+- **Momus review**: **OKAY** — all 12 tasks verified, file references confirmed, minor API naming fixes applied
+- **Minor fixes applied post-Momus**: `TeacherSnapshot.update()` → `.snapshot()`, `TeacherSnapshot.predict()` → `.get_params()`, operational_forgetting weights type dict → ndarray
 
-### Environment Issues
-- **JAX GPU problem on this machine**: pynvml sees 2 GPUs but JAX crashes on GPU init. All tests run with `JAX_PLATFORMS=cpu`. Training will need a machine where JAX GPU works.
-- **Python env**: `.venv/` via uv, Python 3.11+. Use `source .venv/bin/activate` or `uv run`.
-
-### Key Architectural Decisions Made
+### Key Architectural Decisions Made (Cumulative)
 - Action space is **Absolute Joint Position (7 DoF) + Gripper (1 DoF) = 8D** (corrected from an early Delta EE mistake)
 - Adapter swapping happens **outside JIT** to avoid recompilation
 - One `nnx.State` filtered to `.*lora.*` is the single source of truth for adapter weights
@@ -107,12 +127,22 @@ The code infrastructure is fully built. The project now transitions from **infra
 - Training scripts import openpi's `init_train_state()` and `train_step()` directly — no forking
 - Configs use re-entrancy guard pattern to handle circular imports during `_CONFIGS` construction
 - Scorers are heuristic proxies (joint displacement, gripper state) — need validation against manual labels before trusting results
+- **NEW**: `init_train_state` must be called ONCE at start; LoRA swapped per task; optimizer state re-initialized per task (fresh Adam moments)
+- **NEW**: Router training is a separate concern — NOT in `make_train_fn`. Only oracle/random routing for initial experiments.
+- **NEW**: Distillation wraps AROUND `train_step` — custom `train_step_with_distillation`, does NOT modify upstream `train_step`
+- **NEW**: Baseline configs use `dataclasses.replace` on existing configs — never full standalone definitions
+- **NEW**: Data format is HDF5 per-episode files → LeRobot via `LeRobotDataset.create()` API
+
+### Environment Notes
+- **JAX GPU problem on this machine**: pynvml sees 2 GPUs but JAX crashes on GPU init. All tests run with `JAX_PLATFORMS=cpu`. User confirmed separate GPU machine available.
+- **Python env**: `.venv/` via uv, Python 3.11+. Use `source .venv/bin/activate` or `uv run`.
 
 ### Things NOT to Forget
-- `compute_norm_stats.py` must run on real dataset before training
-- Config `repo_id` fields are placeholders (`placeholder/spacecil_*`) — must be updated to real LeRobot dataset paths
+- `compute_norm_stats.py` must run on real dataset before training (all 4 tasks pre-computed)
+- Config `repo_id` fields are placeholders (`placeholder/spacecil_*`) — Task 1 in plan makes them configurable via `SPACECIL_DATA_PREFIX` env var
 - The `openpi/training/config.py` has been modified (lines ~561-572) with splat entries for our configs
 - Only one openpi core file was modified: `src/openpi/training/config.py`
+- `.sisyphus/` directory is untracked (gitignore it or commit selectively)
 
 ---
 
@@ -125,6 +155,7 @@ The code infrastructure is fully built. The project now transitions from **infra
 
 ### Commit History
 ```
+6b17de2 chore: update session state
 10a0a5b feat: add persistent session memory system for cross-session continuity
 113a53b docs: comprehensive documentation for SpaceCIL + LunarCompose
 cf3f93c feat: implement Phase C LunarCompose extension modules (285 tests)
@@ -140,7 +171,8 @@ JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q
 ```
 
 ### Config Names
-- SpaceCIL: `spacecil_rm75_payload`, `spacecil_rm75_latch`, `spacecil_rm75_clean`, `spacecil_rm75_connector`, `spacecil_debug`
+- SpaceCIL base: `spacecil_rm75_payload`, `spacecil_rm75_latch`, `spacecil_rm75_clean`, `spacecil_rm75_connector`, `spacecil_debug`
+- SpaceCIL baselines (planned, not yet created): `spacecil_rm75_{task}_fulltune`, `spacecil_rm75_{task}_nodistill`, `spacecil_rm75_shared_lora`, `spacecil_rm75_{task}_oracle`, `spacecil_rm75_{task}_random`
 - LunarCompose: `lunarcompose_{task}_{env}` (12 cells), `lunarcompose_factorized`, `lunarcompose_monolithic`, `lunarcompose_debug`
 
 ### Documentation Map
@@ -159,6 +191,7 @@ JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q
 | `customized_docs/Experiment_Guide_SpaceCIL.md` | Paper A end-to-end experiment recipe |
 | `customized_docs/Experiment_Guide_LunarCompose.md` | Paper B end-to-end experiment recipe |
 | `customized_docs/Research_Architecture_*.md` | System design with architecture diagrams |
+| `.sisyphus/plans/spacecil-experimentation.md` | **Momus-approved** experimentation plan (1,306 lines, 12 tasks + 4 verification) |
 
 ### Explicit Constraints (Verbatim from User)
 - "Do not modify existing openpi transform base classes"
