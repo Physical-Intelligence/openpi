@@ -159,15 +159,15 @@ class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
     """
 
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> Any:
-        # Repack: identity mapping since RM75 dataset keys match inference keys.
+        # Repack: map LeRobot dot-notation keys to pipeline slash-notation keys.
         repack_transform = transforms.Group(
             inputs=[
                 transforms.RepackTransform(
                     {
-                        "observation/wrist_image": "observation/wrist_image",
-                        "observation/joint_position": "observation/joint_position",
-                        "observation/joint_velocity": "observation/joint_velocity",
-                        "observation/gripper_position": "observation/gripper_position",
+                        "observation/wrist_image": "observation.wrist_image",
+                        "observation/joint_position": "observation.joint_position",
+                        "observation/joint_velocity": "observation.joint_velocity",
+                        "observation/gripper_position": "observation.gripper_position",
                         "actions": "actions",
                         "prompt": "prompt",
                     }
