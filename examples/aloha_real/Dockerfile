@@ -59,6 +59,24 @@ RUN uv pip sync --python 3.10 --system /tmp/requirements.txt /tmp/openpi-client/
 ENV PYTHONPATH=/app:/app/src:/app/packages/openpi-client/src:/root/interbotix_ws/src/aloha/aloha_scripts:/root/interbotix_ws/src/aloha
 WORKDIR /app
 
+# Create a non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Change ownership of the app directory to the non-root user
+RUN chown -R appuser:appuser /app
+
+# Switch to the non-root user
+USER appuser
+
+# Create a non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Change ownership of the app directory to the non-root user
+RUN chown -R appuser:appuser /app
+
+# Switch to the non-root user
+USER appuser
+
 # Create an entrypoint script to run the setup commands, followed by the command passed in.
 RUN cat <<'EOF' > /usr/local/bin/entrypoint.sh
 #!/bin/bash
