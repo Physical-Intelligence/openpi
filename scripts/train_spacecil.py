@@ -31,6 +31,7 @@ class SpaceCILArgs:
     enable_distillation: bool = False  # whether to use behavior distillation
     checkpoint_dir: str = "checkpoints"  # where to save adapter checkpoints
     seed: int = 42
+    eval_dir: str = "data/eval_episodes/"
     exp_name: str = "spacecil_run"
 
 
@@ -45,6 +46,7 @@ def parse_args() -> SpaceCILArgs:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--exp-name", type=str, default="spacecil_run")
+    parser.add_argument("--eval-dir", type=str, default="data/eval_episodes/", help="directory with eval episodes per task")
     args = parser.parse_args()
     return SpaceCILArgs(
         config_name=args.config,
@@ -55,7 +57,49 @@ def parse_args() -> SpaceCILArgs:
         checkpoint_dir=args.checkpoint_dir,
         seed=args.seed,
         exp_name=args.exp_name,
+        eval_dir=args.eval_dir,
     )
+
+
+def _build_scorers() -> dict:
+    """Build scorer dict for all 4 SpaceCIL tasks."""
+    from openpi.research.shared.scorer_base import (
+        ConnectorMatingScorer,
+        LatchActuationScorer,
+        PayloadTransferScorer,
+        SurfaceCleaningScorer,
+    )
+
+    return {
+        "payload": PayloadTransferScorer(),
+        "latch": LatchActuationScorer(),
+        "clean": SurfaceCleaningScorer(),
+        "connector": ConnectorMatingScorer(),
+    }
+
+
+def _load_eval_episodes(eval_dir: str, task_ids: list[str]) -> dict[str, list]:
+    """Load evaluation episodes from disk, with graceful degradation."""
+    import glob
+    import json
+    import os
+
+    from openpi.research.shared.episode_schema import Episode
+
+    episodes: dict[str, list] = {}
+    for task_id in task_ids:
+        task_dir = os.path.join(eval_dir, task_id)
+        if os.path.isdir(task_dir):
+            task_episodes = []
+            for f in sorted(glob.glob(os.path.join(task_dir, "*.json"))):
+                with open(f) as fh:
+                    task_episodes.append(Episode.from_dict(json.load(fh)))
+            episodes[task_id] = task_episodes
+        else:
+            episodes[task_id] = []
+    if not any(episodes.values()):
+        logger.warning(f"No eval episodes found in {eval_dir}. Evaluation will produce empty results.")
+    return episodes
 
 
 def make_train_fn(
@@ -179,24 +223,35 @@ def main() -> None:
         task_sequence=args.task_sequence,
         adapter_bank=adapter_bank,
         distillation=distillation,
-        scorers={},  # TODO: wire up real scorers per task
-        eval_episodes={},  # TODO: load eval episodes per task
+        scorers=_build_scorers(),
+        eval_episodes=_load_eval_episodes(args.eval_dir, args.task_sequence),
         distillation_alpha=args.distillation_alpha,
     )
 
-    # 4. Run sequence
-    # NOTE: Real training requires make_train_fn with GPU, mesh, etc.
-    # This is the intended wiring pattern:
-    #
-    # mesh = jax.sharding.Mesh(jax.devices(), ("fsdp",))
-    # rng = jax.random.PRNGKey(args.seed)
-    # train_state, state_sharding = init_train_state(config, rng, mesh, resume=False)
-    # train_fn = make_train_fn(config, train_state, state_sharding, mesh, rng)
-    # result = harness.run_sequence(train_fn)
+    # 4. Initialize training state and run sequence
+    import os
 
-    logger.info("SpaceCIL training script ready. Provide train_fn for actual training.")
-    logger.info(f"Task sequence: {args.task_sequence}")
-    logger.info(f"Adapter bank tasks: {adapter_bank.registered_tasks}")
+    from openpi.training import sharding as _sharding
+    from scripts.train import init_train_state
+
+    os.makedirs(f"{args.checkpoint_dir}/{args.exp_name}", exist_ok=True)
+
+    mesh = _sharding.make_mesh(config.fsdp_devices)
+    rng = jax.random.key(config.seed)
+    init_rng, train_rng = jax.random.split(rng)
+
+    with _sharding.set_mesh(mesh):
+        train_state, state_sharding = init_train_state(config, init_rng, mesh, resume=False)
+
+    train_fn = make_train_fn(config, train_state, state_sharding, mesh, train_rng, num_steps_per_task=args.num_steps_per_task)
+
+    try:
+        result = harness.run_sequence(train_fn)
+        logger.info(f"Continual sequence complete. Result matrix shape: {result.result_matrix.shape}")
+    except Exception as e:
+        logger.error(f"Training failed: {e}")
+        adapter_bank.save(f"{args.checkpoint_dir}/{args.exp_name}/adapter_bank_crash_recovery")
+        raise
 
     # 5. Compute and log metrics (when result is available)
     # final_metrics = {
