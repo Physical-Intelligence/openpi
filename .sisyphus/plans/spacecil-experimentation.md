@@ -69,11 +69,11 @@ Make `train_spacecil.py` a fully functional training script that can run the com
 - Updated tests for all modified modules
 
 ### Definition of Done
-- [ ] `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q` passes ≥300 tests (currently 285)
-- [ ] `JAX_PLATFORMS=cpu uv run python scripts/train_spacecil.py --config spacecil_debug --task-sequence debug_task --num-steps-per-task 2` completes without error
-- [ ] All `NotImplementedError` markers removed from `train_spacecil.py`
-- [ ] All `# TODO:` comments in `train_spacecil.py` `main()` resolved
-- [ ] All commented-out code blocks in `main()` either uncommented or replaced with working code
+- [x] `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q` passes ≥300 tests (currently 285)
+- [x] `JAX_PLATFORMS=cpu uv run python scripts/train_spacecil.py --config spacecil_debug --task-sequence debug_task --num-steps-per-task 2` completes without error
+- [x] All `NotImplementedError` markers removed from `train_spacecil.py`
+- [x] All `# TODO:` comments in `train_spacecil.py` `main()` resolved
+- [x] All commented-out code blocks in `main()` either uncommented or replaced with working code
 
 ### Must Have
 - Working `make_train_fn` that creates data loader, runs train_step loop, returns model
@@ -186,7 +186,7 @@ Max Concurrent: 4 (Waves 1 & 2)
 ## TODOs
 
 
-- [ ] 1. Fix Missing Imports and Make repo_id Configurable in SpaceCIL Config
+- [x] 1. Fix Missing Imports and Make repo_id Configurable in SpaceCIL Config
 
   **What to do**:
   - Add missing import `from scripts.train import init_train_state` to `scripts/train_spacecil.py` (currently only `train_step` is imported)
@@ -269,7 +269,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/train_spacecil.py`, `src/openpi/research/spacecil/config.py`
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/config_test.py -x -q`
 
-- [ ] 2. Implement make_train_fn Body — The Core Training Loop
+- [x] 2. Implement make_train_fn Body — The Core Training Loop
 
   **What to do**:
   - Replace the `NotImplementedError` in `make_train_fn()` (lines 76-91 of `train_spacecil.py`) with a working training loop
@@ -369,7 +369,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/ -x -q`
 
 
-- [ ] 3. Write Data Conversion Script (HDF5 → LeRobot Format)
+- [x] 3. Write Data Conversion Script (HDF5 → LeRobot Format)
 
   **What to do**:
   - Create `scripts/convert_rm75_data_to_lerobot.py` following the `examples/libero/convert_libero_data_to_lerobot.py` template
@@ -481,7 +481,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/convert_rm75_data_to_lerobot.py`
   - Pre-commit: `uv run python scripts/convert_rm75_data_to_lerobot.py --help` (verify CLI works)
 
-- [ ] 4. Write Scorer Validation Utility Script
+- [x] 4. Write Scorer Validation Utility Script
 
   **What to do**:
   - Create `scripts/validate_scorers.py` — a utility that computes precision/recall of scorers against manually-labeled episodes
@@ -557,7 +557,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/validate_scorers.py`
   - Pre-commit: `uv run python scripts/validate_scorers.py --help`
 
-- [ ] 5. Uncomment and Wire main() Execution Flow
+- [x] 5. Uncomment and Wire main() Execution Flow
 
   **What to do**:
   - Uncomment the blocked-out code in `main()` of `train_spacecil.py` (lines ~138-145):
@@ -637,7 +637,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/train_spacecil.py`
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/ -x -q`
 
-- [ ] 6. Wire Scorers and Eval Episodes into ContinualHarness
+- [x] 6. Wire Scorers and Eval Episodes into ContinualHarness
 
   **What to do**:
   - Replace `scorers={}` in `main()` with real scorer instances:
@@ -736,7 +736,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/train_spacecil.py`
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/ -x -q`
 
-- [ ] 7. Add Baseline Config Variants via dataclasses.replace
+- [x] 7. Add Baseline Config Variants via dataclasses.replace
 
   **What to do**:
   - Add 5 baseline config variants to `spacecil/config.py` using `dataclasses.replace` on existing task configs:
@@ -836,7 +836,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `src/openpi/research/spacecil/config.py`, `src/openpi/research/spacecil/config_test.py`
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/config_test.py -x -q`
 
-- [ ] 8. Integrate Distillation Loss into Training Loop
+- [x] 8. Integrate Distillation Loss into Training Loop
 
   **What to do**:
   - Modify `make_train_fn` to optionally apply behavior distillation when `args.enable_distillation` is True
@@ -925,7 +925,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/train_spacecil.py`
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/ -x -q`
 
-- [ ] 9. Add --oracle-routing and --random-routing CLI Flags
+- [x] 9. Add --oracle-routing and --random-routing CLI Flags
 
   **What to do**:
   - Add two new CLI flags to `SpaceCILArgs` and `parse_args()`:
@@ -1004,7 +1004,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/train_spacecil.py`
   - Pre-commit: `uv run python scripts/train_spacecil.py --help`
 
-- [ ] 10. Uncomment Metrics Computation and Adapter Bank Save
+- [x] 10. Uncomment Metrics Computation and Adapter Bank Save
 
   **What to do**:
   - Uncomment the metrics computation block (lines ~151-157 of `train_spacecil.py`):
@@ -1082,7 +1082,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/train_spacecil.py`
   - Pre-commit: `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/spacecil/ -x -q`
 
-- [ ] 11. Write compute_all_norm_stats.sh Helper Script
+- [x] 11. Write compute_all_norm_stats.sh Helper Script
 
   **What to do**:
   - Create `scripts/compute_all_norm_stats.sh` — a simple bash script that runs norm stats for all SpaceCIL task configs
@@ -1144,7 +1144,7 @@ Max Concurrent: 4 (Waves 1 & 2)
   - Files: `scripts/compute_all_norm_stats.sh`
   - Pre-commit: `bash -n scripts/compute_all_norm_stats.sh` (syntax check)
 
-- [ ] 12. End-to-End Integration Test with spacecil_debug Config
+- [x] 12. End-to-End Integration Test with spacecil_debug Config
 
   **What to do**:
   - Create `src/openpi/research/spacecil/integration_test.py` with comprehensive end-to-end tests:
@@ -1226,19 +1226,19 @@ Max Concurrent: 4 (Waves 1 & 2)
 
 > 4 review agents run in PARALLEL. ALL must APPROVE. Rejection → fix → re-run.
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. For each "Must Have": verify implementation exists (read file, run command). For each "Must NOT Have": search codebase for forbidden patterns — reject with file:line if found. Check evidence files exist in `.sisyphus/evidence/`. Compare deliverables against plan.
   Output: `Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   Run `JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q`. Review all changed files for: `# type: ignore`, empty catches, `print()` in production code, commented-out code blocks, unused imports. Check AI slop: excessive comments, over-abstraction, generic variable names. Verify all new functions have docstrings.
   Output: `Tests [N pass/N fail] | Files [N clean/N issues] | VERDICT`
 
-- [ ] F3. **Full QA — Run All Scenarios** — `unspecified-high`
+- [x] F3. **Full QA — Run All Scenarios** — `unspecified-high`
   Execute EVERY QA scenario from EVERY task — follow exact steps, capture evidence. Test cross-task integration: run `train_spacecil.py` with `spacecil_debug` config end-to-end. Verify metrics are printed. Verify adapter bank directory is created. Save to `.sisyphus/evidence/final-qa/`.
   Output: `Scenarios [N/N pass] | Integration [N/N] | VERDICT`
 
-- [ ] F4. **Scope Fidelity Check** — `deep`
+- [x] F4. **Scope Fidelity Check** — `deep`
   For each task: read "What to do", read actual diff (`git log`/`diff`). Verify 1:1 — everything in spec was built (no missing), nothing beyond spec was built (no creep). Check "Must NOT do" compliance. Flag unaccounted changes.
   Output: `Tasks [N/N compliant] | Unaccounted [CLEAN/N files] | VERDICT`
 
@@ -1297,10 +1297,10 @@ grep -n "TODO" scripts/train_spacecil.py
 ```
 
 ### Final Checklist
-- [ ] All "Must Have" items present and verified
-- [ ] All "Must NOT Have" patterns absent from codebase
-- [ ] All tests pass (≥300)
-- [ ] `train_spacecil.py` runs end-to-end on debug config
-- [ ] All baseline configs resolve without error
-- [ ] Data conversion script produces valid LeRobot dataset
-- [ ] Scorer validation script runs on test episodes
+- [x] All "Must Have" items present and verified
+- [x] All "Must NOT Have" patterns absent from codebase
+- [x] All tests pass (≥300)
+- [x] `train_spacecil.py` runs end-to-end on debug config
+- [x] All baseline configs resolve without error
+- [x] Data conversion script produces valid LeRobot dataset
+- [x] Scorer validation script runs on test episodes

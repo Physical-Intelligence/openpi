@@ -94,7 +94,7 @@ def main():
 
     # Threshold check
     if precision < 0.80 or recall < 0.80:
-        print(f"\nWARNING: Below threshold!")
+        print("\nWARNING: Below threshold!")
         if precision < 0.80:
             print(f"  Precision {precision:.4f} < 0.80 — consider tightening scorer criteria")
         if recall < 0.80:

@@ -15,7 +15,7 @@ import dataclasses
 import logging
 from typing import Any
 
-import numpy as np  # noqa: F401  -- used by commented-out metrics code
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -257,9 +257,9 @@ def main() -> None:
     logger.info(f"SpaceCIL training: config={args.config_name}, tasks={args.task_sequence}")
 
     # Import heavy deps only when actually running
-    import jax  # noqa: F401
+    import jax
 
-    from openpi.research.spacecil import metrics  # noqa: F401
+    from openpi.research.spacecil import metrics
     from openpi.research.spacecil.behavior_distillation import BehaviorDistillation
     from openpi.research.spacecil.behavior_distillation import CalibrationMemory
     from openpi.research.spacecil.behavior_distillation import TeacherSnapshot
@@ -292,7 +292,7 @@ def main() -> None:
         distillation = None
 
     # 3. Build harness
-    harness = ContinualHarness(  # noqa: F841
+    harness = ContinualHarness(
         task_sequence=args.task_sequence,
         adapter_bank=adapter_bank,
         distillation=distillation,

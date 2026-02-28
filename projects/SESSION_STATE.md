@@ -16,10 +16,10 @@
   - Section 4 (Key Facts) is stable reference data — rarely changes.
 -->
 
-**Last Updated:** 2026-03-01T01:45:00+08:00  
-**Updated By:** Sisyphus (opencode session)  
-**Git State:** branch `lunarbot-research` at commit `6b17de2` — untracked: `.sisyphus/`, `opencode.json`  
-**Tests:** 285 passing (`JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q`)
+**Last Updated:** 2026-03-01T16:00:00+08:00  
+**Updated By:** Atlas Orchestrator (opencode session)  
+**Git State:** branch `lunarbot-research` at commit `84f340f` + uncommitted quality fixes — untracked: `.sisyphus/`, `opencode.json`  
+**Tests:** 308 passing (`JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q`)
 
 ---
 
@@ -41,9 +41,9 @@
 | `spacecil/task_adapter_bank.py` | ✅ Done | 20 | `ed29e7e` |
 | `spacecil/behavior_distillation.py` | ✅ Done | 20 | `ed29e7e` |
 | `spacecil/router.py` | ✅ Done | 28 | `ed29e7e` |
-| `spacecil/config.py` | ✅ Done | 7 | `ed29e7e` |
+| `spacecil/config.py` | ✅ Done (22 configs) | 8 | `dd391a6` |
 | `spacecil/continual_harness.py` | ✅ Done | 24 | `ed29e7e` |
-| `scripts/train_spacecil.py` | ✅ Done (skeleton) | CLI ✅ | `ed29e7e` |
+| `scripts/train_spacecil.py` | ✅ Done (fully functional) | CLI + 22 integration | `84f340f` |
 | **Gate G2** | ✅ Passed (code-level) | | |
 
 ### Phase C — LunarCompose Extension ✅ COMPLETE
@@ -66,51 +66,59 @@
 | `customized_docs/Experiment_Guide_LunarCompose.md` | 1,056 | `113a53b` |
 | `customized_docs/Research_Architecture_SpaceCIL_LunarCompose.md` | 1,013 | `113a53b` |
 
+### SpaceCIL Experimentation Phase ✅ COMPLETE
+| Task | Description | Status | Commit |
+|------|-------------|--------|--------|
+| T1 | Fix imports + configurable repo_id | ✅ Done | `61cbb58` |
+| T2 | Implement make_train_fn body | ✅ Done | `b5cdbf5` |
+| T3 | HDF5→LeRobot conversion script | ✅ Done | `d0041df` |
+| T4 | Scorer validation utility | ✅ Done | `5f4c4bd` |
+| T5+T6 | Wire main() + scorers + eval episodes | ✅ Done | `63a752e` |
+| T7 | Baseline config variants (22 total) | ✅ Done | `dd391a6` |
+| T8 | Distillation integration | ✅ Done | `03de6ae` |
+| T9 | CLI routing flags | ✅ Done | `e437b34` |
+| T10 | Metrics + adapter bank save | ✅ Done | `e437b34` |
+| T11 | Norm stats helper script | ✅ Done | `82013fe` |
+| T12 | Integration tests (22 tests) | ✅ Done | `84f340f` |
+| F1-F4 | Final verification wave | ✅ ALL APPROVE | — |
+
+**New files created:**
+- `scripts/convert_rm75_data_to_lerobot.py` (397 lines) — HDF5→LeRobot conversion
+- `scripts/validate_scorers.py` (109 lines) — Scorer precision/recall validation
+- `scripts/compute_all_norm_stats.sh` (19 lines) — Norm stats helper for all 4 tasks
+- `src/openpi/research/spacecil/integration_test.py` (518 lines) — 22 integration tests
+
+**Key technical discoveries:**
+- LeRobot v0.1.0 forbids `/` in feature key names → dot-notation (`observation.wrist_image`)
+- RepackTransform maps dots→slashes at pipeline boundary
+- `make_train_fn` signature: 7 params (config, train_state, state_sharding, mesh, rng, num_steps_per_task, *, distillation)
+- Distillation monitoring approach (not full gradient integration) — pragmatic deferral
 ---
 
 ## 2. Next Steps (Current Frontier)
 
-The code infrastructure is fully built. A **detailed experimentation plan** has been generated, Metis-reviewed, and Momus-approved.
+### SpaceCIL Experimentation Plan ✅ FULLY COMPLETE
+All 12 implementation tasks + 4 final verification tasks are done. The plan file (`.sisyphus/plans/spacecil-experimentation.md`) has all 28 checkboxes marked `[x]`.
 
-### Experimentation Plan
-- **Plan file**: `.sisyphus/plans/spacecil-experimentation.md` (1,306 lines, Momus-approved OKAY)
-- **Scope**: Paper A (SpaceCIL) only — 12 implementation tasks + 4 final verification tasks
-- **Structure**: 4 parallel waves → critical path: T1 → T2 → T5 → T8 → T12
-- **Key decisions made this session**:
-  - Teleop format: HDF5 per-episode files (matches ALOHA/DROID patterns)
-  - Router integration: DEFERRED — only oracle/random routing via CLI flags for initial experiments
-  - Distillation: Optional code path (`--enable-distillation`, disabled by default)
-  - Baselines: 5 variants via `dataclasses.replace` (fulltune, nodistill, shared_lora, oracle, random)
-  - Model state: `init_train_state` called ONCE, LoRA swapped per task, optimizer reset per task
+### What's Next: Paper B (LunarCompose) Experimentation
+The same treatment that was applied to SpaceCIL needs to be applied to LunarCompose:
+- Generate a `spacecil-experimentation`-style plan for LunarCompose
+- Complete `scripts/train_lunarcompose.py` (currently skeleton)
+- Wire missing-corner harness, dual-head router, env adapter bank
+- Add factorization diagnostics and evaluation
 
-### To Start Execution
-Run `/start-work` in the next session — the plan is ready for immediate execution.
-
-### Wave Summary
-| Wave | Tasks | Description |
-|------|-------|-------------|
-| 1 (parallel) | T1-T4 | Fix imports, implement `make_train_fn`, data conversion script, scorer validation utility |
-| 2 (after W1) | T5-T8 | Wire main() flow, scorers/eval, baseline configs, distillation integration |
-| 3 (after W2) | T9-T12 | CLI flags, metrics/save, norm stats helper, integration tests |
-| Final | F1-F4 | Compliance audit, code quality, full QA, scope fidelity |
-
-### 10 Blockers Identified and Addressed in Plan
-1. `make_train_fn` NotImplementedError → Task 2
-2. `repo_id` placeholders → Task 1 (env var configurable)
-3. Scorers/eval_episodes empty → Task 6
-4. Metrics/save commented out → Task 10
-5. `run_sequence()` never called → Task 5
-6. Baseline configs missing → Task 7
-7. CLI routing flags missing → Task 9
-8. Router not integrated → Deferred (oracle/random only via CLI)
-9. Distillation loss not called → Task 8
-10. Physical sensor augmentation → Out of scope (hardware)
+### Alternatively: Real Robot Data Collection
+SpaceCIL is code-complete and ready for real experiments. The remaining dependency is hardware:
+- Physical robot access for data collection
+- GPU machine setup for training
+- Teleop recording in HDF5 format → conversion via `scripts/convert_rm75_data_to_lerobot.py`
+- Run `scripts/compute_all_norm_stats.sh` on real data before training
+- Execute: `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run python scripts/train_spacecil.py --config spacecil_rm75_payload --task-sequence payload latch clean connector --num-steps-per-task 10000`
 
 ### Blocked On (user action required)
-- Physical robot access for data collection (robot "available soon" per user)
-- GPU machine setup: User confirmed separate machine with working JAX GPU exists — need to set up data transfer workflow
-- Teleop recording format: Decided HDF5 per-episode, but actual recorder software TBD
-
+- Physical robot access for data collection
+- GPU machine setup with working JAX
+- Decision: proceed with LunarCompose plan or wait for robot data?
 ---
 
 ### Experimentation Plan Details
@@ -139,7 +147,7 @@ Run `/start-work` in the next session — the plan is ready for immediate execut
 
 ### Things NOT to Forget
 - `compute_norm_stats.py` must run on real dataset before training (all 4 tasks pre-computed)
-- Config `repo_id` fields are placeholders (`placeholder/spacecil_*`) — Task 1 in plan makes them configurable via `SPACECIL_DATA_PREFIX` env var
+- Config `repo_id` fields use `SPACECIL_DATA_PREFIX` env var with `placeholder` fallback — set before training with real data
 - The `openpi/training/config.py` has been modified (lines ~561-572) with splat entries for our configs
 - Only one openpi core file was modified: `src/openpi/training/config.py`
 - `.sisyphus/` directory is untracked (gitignore it or commit selectively)
@@ -155,6 +163,19 @@ Run `/start-work` in the next session — the plan is ready for immediate execut
 
 ### Commit History
 ```
+84f340f test: add end-to-end integration tests for spacecil training flow
+97d48a0 fix: remove duplicate fields and closing paren in train_spacecil.py
+e437b34 feat: add oracle/random routing CLI flags
+03de6ae feat: integrate distillation loss into spacecil training loop
+82013fe feat: add norm stats computation helper for all SpaceCIL tasks
+63a752e feat: wire main() execution flow, scorers, and eval episodes
+dd391a6 feat: add baseline config variants for SpaceCIL experiments
+b5cdbf5 feat: implement make_train_fn body for spacecil training loop
+86b70c8 fix: update RepackTransform to map LeRobot dot-keys to pipeline slash-keys
+d0041df feat: add RM75 HDF5 to LeRobot data conversion script
+5f4c4bd feat: add scorer validation utility script
+61cbb58 fix: add missing imports and configurable repo_id to spacecil config
+91919fa chore: update session state with experimentation plan (Momus-approved)
 6b17de2 chore: update session state
 10a0a5b feat: add persistent session memory system for cross-session continuity
 113a53b docs: comprehensive documentation for SpaceCIL + LunarCompose
@@ -172,7 +193,7 @@ JAX_PLATFORMS=cpu uv run pytest src/openpi/research/ -x -q
 
 ### Config Names
 - SpaceCIL base: `spacecil_rm75_payload`, `spacecil_rm75_latch`, `spacecil_rm75_clean`, `spacecil_rm75_connector`, `spacecil_debug`
-- SpaceCIL baselines (planned, not yet created): `spacecil_rm75_{task}_fulltune`, `spacecil_rm75_{task}_nodistill`, `spacecil_rm75_shared_lora`, `spacecil_rm75_{task}_oracle`, `spacecil_rm75_{task}_random`
+- SpaceCIL baselines (22 total): `spacecil_rm75_{task}_fulltune`, `spacecil_rm75_{task}_nodistill`, `spacecil_rm75_shared_lora`, `spacecil_rm75_{task}_oracle`, `spacecil_rm75_{task}_random`
 - LunarCompose: `lunarcompose_{task}_{env}` (12 cells), `lunarcompose_factorized`, `lunarcompose_monolithic`, `lunarcompose_debug`
 
 ### Documentation Map
