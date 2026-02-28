@@ -195,9 +195,38 @@ For every module, classify as one of:
 | **G2** | ≥2 tasks train sequentially; router beats random; distillation executes stably; adapter checkpoint restore works | Paper A mainline claims |
 | **G3** | Env metadata enforced without leakage; missing-corner split verified; env adaptation path exists | Paper B mainline claims |
 
+## Session Memory (MANDATORY)
+
+### ⚡ FIRST ACTION IN EVERY NEW SESSION
+**Before doing ANYTHING else, read the project state file:**
+```
+projects/SESSION_STATE.md
+```
+This file contains: what's been done, what's next, key decisions, gotchas, and git state.
+It is updated at the end of every session and is the **single source of truth** for project continuity.
+
+### Session Transition Protocol
+When the user says "save state", "update session state", "handoff", or is about to end a session:
+1. Read the current `projects/SESSION_STATE.md`
+2. Update Section 2 (Next Steps) with the current frontier
+3. Update Section 3 (Active Context) with any new decisions or discoveries
+4. Append to Section 1 (Progress) if new work was completed
+5. Update the header (timestamp, git state, test count)
+6. Commit and push: `git add projects/SESSION_STATE.md && git commit -m "chore: update session state" && git push lunarbot lunarbot-research`
+
+### Why This Exists
+Context windows are limited. Compacting context wastes tokens. This file lets any new session
+pick up exactly where the last one left off without needing the full conversation history.
+
 ## Reference Documents
+- `projects/SESSION_STATE.md` — **Persistent project memory** (read FIRST every session)
 - `customized_docs/Research_Idea_Blueprint_SpaceCIL_LunarCompose.md` — Scientific problem, claims, evaluation logic
 - `customized_docs/Implementation_Masterplan_SpaceCIL_LunarCompose.md` — Repo strategy, module list, build order, doctrines
+- `customized_docs/API_Reference.md` — Full API reference for all research modules (2,675 lines)
+- `customized_docs/Developer_Guide.md` — Architecture, integration, data pipeline guide (1,213 lines)
+- `customized_docs/Experiment_Guide_SpaceCIL.md` — Paper A end-to-end experiment recipe (1,230 lines)
+- `customized_docs/Experiment_Guide_LunarCompose.md` — Paper B end-to-end experiment recipe (1,056 lines)
+- `customized_docs/Research_Architecture_SpaceCIL_LunarCompose.md` — System design with diagrams (1,013 lines)
 
 ## Version Control
 
