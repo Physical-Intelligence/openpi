@@ -37,8 +37,6 @@ class SpaceCILArgs:
     operational_weights: str | None = None  # JSON array of operational weights per task
     oracle_routing: bool = False
     random_routing: bool = False
-    oracle_routing: bool = False
-    random_routing: bool = False
 
 
 def parse_args() -> SpaceCILArgs:
@@ -74,7 +72,6 @@ def parse_args() -> SpaceCILArgs:
         oracle_routing=args.oracle_routing,
         random_routing=args.random_routing,
         operational_weights=args.operational_weights,
-    )
     )
 
 
