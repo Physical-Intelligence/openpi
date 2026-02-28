@@ -564,6 +564,13 @@ def _get_spacecil_configs():
 
     return spacecil_config.get_spacecil_configs()
 
+
+def _get_lunarcompose_configs():
+    """Lazy import to avoid circular: lunarcompose/config → rm75_policy → training/config."""
+    import openpi.research.lunarcompose.config as lunarcompose_config
+
+    return lunarcompose_config.get_lunarcompose_configs()
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     #
@@ -1005,6 +1012,7 @@ _CONFIGS = [
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
     *_get_spacecil_configs(),
+    *_get_lunarcompose_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
