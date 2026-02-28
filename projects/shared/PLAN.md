@@ -40,7 +40,7 @@ The schema is organized into five namespaces:
 - `obs.base_state` — base position/heading, if logged
 
 **Actions (`action.*`)**
-- `action.delta_ee` — 6D delta end-effector command (position + orientation)
+- `action.joint_pos` — 7D absolute joint position (radians, 7-DoF arm)
 - `action.gripper_cmd` — 1D gripper command
 
 **Language (`lang.*`)**
@@ -84,7 +84,7 @@ Integration with openpi's training pipeline: a `RepackTransform` reads from the 
 
 One authoritative path for action representation across the entire program. Three directions must work correctly:
 
-1. `teleop_to_canonical()` — controller output to canonical Delta EE + gripper
+1. `teleop_to_canonical()` — controller output to canonical absolute joint position + gripper
 2. `canonical_to_training()` — canonical form to the representation openpi's model expects
 3. `training_to_canonical()` — inverse of the above, for debugging and policy output interpretation
 
@@ -95,8 +95,8 @@ There must be no second converter anywhere. Any discrepancy between training-tim
 Follows openpi's `DataTransformFn` interface, the same pattern used by `DeltaActions` in `openpi/transforms.py`. The transforms are stateless functions plus a thin class wrapper that makes them composable with openpi's `DataConfig.data_transforms` list.
 
 Dimensional contract:
-- `action.delta_ee`: shape `(6,)` — 3D position delta + 3D rotation delta (axis-angle or roll-pitch-yaw, to be frozen before Phase A completes)
-- `action.gripper_cmd`: shape `(1,)` — normalized in `[-1, 1]` or `[0, 1]`, convention to be frozen before Phase A completes
+- `action.joint_pos`: shape `(7,)` — absolute joint angles in radians for the 7-DoF arm
+- `action.gripper_cmd`: shape `(1,)` — normalized in `[0, 1]`
 
 The convention freeze is a hard gate. Write it into a docstring constant at the top of the file once decided. Do not leave it unspecified.
 
@@ -135,7 +135,7 @@ Maps RM75 observations to openpi model input slots:
 
 Maps openpi model action outputs back to RM75 action space:
 
-- Model action output is split into `action.delta_ee` (6D) and `action.gripper_cmd` (1D)
+- Model action output is split into `action.joint_pos` (7D) and `action.gripper_cmd` (1D)
 - Applies denormalization using precomputed norm stats
 
 **`LeRobotRM75DataConfig(DataConfigFactory)`**
@@ -157,9 +157,9 @@ Returned by the factory function and used in `TrainConfig.data`. Specifies:
 
 - `RM75Inputs`: input dict with correct field names produces output with correct model key names
 - `RM75Inputs`: image shape after transform matches SigLIP expectations
-- `RM75Outputs`: model output with correct shape produces split delta_ee and gripper_cmd
+- `RM75Outputs`: model output with correct shape produces split joint_pos and gripper_cmd
 - `LeRobotRM75DataConfig`: instantiation with a debug config completes without error
-- Dimension contract: action output dimension is exactly 7 (6 + 1)
+- Dimension contract: action output dimension is exactly 8 (7 + 1)
 
 ---
 

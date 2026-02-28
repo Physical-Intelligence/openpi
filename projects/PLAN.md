@@ -19,7 +19,7 @@ These papers are not two weak slices of the same result. They address orthogonal
 - Wheeled base + RM75 7-DoF arm + two-finger gripper
 - Primary policy camera: wrist RGB (hand-eye calibrated)
 - Optional scene cameras for scoring, replay, and audit
-- Main policy action space: Delta EE + gripper (6D + 1D)
+- Main policy action space: Absolute Joint Position (7 DoF) + Gripper (1 DoF) = 8D total
 - Base motion is available but the mainline policy is arm-centric unless explicitly extended
 
 ### Backbone
@@ -76,7 +76,7 @@ Tests are co-located as `*_test.py` files next to their source. The `conftest.py
 Must be completed before any continual-learning experiments. No training runs happen until G1 is passed.
 
 - Freeze the unified episode schema
-- Freeze the Delta EE + gripper action convention
+- Freeze the absolute joint position + gripper action convention
 - Implement action transforms
 - Implement RM75 policy config
 - Implement scorer base and per-task scorers

@@ -7,7 +7,7 @@
 
 LunarCompose asks a focused question: when you transfer an Earth-trained VLA into a robot operating under lunar-analog conditions, should the adaptation be factorized along two axes (task and environment) or collapsed into a single module?
 
-The paper tests this on a real mobile manipulation platform, a wheeled base with an RM75 7-DoF arm and two-finger gripper, where the primary policy camera is a wrist RGB image. Backbone: released pi0.5 via the openpi flow-matching policy path. The evaluation protocol trains on a subset of task-environment combinations and measures whether factorized adaptation generalizes to unseen combinations better than non-factorized baselines.
+The paper tests this on a real mobile manipulation platform, a wheeled base with an RM75 7-DoF arm and two-finger gripper, where the primary policy camera is a wrist RGB image. The action space is Absolute Joint Position (7 DoF) + Gripper (1 DoF) = 8D total. Backbone: released pi0.5 via the openpi flow-matching policy path. The evaluation protocol trains on a subset of task-environment combinations and measures whether factorized adaptation generalizes to unseen combinations better than non-factorized baselines.
 
 **Why this matters for space robotics.** Lunar robots won't see a single frozen condition. Illumination, shadow geometry, surface contamination, and visual contrast all shift across locations and mission phases. If adaptation entangles task semantics and environment-specific corrections into one monolithic module, reuse across condition changes becomes brittle. Factorized adaptation offers a principled alternative: learn task capability once, then compose with environment correction independently.
 

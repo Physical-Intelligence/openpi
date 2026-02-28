@@ -31,7 +31,7 @@ This document is intentionally **operationally honest**. It should explicitly st
 - Platform: wheeled base + RM75 7-DoF arm + two-finger gripper
 - Primary policy camera: wrist RGB, hand-eye calibrated
 - Optional scene camera(s): scoring, replay, debugging, audit
-- Main policy action space: **Delta EE + gripper**
+- Main policy action space: **Absolute Joint Position (7 DoF) + Gripper (1 DoF) = 8D total**
 - Base motion is available operationally, but the mainline policy is **arm-centric** unless base control is explicitly brought into-policy later
 
 ### 1.3 Internal truth policy
@@ -109,7 +109,7 @@ Freeze one episode schema for both papers:
 - `obs.dq`
 - `obs.gripper`
 - `obs.base_state` (if logged)
-- `action.delta_ee`
+- `action.joint_pos`
 - `action.gripper_cmd`
 - `lang.instruction`
 - `label.success`
@@ -128,7 +128,7 @@ No duplicate schemas for different papers.
 ### 4.2 Action transform layer
 Implement one authoritative path from:
 - teleop / controller output
-- to canonical Delta EE + gripper representation
+- to canonical absolute joint position + gripper representation
 - to robot execution
 - and to the representation expected by the released training path.
 
@@ -305,7 +305,7 @@ For every scorer:
 
 ### 9.1 Phase A — before SpaceCIL training
 - freeze schema,
-- freeze Delta EE + gripper action convention,
+- freeze absolute joint position + gripper action convention,
 - implement one-task end-to-end loop,
 - validate wrist-camera semantics,
 - validate camera-slot hypothesis,

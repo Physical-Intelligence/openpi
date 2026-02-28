@@ -1,12 +1,11 @@
-"""Action transform layer for RM75 Delta EE + gripper action space.
+"""Action transform layer for RM75 absolute joint position + gripper action space.
 
 Provides the authoritative transform path:
-  teleop output → canonical Delta EE + gripper → training format
+  teleop output → canonical absolute joint position + gripper → training format
 
-Action dimension layout (7D total):
-  [0:3]  — delta position  (metres)
-  [3:6]  — delta orientation  (axis-angle, radians)
-  [6]    — gripper command  (normalised [0, 1])
+Action dimension layout (8D total):
+  [0:7]  — absolute joint position  (radians, 7-DoF arm)
+  [7]    — gripper command  (normalised [0, 1])
 
 Follows openpi's ``DataTransformFn`` pattern (like ``DeltaActions``).
 """
@@ -23,18 +22,18 @@ from openpi import transforms
 # Constants
 # ---------------------------------------------------------------------------
 
-ACTION_DIM: int = 7
-"""Total action dimensionality: 6D delta EE + 1D gripper."""
+ACTION_DIM: int = 8
+"""Total action dimensionality: 7D absolute joint position + 1D gripper."""
 
-EE_DIM: int = 6
-"""Delta end-effector dimensionality (3 pos + 3 orient)."""
+JOINT_DIM: int = 7
+"""Joint position dimensionality (7-DoF arm)."""
 
 GRIPPER_RANGE: tuple[float, float] = (0.0, 1.0)
 """Valid gripper command range after normalisation."""
 
 # Mask for DeltaActions / AbsoluteActions:
-#   True on first 6 dims (delta applied), False on gripper (absolute).
-RM75_DELTA_MASK: tuple[bool, ...] = transforms.make_bool_mask(EE_DIM, -1)
+#   True on first 7 dims (delta applied), False on gripper (absolute).
+RM75_DELTA_MASK: tuple[bool, ...] = transforms.make_bool_mask(JOINT_DIM, -1)
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +44,7 @@ RM75_DELTA_MASK: tuple[bool, ...] = transforms.make_bool_mask(EE_DIM, -1)
 def _validate_and_clip(action: np.ndarray) -> np.ndarray:
     """Validate shape, ensure float32, and clip gripper to [0, 1].
 
-    Accepts both single-step ``(7,)`` and batched ``(…, 7)`` shapes.
+    Accepts both single-step ``(8,)`` and batched ``(…, 8)`` shapes.
     """
     action = np.asarray(action, dtype=np.float32)
     if action.shape[-1] != ACTION_DIM:
@@ -57,15 +56,15 @@ def _validate_and_clip(action: np.ndarray) -> np.ndarray:
 
 
 def teleop_to_canonical(teleop_action: np.ndarray) -> np.ndarray:
-    """Convert raw teleop controller output to canonical Delta EE + gripper.
+    """Convert raw teleop controller output to canonical absolute joint position + gripper.
 
     Currently an identity-like transform (validate + clip) since the teleop
-    system already produces Delta EE + gripper.  If a future teleop
+    system already produces absolute joint position + gripper.  If a future teleop
     controller uses a different representation this function is the single
     place to adapt.
 
     Args:
-        teleop_action: ``(7,)`` or ``(…, 7)`` raw teleop output.
+        teleop_action: ``(8,)`` or ``(…, 8)`` raw teleop output.
 
     Returns:
         Canonical action array with same shape, float32, gripper clipped.
@@ -74,14 +73,14 @@ def teleop_to_canonical(teleop_action: np.ndarray) -> np.ndarray:
 
 
 def canonical_to_training(canonical_action: np.ndarray) -> np.ndarray:
-    """Convert canonical Delta EE + gripper to openpi training format.
+    """Convert canonical absolute joint position + gripper to openpi training format.
 
     The canonical format **is** the training format for our RM75 pipeline —
-    both use ``[delta_pos(3), delta_orient(3), gripper(1)]``.  This function
+    both use ``[joint_pos(7), gripper(1)]``.  This function
     validates the shape and clips the gripper, acting as a safety gate.
 
     Args:
-        canonical_action: ``(7,)`` or ``(…, 7)`` canonical action.
+        canonical_action: ``(8,)`` or ``(…, 8)`` canonical action.
 
     Returns:
         Training-format action array, float32, gripper clipped.
@@ -90,13 +89,13 @@ def canonical_to_training(canonical_action: np.ndarray) -> np.ndarray:
 
 
 def training_to_canonical(training_action: np.ndarray) -> np.ndarray:
-    """Convert openpi training format back to canonical Delta EE + gripper.
+    """Convert openpi training format back to canonical absolute joint position + gripper.
 
     Exact inverse of ``canonical_to_training`` (trivially invertible since
     the two formats are identical up to validation + clipping).
 
     Args:
-        training_action: ``(7,)`` or ``(…, 7)`` training action.
+        training_action: ``(8,)`` or ``(…, 8)`` training action.
 
     Returns:
         Canonical action array, float32, gripper clipped.
@@ -114,8 +113,8 @@ class RM75DeltaActions(transforms.DataTransformFn):
     """Convert absolute joint-space actions to delta actions for RM75.
 
     Follows the same pattern as ``transforms.DeltaActions``:
-    ``actions[…, :6] -= state[…, :6]`` for the masked (delta) dimensions,
-    leaving the gripper (dim 6) as-is (absolute).
+    ``actions[…, :7] -= state[…, :7]`` for the masked (delta) dimensions,
+    leaving the gripper (dim 7) as-is (absolute).
 
     Intended for use in ``DataConfig.data_transforms.inputs``.
     """

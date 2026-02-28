@@ -12,7 +12,7 @@ This project builds research infrastructure for two academic papers on top of th
 ### Platform
 - Wheeled base + RM75 7-DoF arm + two-finger gripper
 - Primary policy camera: wrist RGB (hand-eye calibrated)
-- Action space: Delta EE + gripper
+- Action space: Absolute Joint Position (7 DoF) + Gripper (1 DoF) = 8D total
 - Backbone: released pi0.5 via openpi flow-matching policy path
 
 ## Environment
@@ -73,7 +73,7 @@ src/openpi/research/                 # Research code — inside openpi package f
 │   ├── __init__.py
 │   ├── episode_schema.py            # Unified episode schema (obs, action, meta fields)
 │   ├── episode_schema_test.py       # Co-located test
-│   ├── action_transforms.py         # Delta EE + gripper action transform layer
+│   ├── action_transforms.py         # Absolute joint position + gripper action transform layer
 │   ├── action_transforms_test.py
 │   ├── rm75_policy.py               # RM75 DataConfigFactory + Inputs/Outputs (like libero_policy.py)
 │   ├── rm75_policy_test.py

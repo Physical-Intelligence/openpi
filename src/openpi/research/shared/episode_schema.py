@@ -3,7 +3,7 @@
 Defines frozen dataclass-based schema covering:
 - obs: wrist_rgb, scene_rgb (optional), joint_position, joint_velocity,
        gripper_position, base_state (optional)
-- action: 6D delta EE (position + orientation axis-angle) + 1D gripper command
+- action: 7D absolute joint position + 1D gripper command = 8D total
 - lang: instruction prompt
 - label: success, fail_type
 - meta: task_id, env_id, operator_id, session_id, camera_preset_id,
@@ -62,8 +62,8 @@ class Observation:
     """
 
     wrist_rgb: np.ndarray  # (H, W, 3) uint8
-    joint_position: np.ndarray  # (6,) float — 6-DoF joint angles (arm only, excl. gripper)
-    joint_velocity: np.ndarray  # (6,) float
+    joint_position: np.ndarray  # (7,) float — 7-DoF joint angles (arm only, excl. gripper)
+    joint_velocity: np.ndarray  # (7,) float
     gripper_position: np.ndarray  # (1,) float, normalised [0, 1]
     scene_rgb: np.ndarray | None = None  # (H, W, 3) uint8, optional
     base_state: np.ndarray | None = None  # (N,) float, optional
@@ -71,26 +71,26 @@ class Observation:
 
 @dataclasses.dataclass(frozen=True)
 class Action:
-    """Single-step action in canonical Delta EE + gripper space.
+    """Single-step action in canonical absolute joint position + gripper space.
 
-    ``delta_ee``: 6D — 3 position + 3 orientation (axis-angle).
+    ``joint_pos``: 7D — absolute joint angles (radians) for 7-DoF arm.
     ``gripper_cmd``: scalar in [0, 1].
     """
 
-    delta_ee: np.ndarray  # (6,) float
+    joint_pos: np.ndarray  # (7,) float
     gripper_cmd: float  # [0, 1]
 
     def to_array(self) -> np.ndarray:
-        """Flatten to (7,) training array: [delta_ee(6), gripper(1)]."""
-        return np.concatenate([self.delta_ee, np.array([self.gripper_cmd], dtype=np.float32)])
+        """Flatten to (8,) training array: [joint_pos(7), gripper(1)]."""
+        return np.concatenate([self.joint_pos, np.array([self.gripper_cmd], dtype=np.float32)])
 
     @classmethod
     def from_array(cls, arr: np.ndarray) -> Action:
-        """Reconstruct from (7,) array."""
+        """Reconstruct from (8,) array."""
         arr = np.asarray(arr, dtype=np.float32)
-        if arr.shape != (7,):
-            raise ValueError(f"Expected shape (7,), got {arr.shape}")
-        return cls(delta_ee=arr[:6], gripper_cmd=float(arr[6]))
+        if arr.shape != (8,):
+            raise ValueError(f"Expected shape (8,), got {arr.shape}")
+        return cls(joint_pos=arr[:7], gripper_cmd=float(arr[7]))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -199,7 +199,7 @@ def _step_to_dict(step: EpisodeStep) -> dict[str, Any]:
             "base_state": _ndarray_to_list(obs.base_state),
         },
         "action": {
-            "delta_ee": _ndarray_to_list(act.delta_ee),
+            "joint_pos": _ndarray_to_list(act.joint_pos),
             "gripper_cmd": act.gripper_cmd,
         },
         "timestamp_s": step.timestamp_s,
@@ -218,7 +218,7 @@ def _step_from_dict(d: dict[str, Any]) -> EpisodeStep:
         base_state=_list_to_ndarray(obs_d.get("base_state")),
     )
     act = Action(
-        delta_ee=np.asarray(act_d["delta_ee"], dtype=np.float32),
+        joint_pos=np.asarray(act_d["joint_pos"], dtype=np.float32),
         gripper_cmd=float(act_d["gripper_cmd"]),
     )
     return EpisodeStep(observation=obs, action=act, timestamp_s=d.get("timestamp_s", 0.0))

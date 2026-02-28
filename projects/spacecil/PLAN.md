@@ -5,7 +5,7 @@
 
 ## 1. Paper Summary
 
-SpaceCIL studies whether a released pi0.5 VLA backbone can be **continually specialized** on a real mobile manipulation platform as new operational tasks arrive sequentially. The platform is a wheeled base with an RM75 7-DoF arm and two-finger gripper. The primary policy camera is a wrist RGB (hand-eye calibrated). The action space is Delta EE + gripper.
+SpaceCIL studies whether a released pi0.5 VLA backbone can be **continually specialized** on a real mobile manipulation platform as new operational tasks arrive sequentially. The platform is a wheeled base with an RM75 7-DoF arm and two-finger gripper. The primary policy camera is a wrist RGB (hand-eye calibrated). The action space is Absolute Joint Position (7 DoF) + Gripper (1 DoF) = 8D total.
 
 The paper focuses on three core problems:
 

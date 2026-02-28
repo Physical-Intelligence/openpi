@@ -24,8 +24,8 @@ def _make_dummy_observation(*, with_optional: bool = False) -> Observation:
     """Create a minimal valid Observation."""
     kwargs = {
         "wrist_rgb": np.random.randint(0, 256, (64, 64, 3), dtype=np.uint8),
-        "joint_position": np.random.randn(6).astype(np.float32),
-        "joint_velocity": np.random.randn(6).astype(np.float32),
+        "joint_position": np.random.randn(7).astype(np.float32),
+        "joint_velocity": np.random.randn(7).astype(np.float32),
         "gripper_position": np.array([0.5], dtype=np.float32),
     }
     if with_optional:
@@ -35,7 +35,7 @@ def _make_dummy_observation(*, with_optional: bool = False) -> Observation:
 
 
 def _make_dummy_action() -> Action:
-    return Action(delta_ee=np.random.randn(6).astype(np.float32), gripper_cmd=0.7)
+    return Action(joint_pos=np.random.randn(7).astype(np.float32), gripper_cmd=0.7)
 
 
 def _make_dummy_step(*, with_optional: bool = False) -> EpisodeStep:
@@ -98,8 +98,8 @@ def test_episode_labels_failure():
 def test_observation_required_fields():
     obs = _make_dummy_observation()
     assert obs.wrist_rgb.shape == (64, 64, 3)
-    assert obs.joint_position.shape == (6,)
-    assert obs.joint_velocity.shape == (6,)
+    assert obs.joint_position.shape == (7,)
+    assert obs.joint_velocity.shape == (7,)
     assert obs.gripper_position.shape == (1,)
     assert obs.scene_rgb is None
     assert obs.base_state is None
@@ -125,17 +125,17 @@ def test_observation_frozen():
 
 
 def test_action_to_array():
-    act = Action(delta_ee=np.arange(6, dtype=np.float32), gripper_cmd=0.42)
+    act = Action(joint_pos=np.arange(7, dtype=np.float32), gripper_cmd=0.42)
     arr = act.to_array()
-    assert arr.shape == (7,)
-    np.testing.assert_allclose(arr[:6], np.arange(6))
-    np.testing.assert_allclose(arr[6], 0.42, atol=1e-6)
+    assert arr.shape == (8,)
+    np.testing.assert_allclose(arr[:7], np.arange(7))
+    np.testing.assert_allclose(arr[7], 0.42, atol=1e-6)
 
 
 def test_action_from_array():
-    arr = np.array([1, 2, 3, 4, 5, 6, 0.9], dtype=np.float32)
+    arr = np.array([1, 2, 3, 4, 5, 6, 7, 0.9], dtype=np.float32)
     act = Action.from_array(arr)
-    np.testing.assert_allclose(act.delta_ee, arr[:6])
+    np.testing.assert_allclose(act.joint_pos, arr[:7])
     assert abs(act.gripper_cmd - 0.9) < 1e-6
 
 
@@ -148,7 +148,7 @@ def test_action_roundtrip():
     """to_array → from_array preserves values."""
     original = _make_dummy_action()
     reconstructed = Action.from_array(original.to_array())
-    np.testing.assert_allclose(reconstructed.delta_ee, original.delta_ee, atol=1e-6)
+    np.testing.assert_allclose(reconstructed.joint_pos, original.joint_pos, atol=1e-6)
     assert abs(reconstructed.gripper_cmd - original.gripper_cmd) < 1e-6
 
 
@@ -187,7 +187,7 @@ def test_episode_roundtrip_without_optional():
     for orig_step, rest_step in zip(original.steps, restored.steps, strict=True):
         np.testing.assert_array_equal(rest_step.observation.wrist_rgb, orig_step.observation.wrist_rgb)
         np.testing.assert_allclose(rest_step.observation.joint_position, orig_step.observation.joint_position)
-        np.testing.assert_allclose(rest_step.action.delta_ee, orig_step.action.delta_ee, atol=1e-6)
+        np.testing.assert_allclose(rest_step.action.joint_pos, orig_step.action.joint_pos, atol=1e-6)
         assert abs(rest_step.action.gripper_cmd - orig_step.action.gripper_cmd) < 1e-6
         assert rest_step.observation.scene_rgb is None
         assert rest_step.observation.base_state is None
@@ -253,10 +253,10 @@ def test_make_repack_structure_with_repack_transform():
     dummy_input = {
         "observation/wrist_image": np.random.randint(0, 256, (64, 64, 3), dtype=np.uint8),
         "observation/scene_image": np.random.randint(0, 256, (64, 64, 3), dtype=np.uint8),
-        "observation/joint_position": np.random.randn(6).astype(np.float32),
-        "observation/joint_velocity": np.random.randn(6).astype(np.float32),
+        "observation/joint_position": np.random.randn(7).astype(np.float32),
+        "observation/joint_velocity": np.random.randn(7).astype(np.float32),
         "observation/gripper_position": np.array([0.5], dtype=np.float32),
-        "actions": np.random.randn(10, 7).astype(np.float32),
+        "actions": np.random.randn(10, 8).astype(np.float32),
         "prompt": "pick up the rock",
     }
 
