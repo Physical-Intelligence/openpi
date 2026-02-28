@@ -34,6 +34,11 @@ class SpaceCILArgs:
     eval_dir: str = "data/eval_episodes/"
     calibration_dir: str = "data/calibration/"
     exp_name: str = "spacecil_run"
+    operational_weights: str | None = None  # JSON array of operational weights per task
+    oracle_routing: bool = False
+    random_routing: bool = False
+    oracle_routing: bool = False
+    random_routing: bool = False
 
 
 def parse_args() -> SpaceCILArgs:
@@ -49,7 +54,12 @@ def parse_args() -> SpaceCILArgs:
     parser.add_argument("--exp-name", type=str, default="spacecil_run")
     parser.add_argument("--eval-dir", type=str, default="data/eval_episodes/", help="directory with eval episodes per task")
     parser.add_argument("--calibration-dir", type=str, default="data/calibration/", help="directory with calibration episodes for distillation")
+    parser.add_argument("--oracle-routing", action="store_true", help="use ground-truth task ID for routing at eval time")
+    parser.add_argument("--random-routing", action="store_true", help="use random adapter selection at eval time")
+    parser.add_argument("--operational-weights", type=str, default=None, help="JSON array of operational weights per task (e.g. '[0.6, 0.8, 0.5, 1.0]')")
     args = parser.parse_args()
+    if args.oracle_routing and args.random_routing:
+        parser.error("--oracle-routing and --random-routing are mutually exclusive")
     return SpaceCILArgs(
         config_name=args.config,
         task_sequence=args.task_sequence,
@@ -61,6 +71,10 @@ def parse_args() -> SpaceCILArgs:
         exp_name=args.exp_name,
         eval_dir=args.eval_dir,
         calibration_dir=args.calibration_dir,
+        oracle_routing=args.oracle_routing,
+        random_routing=args.random_routing,
+        operational_weights=args.operational_weights,
+    )
     )
 
 
@@ -261,6 +275,14 @@ def main() -> None:
     config = _config.get_config(args.config_name)
     logger.info(f"Loaded config: {config.name}")
 
+    # Log routing strategy
+    routing_strategy = "learned"
+    if args.oracle_routing:
+        routing_strategy = "oracle"
+    elif args.random_routing:
+        routing_strategy = "random"
+    logger.info(f"Routing strategy: {routing_strategy}")
+
     # 2. Build components
     adapter_bank = TaskAdapterBank()
     if args.enable_distillation:
@@ -308,15 +330,29 @@ def main() -> None:
         raise
 
     # 5. Compute and log metrics (when result is available)
-    # final_metrics = {
-    #     "average_success": metrics.average_success(result.result_matrix),
-    #     "backward_transfer": metrics.backward_transfer(result.result_matrix),
-    #     "forgetting": metrics.forgetting(result.result_matrix),
-    # }
-    # logger.info(f"Final metrics: {final_metrics}")
+    import json
+
+    operational_weights = np.array(json.loads(args.operational_weights)) if args.operational_weights else np.array([0.6, 0.8, 0.5, 1.0])
+
+    final_metrics = {
+        "average_success": float(metrics.average_success(result.result_matrix)),
+        "backward_transfer": float(metrics.backward_transfer(result.result_matrix)),
+        "forgetting": float(metrics.forgetting(result.result_matrix)),
+        "operational_forgetting": float(metrics.operational_forgetting(
+            result.result_matrix,
+            weights=operational_weights,
+        )),
+    }
+    logger.info(f"Final metrics: {final_metrics}")
+
+    metrics_path = f"{args.checkpoint_dir}/{args.exp_name}/metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(final_metrics, f, indent=2)
+    logger.info(f"Metrics saved to {metrics_path}")
 
     # 6. Save adapter bank
-    # adapter_bank.save(f"{args.checkpoint_dir}/{args.exp_name}/adapter_bank")
+    adapter_bank.save(f"{args.checkpoint_dir}/{args.exp_name}/adapter_bank")
+    logger.info(f"Adapter bank saved to {args.checkpoint_dir}/{args.exp_name}/adapter_bank")
 
 
 if __name__ == "__main__":
