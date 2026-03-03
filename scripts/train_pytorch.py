@@ -520,7 +520,8 @@ def train_loop(config: _config.TrainConfig):
             observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
             actions = actions.to(torch.float32)  # noqa: PLW2901
             actions = actions.to(device)  # noqa: PLW2901
-            action_pad_mask = action_pad_mask.to(device)  # noqa: PLW2901
+            if action_pad_mask is not None:
+                action_pad_mask = action_pad_mask.to(device)  # noqa: PLW2901
 
             # Update LR
             for pg in optim.param_groups:
