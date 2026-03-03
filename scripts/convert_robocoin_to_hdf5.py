@@ -487,20 +487,14 @@ def main() -> None:
     for episode_idx in all_episodes:
         parquet_path = episode_to_parquet[episode_idx]
 
-        # Build video_dirs mapping
-        video_dirs = {}
-        for vdir in dataset_info["video_dirs"]:
-            # Extract camera key from path like "observation.images.wrist"
-            parts = vdir.name.split(".")
-            if len(parts) >= 3:
-                camera_key = parts[-1]
-                video_dirs[camera_key] = vdir
+        # Build video_dirs list for this episode
+        video_dirs_list = dataset_info["video_dirs"]
 
         try:
             n_frames = convert_episode(
                 episode_idx,
                 parquet_path,
-                video_dirs,
+                video_dirs_list,
                 args.output_dir,
                 args.wrist_camera,
                 args.scene_camera,
