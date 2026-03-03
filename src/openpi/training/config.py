@@ -384,6 +384,57 @@ class LeRobotOpenArmDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotFrankaDataConfig(DataConfigFactory):
+    """Config for Franka LeRobot datasets with front/side/wrist cameras."""
+
+    dataset_action_dim: int = 8
+    gripper_dims: int = 1
+    default_prompt: str | None = None
+    # Franka datasets may use Cartesian end-effector actions while state is joint-space.
+    # Keep disabled by default to avoid invalid action-state subtraction.
+    use_delta_actions: bool = False
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "head_image": "observation.images.camera_front",
+                        "left_wrist_image": "observation.images.camera_wrist",
+                        "right_wrist_image": "observation.images.camera_side",
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "task",
+                    }
+                )
+            ]
+        )
+    )
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[openarm_policy.OpenArmInputs()],
+            outputs=[openarm_policy.OpenArmOutputs(action_dim=self.dataset_action_dim)],
+        )
+        delta_action_dims = self.dataset_action_dim - self.gripper_dims
+        if self.use_delta_actions and delta_action_dims > 0:
+            delta_mask = _transforms.make_bool_mask(delta_action_dims, -self.gripper_dims)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_mask)],
+            )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -845,47 +896,62 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=64,
     ),
+
+    #
+    # Franka fine-tuning configs
+    #
+    TrainConfig(
+        name="pi05_franka_object",
+        project_name="pi05_franka_object",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=50,
+            max_token_len=220,
+        ),
+        data=LeRobotFrankaDataConfig(
+            repo_id="franka_object",
+            assets=AssetsConfig(asset_id="franka_object"),
+            base_config=DataConfig(prompt_from_task=False),
+            dataset_action_dim=8,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
+
+    TrainConfig(
+        name="pi05_franka_object_lora",
+        project_name="pi05_franka_object",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=50,
+            max_token_len=220,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotFrankaDataConfig(
+            repo_id="franka_object",
+            assets=AssetsConfig(
+                assets_dir="/coc/testnvme/xzhang3205/openpi/assets/pi05_franka_object",
+                asset_id="franka_object",
+            ),
+            base_config=DataConfig(prompt_from_task=False),
+            dataset_action_dim=8,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
     #
     # OpenArm fine-tuning configs.
     #
-    TrainConfig(
-        name="pi05_openarm_tea_continuous",
-        project_name="openarm_tea_continuous",
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=32,
-            action_horizon=10,
-            max_token_len=220,
-        ),
-        data=LeRobotOpenArmDataConfig(
-            repo_id="openarm/tea_continuous",
-            assets=AssetsConfig(asset_id="openarm/tea_continuous"),
-            base_config=DataConfig(prompt_from_task=False),
-            dataset_action_dim=16,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=20_000,
-        batch_size=32,
-    ),
-    TrainConfig(
-        name="pi05_openarm_tea_discrete",
-        project_name="openarm_tea_discrete",
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=32,
-            action_horizon=10,
-            max_token_len=220,
-        ),
-        data=LeRobotOpenArmDataConfig(
-            repo_id="openarm/tea_discrete",
-            assets=AssetsConfig(asset_id="openarm/tea_discrete"),
-            base_config=DataConfig(prompt_from_task=False),
-            dataset_action_dim=16,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=20_000,
-        batch_size=32,
-    ),
     TrainConfig(
         name="pi05_tea_use_spoon",
         project_name="pi05_tea_use_spoon",
