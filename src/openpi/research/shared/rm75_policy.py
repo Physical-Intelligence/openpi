@@ -8,8 +8,8 @@ Follows the libero_policy.py / droid_policy.py pattern:
 
 RM75 robot platform:
 - 7-DoF arm + 1D gripper = 8D action space (absolute joint position)
-- State vector: joint_position(7) + joint_velocity(7) + gripper_position(1) = 15D
-- Primary camera: wrist RGB only (no base camera)
+- State vector: joint_position(7) + gripper_position(1) = 8D
+- Cameras: wrist RGB + scene/base RGB
 """
 
 import dataclasses
@@ -62,6 +62,7 @@ def make_rm75_example() -> dict:
     """Creates a random input example for the RM75 policy."""
     return {
         "observation/wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/scene_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "observation/joint_position": np.random.rand(7),
         "observation/joint_velocity": np.random.rand(7),
         "observation/gripper_position": np.random.rand(1),
@@ -93,28 +94,29 @@ class RM75Inputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Parse wrist image to uint8 (H,W,C) — handles float32 (C,H,W) from LeRobot.
         wrist_image = _parse_image(data["observation/wrist_image"])
+        scene_image = _parse_image(data["observation/scene_image"])
 
-        # Build 15D state vector: joint_position(7) + joint_velocity(7) + gripper_position(1).
+        # Build 8D state vector: joint_position(7) + gripper_position(1).
         state = np.concatenate(
             [
                 data["observation/joint_position"],
-                data["observation/joint_velocity"],
                 data["observation/gripper_position"],
             ]
         )
+        # Joint velocity is recorded in the dataset for future use but not included in the state vector
 
         # Map images to model slots based on model type.
-        # RM75 has only a wrist camera — pad missing slots with zeros.
+        # RM75 has wrist and scene cameras — pad missing slots with zeros.
         match self.model_type:
             case _model.ModelType.PI0 | _model.ModelType.PI05:
                 names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-                images = (np.zeros_like(wrist_image), wrist_image, np.zeros_like(wrist_image))
-                # Mask out zero-padded images; only wrist is real.
-                image_masks = (np.False_, np.True_, np.False_)
+                images = (scene_image, wrist_image, np.zeros_like(wrist_image))
+                # Mask out zero-padded images; scene and wrist are real.
+                image_masks = (np.True_, np.True_, np.False_)
             case _model.ModelType.PI0_FAST:
                 names = ("base_0_rgb", "base_1_rgb", "wrist_0_rgb")
-                images = (np.zeros_like(wrist_image), np.zeros_like(wrist_image), wrist_image)
-                # FAST models don't mask out padding images.
+                images = (scene_image, np.zeros_like(wrist_image), wrist_image)
+                # FAST models expect all image slots masked true.
                 image_masks = (np.True_, np.True_, np.True_)
             case _:
                 raise ValueError(f"Unsupported model type: {self.model_type}")
@@ -165,6 +167,7 @@ class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
                 transforms.RepackTransform(
                     {
                         "observation/wrist_image": "observation.wrist_image",
+                        "observation/scene_image": "observation.scene_image",
                         "observation/joint_position": "observation.joint_position",
                         "observation/joint_velocity": "observation.joint_velocity",
                         "observation/gripper_position": "observation.gripper_position",

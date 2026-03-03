@@ -10,6 +10,7 @@ LeRobot (v0.1.0) prohibits "/" in feature key names (it uses "/" as a separator 
 its stats computation).  We therefore store dataset keys using dot notation:
 
     observation.wrist_image        (instead of  observation/wrist_image)
+    observation.scene_image        (instead of  observation/scene_image)
     observation.joint_position     (instead of  observation/joint_position)
     observation.joint_velocity     (instead of  observation/joint_velocity)
     observation.gripper_position   (instead of  observation/gripper_position)
@@ -53,11 +54,13 @@ HDF5 Input Schema (default key names, overridable via --key-map):
     joint_velocity    (N, 7)          float32
     gripper_position  (N, 1)          float32
     wrist_image       (N, H, W, 3)    uint8
+    scene_image       (N, H, W, 3)    uint8
     action_joint      (N, 7)          float32
     action_gripper    (N, 1)          float32
 
 LeRobot Output Features (dot-separated to comply with LeRobot v0.1.0 constraint):
     observation.wrist_image       image   (H, W, 3)    — uint8 wrist camera RGB
+    observation.scene_image       image   (H, W, 3)    — uint8 scene camera RGB
     observation.joint_position    float32 (7,)          — absolute joint angles (rad)
     observation.joint_velocity    float32 (7,)          — joint velocities (rad/s)
     observation.gripper_position  float32 (1,)          — gripper opening (normalised)
@@ -66,11 +69,13 @@ LeRobot Output Features (dot-separated to comply with LeRobot v0.1.0 constraint)
 
 import argparse
 import json
+from pathlib import Path
 import shutil
 import sys
-from pathlib import Path
+from typing import Any, cast
 
 import h5py
+from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME, LeRobotDataset
 import numpy as np
 
 
@@ -83,6 +88,7 @@ DEFAULT_KEY_MAP: dict[str, str] = {
     "joint_velocity": "joint_velocity",
     "gripper_position": "gripper_position",
     "wrist_image": "wrist_image",
+    "scene_image": "scene_image",
     "action_joint": "action_joint",
     "action_gripper": "action_gripper",
 }
@@ -90,6 +96,7 @@ DEFAULT_KEY_MAP: dict[str, str] = {
 # LeRobot dataset keys (dot-separated — LeRobot v0.1.0 disallows "/" in keys).
 # The RepackTransform in LeRobotRM75DataConfig should map these to "observation/..." namespace.
 LEROBOT_KEY_WRIST_IMAGE = "observation.wrist_image"
+LEROBOT_KEY_SCENE_IMAGE = "observation.scene_image"
 LEROBOT_KEY_JOINT_POS = "observation.joint_position"
 LEROBOT_KEY_JOINT_VEL = "observation.joint_velocity"
 LEROBOT_KEY_GRIPPER_POS = "observation.gripper_position"
@@ -158,18 +165,32 @@ def discover_hdf5_files(raw_dir: Path) -> list[Path]:
     return sorted(result)
 
 
+def _read_array(hdf5: Any, key: str) -> np.ndarray:
+    obj = hdf5[key]
+    if not isinstance(obj, h5py.Dataset):
+        raise TypeError(f"Expected dataset for key '{key}', got {type(obj).__name__}.")
+    return np.asarray(obj)
+
+
+def _as_image_shape(name: str, array: np.ndarray) -> tuple[int, int, int]:
+    shape = array.shape[1:]
+    if len(shape) != 3:
+        raise ValueError(f"{name} image must have shape (N, H, W, 3); got {array.shape}.")
+    return cast(tuple[int, int, int], shape)
+
+
 def load_episode(ep_path: Path, key_map: dict[str, str]) -> dict[str, np.ndarray]:
     """Load all arrays from an HDF5 episode file using the given key mapping."""
     with h5py.File(ep_path, "r") as f:
-        data = {
-            "joint_position": f[key_map["joint_position"]][:],
-            "joint_velocity": f[key_map["joint_velocity"]][:],
-            "gripper_position": f[key_map["gripper_position"]][:],
-            "wrist_image": f[key_map["wrist_image"]][:],
-            "action_joint": f[key_map["action_joint"]][:],
-            "action_gripper": f[key_map["action_gripper"]][:],
+        return {
+            "joint_position": _read_array(f, key_map["joint_position"]),
+            "joint_velocity": _read_array(f, key_map["joint_velocity"]),
+            "gripper_position": _read_array(f, key_map["gripper_position"]),
+            "wrist_image": _read_array(f, key_map["wrist_image"]),
+            "scene_image": _read_array(f, key_map["scene_image"]),
+            "action_joint": _read_array(f, key_map["action_joint"]),
+            "action_gripper": _read_array(f, key_map["action_gripper"]),
         }
-    return data
 
 
 def print_dry_run_schema(ep_path: Path, key_map: dict[str, str]) -> None:
@@ -182,11 +203,12 @@ def print_dry_run_schema(ep_path: Path, key_map: dict[str, str]) -> None:
     print(f"  {'-' * 25} {'-' * 30} {'-' * 20} {'-' * 10}")
     for logical_key, hdf5_key in key_map.items():
         arr = data[logical_key]
-        print(f"  {logical_key:<25} {hdf5_key:<30} {str(arr.shape):<20} {arr.dtype}")
+        print(f"  {logical_key:<25} {hdf5_key:<30} {arr.shape!s:<20} {arr.dtype}")
 
     # Compute derived shapes
     n_frames = data["joint_position"].shape[0]
-    img_shape = data["wrist_image"].shape[1:]  # (H, W, 3)
+    img_shape = _as_image_shape("wrist", data["wrist_image"])
+    scene_img_shape = _as_image_shape("scene", data["scene_image"])
     action_dim = data["action_joint"].shape[-1] + data["action_gripper"].shape[-1]
 
     print(f"\nEpisode length: {n_frames} frames")
@@ -196,6 +218,7 @@ def print_dry_run_schema(ep_path: Path, key_map: dict[str, str]) -> None:
     print(f"  {'-' * 40} {'-' * 10} {'-' * 20}")
     features_preview = [
         (LEROBOT_KEY_WRIST_IMAGE, "image", str(img_shape)),
+        (LEROBOT_KEY_SCENE_IMAGE, "image", str(scene_img_shape)),
         (LEROBOT_KEY_JOINT_POS, "float32", str(data["joint_position"].shape[1:])),
         (LEROBOT_KEY_JOINT_VEL, "float32", str(data["joint_velocity"].shape[1:])),
         (LEROBOT_KEY_GRIPPER_POS, "float32", str(data["gripper_position"].shape[1:])),
@@ -211,18 +234,27 @@ def print_dry_run_schema(ep_path: Path, key_map: dict[str, str]) -> None:
     print("\n[DRY RUN] No files written. Remove --dry-run to convert.\n")
 
 
-def build_features(img_shape: tuple[int, int, int]) -> dict:
+def build_features(
+    wrist_img_shape: tuple[int, int, int],
+    scene_img_shape: tuple[int, int, int],
+) -> dict:
     """Build the LeRobot feature spec for an RM75 dataset.
 
     Uses dot-separated keys because LeRobot v0.1.0 prohibits '/' in feature names.
     The RepackTransform in LeRobotRM75DataConfig should remap these to the
     'observation/...' namespace that the training pipeline and policy inputs expect.
     """
-    h, w, c = img_shape
+    wrist_h, wrist_w, wrist_c = wrist_img_shape
+    scene_h, scene_w, scene_c = scene_img_shape
     return {
         LEROBOT_KEY_WRIST_IMAGE: {
             "dtype": "image",
-            "shape": (h, w, c),
+            "shape": (wrist_h, wrist_w, wrist_c),
+            "names": ["height", "width", "channel"],
+        },
+        LEROBOT_KEY_SCENE_IMAGE: {
+            "dtype": "image",
+            "shape": (scene_h, scene_w, scene_c),
             "names": ["height", "width", "channel"],
         },
         LEROBOT_KEY_JOINT_POS: {
@@ -256,9 +288,6 @@ def convert(
     key_map: dict[str, str],
 ) -> None:
     """Main conversion routine: HDF5 files → LeRobot dataset."""
-    # Late import: only needed for actual conversion (not --dry-run or --help)
-    from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME, LeRobotDataset
-
     hdf5_files = discover_hdf5_files(raw_dir)
     if not hdf5_files:
         print(f"ERROR: No HDF5 files found in {raw_dir}", file=sys.stderr)
@@ -268,10 +297,12 @@ def convert(
 
     # Read image shape from first frame of first episode
     first_data = load_episode(hdf5_files[0], key_map)
-    img_shape: tuple[int, int, int] = first_data["wrist_image"].shape[1:]  # (H, W, 3)
-    print(f"Image shape: {img_shape}  (H, W, C)")
+    img_shape = _as_image_shape("wrist", first_data["wrist_image"])
+    scene_img_shape = _as_image_shape("scene", first_data["scene_image"])
+    print(f"Wrist image shape: {img_shape}  (H, W, C)")
+    print(f"Scene image shape: {scene_img_shape}  (H, W, C)")
 
-    features = build_features(img_shape)
+    features = build_features(img_shape, scene_img_shape)
 
     # Clean up any existing dataset at the output path
     output_path = HF_LEROBOT_HOME / repo_id
@@ -301,6 +332,7 @@ def convert(
             "joint_velocity",
             "gripper_position",
             "wrist_image",
+            "scene_image",
             "action_joint",
             "action_gripper",
         ):
@@ -324,6 +356,7 @@ def convert(
             frame = {
                 # Images are stored as uint8 (H, W, 3) — LeRobot handles PNG encoding.
                 LEROBOT_KEY_WRIST_IMAGE: ep_data["wrist_image"][i],
+                LEROBOT_KEY_SCENE_IMAGE: ep_data["scene_image"][i],
                 LEROBOT_KEY_JOINT_POS: ep_data["joint_position"][i].astype(np.float32),
                 LEROBOT_KEY_JOINT_VEL: ep_data["joint_velocity"][i].astype(np.float32),
                 LEROBOT_KEY_GRIPPER_POS: ep_data["gripper_position"][i].astype(np.float32),

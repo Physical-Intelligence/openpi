@@ -571,6 +571,54 @@ def _get_lunarcompose_configs():
 
     return lunarcompose_config.get_lunarcompose_configs()
 
+
+def _get_rm75_wipe_configs():
+    """Vanilla pi0.5 fine-tuning configs for RM75 solar panel wiping task."""
+    from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
+
+    _lora_freeze = pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+    ).get_freeze_filter()
+
+    return [
+        # LoRA fine-tuning (recommended, ~22.5 GB VRAM)
+        TrainConfig(
+            name="pi05_rm75_wipe",
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+            ),
+            data=LeRobotRM75DataConfig(
+                repo_id="myorg/rm75_wipe_solar",
+                base_config=DataConfig(prompt_from_task=True),
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            freeze_filter=_lora_freeze,
+            ema_decay=None,
+            num_train_steps=10_000,
+            batch_size=32,
+        ),
+        # Full fine-tuning variant (>= 70 GB VRAM)
+        TrainConfig(
+            name="pi05_rm75_wipe_full",
+            model=pi0_config.Pi0Config(pi05=True),
+            data=LeRobotRM75DataConfig(
+                repo_id="myorg/rm75_wipe_solar",
+                base_config=DataConfig(prompt_from_task=True),
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            ema_decay=0.99,
+            num_train_steps=10_000,
+            batch_size=32,
+        ),
+    ]
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     #
@@ -1008,11 +1056,12 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    # RoboArena, PolaRiS, & SpaceCIL configs.
+    # RoboArena, PolaRiS, SpaceCIL, LunarCompose, & RM75 wipe configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
     *_get_spacecil_configs(),
     *_get_lunarcompose_configs(),
+    *_get_rm75_wipe_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

@@ -23,6 +23,7 @@ def test_make_rm75_example():
     assert "observation/joint_position" in example
     assert "observation/joint_velocity" in example
     assert "observation/gripper_position" in example
+    assert "observation/scene_image" in example
     assert "prompt" in example
 
     assert example["observation/wrist_image"].shape == (224, 224, 3)
@@ -30,6 +31,8 @@ def test_make_rm75_example():
     assert example["observation/joint_position"].shape == (7,)
     assert example["observation/joint_velocity"].shape == (7,)
     assert example["observation/gripper_position"].shape == (1,)
+    assert example["observation/scene_image"].shape == (224, 224, 3)
+    assert example["observation/scene_image"].dtype == np.uint8
     assert example["prompt"] == "do something"
 
 
@@ -45,8 +48,8 @@ def test_rm75_inputs_pi0():
     assert "image_mask" in result
     assert "prompt" in result
 
-    # State: joint_position(7) + joint_velocity(7) + gripper_position(1) = 15D.
-    assert result["state"].shape == (15,)
+    # State: joint_position(7) + gripper_position(1) = 8D.
+    assert result["state"].shape == (8,)
 
     # Image keys for PI0.
     assert set(result["image"].keys()) == {"base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"}
@@ -55,13 +58,13 @@ def test_rm75_inputs_pi0():
     for key in result["image"]:
         assert result["image"][key].shape == (224, 224, 3), f"Image {key} has wrong shape"
 
-    # Wrist image should have actual data (non-zero); base and right_wrist are zero-padded.
+    # Wrist and base images should have actual data (non-zero); right_wrist is zero-padded.
     assert result["image"]["left_wrist_0_rgb"].any(), "Wrist image should not be all zeros"
-    assert not result["image"]["base_0_rgb"].any(), "Base image should be all zeros"
+    assert result["image"]["base_0_rgb"].any(), "Base image should not be all zeros"
     assert not result["image"]["right_wrist_0_rgb"].any(), "Right wrist image should be all zeros"
 
-    # Masking: only left_wrist is real.
-    assert result["image_mask"]["base_0_rgb"] == np.False_
+    # Masking: base_0 and left_wrist are real.
+    assert result["image_mask"]["base_0_rgb"] == np.True_
     assert result["image_mask"]["left_wrist_0_rgb"] == np.True_
     assert result["image_mask"]["right_wrist_0_rgb"] == np.False_
 
@@ -79,9 +82,9 @@ def test_rm75_inputs_pi0_fast():
     for key in result["image"]:
         assert result["image"][key].shape == (224, 224, 3), f"Image {key} has wrong shape"
 
-    # Wrist image is at wrist_0_rgb; base slots are zero-padded.
+    # Wrist image is at wrist_0_rgb; base_0 has scene image, base_1 is zero-padded.
     assert result["image"]["wrist_0_rgb"].any(), "Wrist image should not be all zeros"
-    assert not result["image"]["base_0_rgb"].any(), "Base 0 image should be all zeros"
+    assert result["image"]["base_0_rgb"].any(), "Base 0 image should not be all zeros"
     assert not result["image"]["base_1_rgb"].any(), "Base 1 image should be all zeros"
 
     # FAST models: all masks True (don't mask out padding).
@@ -89,8 +92,8 @@ def test_rm75_inputs_pi0_fast():
     assert result["image_mask"]["base_1_rgb"] == np.True_
     assert result["image_mask"]["wrist_0_rgb"] == np.True_
 
-    # State shape still 15D.
-    assert result["state"].shape == (15,)
+    # State shape now 8D.
+    assert result["state"].shape == (8,)
 
 
 def test_rm75_inputs_pi05():
@@ -103,7 +106,7 @@ def test_rm75_inputs_pi05():
     assert set(result["image"].keys()) == {"base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"}
 
     # Same masking as PI0.
-    assert result["image_mask"]["base_0_rgb"] == np.False_
+    assert result["image_mask"]["base_0_rgb"] == np.True_
     assert result["image_mask"]["left_wrist_0_rgb"] == np.True_
     assert result["image_mask"]["right_wrist_0_rgb"] == np.False_
 
@@ -126,6 +129,7 @@ def test_rm75_inputs_chw_image():
     example = make_rm75_example()
     # Replace with a CHW float image.
     example["observation/wrist_image"] = np.random.rand(3, 224, 224).astype(np.float32)
+    example["observation/scene_image"] = np.random.randint(256, size=(224, 224, 3), dtype=np.uint8)
     result = inputs_fn(example)
 
     # Should be converted to HWC uint8.
