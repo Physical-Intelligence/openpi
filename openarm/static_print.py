@@ -19,15 +19,50 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Directory produced by static_inference.py (contains metadata.json).",
     )
+    parser.add_argument(
+        "--num-demos",
+        type=int,
+        default=50,
+        help="Number of demos to include (uses the first N entries, default: 50).",
+    )
     return parser.parse_args()
+
+
+def build_metadata_from_dirs(root: Path) -> list[dict]:
+    entries: list[dict] = []
+    subdirs = sorted([path for path in root.iterdir() if path.is_dir()])
+    if not subdirs:
+        artifacts: Dict[str, str] = {}
+        for path in sorted(root.glob("static_*.npy")):
+            artifacts[path.stem] = path.relative_to(root).as_posix()
+        if artifacts:
+            entries.append({"trajectory_rel_dir": ".", "artifacts": artifacts})
+        return entries
+
+    for traj_dir in subdirs:
+        artifacts: Dict[str, str] = {}
+        candidate_dir = traj_dir / "npy-metadata"
+        search_dirs = [candidate_dir] if candidate_dir.is_dir() else [traj_dir]
+        for search_dir in search_dirs:
+            for path in sorted(search_dir.glob("static_*.npy")):
+                artifacts[path.stem] = path.relative_to(root).as_posix()
+        if artifacts:
+            entries.append({"trajectory_rel_dir": traj_dir.name, "artifacts": artifacts})
+    return entries
 
 
 def load_metadata(root: Path) -> list[dict]:
     meta_path = root / "metadata.json"
-    if not meta_path.exists():
-        raise FileNotFoundError(f"metadata.json not found under {root}")
-    with meta_path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    if meta_path.exists():
+        with meta_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    return build_metadata_from_dirs(root)
+
+
+def select_metadata(metadata: list[dict], num_demos: int) -> list[dict]:
+    if num_demos < 0:
+        raise ValueError("num_demos must be >= 0")
+    return metadata[: min(num_demos, len(metadata))]
 
 
 def available_layers(metadata: list[dict]) -> Iterable[int]:
@@ -49,7 +84,7 @@ def collect_values(root: Path, metadata: list[dict], name_pattern: str) -> np.nd
         path = root / rel_path
         if not path.exists():
             continue
-        arrays.append(np.load(path).reshape(-1))
+        arrays.append(np.load(path).astype(np.float64, copy=False).reshape(-1))
     if not arrays:
         return None
     return np.concatenate(arrays, axis=0)
@@ -80,7 +115,7 @@ def summarize_final_loss(root: Path, metadata: list[dict]) -> Dict[str, float] |
 def main() -> None:
     args = parse_args()
     data_dir = args.data_dir.resolve()
-    metadata = load_metadata(data_dir)
+    metadata = select_metadata(load_metadata(data_dir), args.num_demos)
 
     layers = available_layers(metadata)
     if not layers:
