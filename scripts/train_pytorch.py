@@ -511,7 +511,7 @@ def train_loop(config: _config.TrainConfig):
         if use_ddp and hasattr(loader, "set_epoch"):
             loader.set_epoch(global_step // len(loader))
 
-        for observation, actions, _ in loader:
+        for observation, actions, action_pad_mask in loader:
             # Check if we've reached the target number of steps
             if global_step >= config.num_train_steps:
                 break
@@ -520,6 +520,7 @@ def train_loop(config: _config.TrainConfig):
             observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
             actions = actions.to(torch.float32)  # noqa: PLW2901
             actions = actions.to(device)  # noqa: PLW2901
+            action_pad_mask = action_pad_mask.to(device)  # noqa: PLW2901
 
             # Update LR
             for pg in optim.param_groups:
@@ -533,7 +534,11 @@ def train_loop(config: _config.TrainConfig):
             elif not isinstance(losses, torch.Tensor):
                 losses = torch.tensor(losses, device=device, dtype=torch.float32)
 
-            loss = losses.mean()
+            if action_pad_mask is not None and action_pad_mask.shape == losses.shape[:-1]:
+                action_pad_mask = ~action_pad_mask[..., None]  # noqa: PLW2901
+                loss = (losses * action_pad_mask).sum() / (action_pad_mask.sum() * losses.shape[-1] + 1e-8)
+            else:
+                loss = losses.mean()
 
             # Backward pass
             loss.backward()
