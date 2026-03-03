@@ -307,6 +307,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
                         "observation/state": "state",
                         "actions": "actions",
                         "prompt": "prompt",
+                        "actions_is_pad" : "actions_is_pad"
                     }
                 )
             ]
