@@ -81,11 +81,128 @@ For each demonstration episode, your data collection code must record **synchron
 
 ---
 
-## 3. HDF5 File Format
+---
 
-Store each episode as a separate HDF5 file. The existing conversion script (`scripts/convert_rm75_data_to_lerobot.py`) expects this layout.
+## 3. Data Collection: Option B - RoboCOIN Leader-Follower Teleop
 
-### 3.1 File structure
+If you have two identical RM75 arms, the **RoboCOIN** leader-follower teleoperation system provides an automated, efficient way to record demonstration data. One arm (leader) is controlled by a human operator, while the other (follower) records joint positions and camera images.
+
+### 3.1 Installation
+
+Install RoboCOIN on the robot machine (separate from the openpi environment):
+
+```bash
+pip install robocoin
+```
+
+### 3.2 Configuration
+
+Before recording, configure the network and hardware parameters. Edit or create a RoboCOIN config file with the following fields:
+
+**Leader Arm Configuration:**
+- IP address and port of the leader RM75
+- Typical: `leader_ip=192.168.1.X`, `leader_port=502` (Modbus TCP)
+
+**Follower Arm Configuration:**
+- IP address and port of the follower RM75
+- Typical: `follower_ip=192.168.1.Y`, `follower_port=502`
+
+**Camera Configuration:**
+- **Wrist camera**: OpenCV device index (usually 0 or 1), 640×480 resolution, 30 FPS
+- **Scene camera**: OpenCV device index (usually 1 or 2), 640×480 resolution, 30 FPS
+- Both cameras must be synchronized (use hardware triggers or frame-buffering if available)
+
+### 3.3 Recording
+
+Start the RoboCOIN recording process with the following command:
+
+```bash
+robocoin-record \
+  --robot.type=bi_realman \
+  --robot.leader_ip=<LEADER_IP> \
+  --robot.follower_ip=<FOLLOWER_IP> \
+  --teleop.type=bi_realman_leader \
+  --dataset.repo_id=myorg/rm75_wipe_solar_raw \
+  --dataset.single_task="wipe solar panel with cloth" \
+  --dataset.fps=30 \
+  --dataset.num_episodes=50 \
+  --dataset.episode_time_s=60
+```
+
+**Key Parameters:**
+- `--robot.leader_ip`: IP address of the leader RM75 arm
+- `--robot.follower_ip`: IP address of the follower RM75 arm
+- `--dataset.repo_id`: Identifier for the RoboCOIN output (stored in `~/.cache/huggingface/lerobot/<repo_id>/`)
+- `--dataset.single_task`: Natural language description of the task being demonstrated
+- `--dataset.fps`: Recording frequency (30 FPS recommended for smooth motion capture)
+- `--dataset.num_episodes`: Number of demonstration episodes to record (50–100 recommended for initial training)
+- `--dataset.episode_time_s`: Maximum duration of each episode in seconds (60 seconds recommended)
+
+### 3.4 Recording Tips
+
+- **Episode count**: Start with 50 episodes. If the trained model shows poor generalization, collect 100+ episodes.
+- **Episode length**: 60 seconds is typically sufficient for single-task demonstrations. Longer episodes are fine but may increase memory requirements.
+- **Task consistency**: Ensure all episodes demonstrate the same task. Use consistent language in `--dataset.single_task` across all recording sessions.
+- **Variability**: Vary initial object positions, lighting conditions, and gripper approach angles to improve robustness.
+- **Output location**: RoboCOIN saves data to `~/.cache/huggingface/lerobot/<repo_id>/` in LeRobot v2.1 format (parquet + MP4 videos).
+
+---
+
+## 4. Converting RoboCOIN Data to HDF5
+
+After recording with RoboCOIN, the data is stored in LeRobot v2.1 format (parquet + MP4 videos). Convert it to our HDF5 schema using the following pipeline:
+
+### 4.1 Step 1: RoboCOIN LeRobot v2.1 → HDF5
+
+Run the bridge converter to transform RoboCOIN output into HDF5 files matching our schema:
+
+```bash
+uv run scripts/convert_robocoin_to_hdf5.py \
+  --robocoin-dir ~/.cache/huggingface/lerobot/myorg/rm75_wipe_solar_raw \
+  --output-dir data/rm75_wipe_hdf5 \
+  --task-label "wipe solar panel with cloth"
+```
+
+**Parameters:**
+- `--robocoin-dir`: Path to the RoboCOIN dataset (the `repo_id` directory from the recording step)
+- `--output-dir`: Where to write the converted HDF5 episode files
+- `--task-label`: The task description (should match the prompt used during recording)
+
+### 4.2 Step 2: HDF5 → LeRobot v0.1 (Existing Pipeline)
+
+The HDF5 files are now compatible with the existing openpi conversion pipeline. Run the standard LeRobot converter:
+
+```bash
+uv run scripts/convert_rm75_data_to_lerobot.py \
+  --raw-dir data/rm75_wipe_hdf5 \
+  --repo-id myorg/rm75_wipe_solar \
+  --task-label "wipe solar panel with cloth"
+```
+
+This produces the final LeRobot v0.1 dataset in `~/.cache/huggingface/lerobot/myorg/rm75_wipe_solar/`.
+
+### 4.3 Step 3: Compute Normalization Statistics
+
+Before training, compute per-feature normalization statistics from the dataset:
+
+```bash
+uv run scripts/compute_norm_stats.py --config-name pi05_rm75_wipe
+```
+
+This step is identical to the manual collection path (see Section 5.3 below).
+
+### 4.4 Step 4: Start Training
+
+Proceed to Section 5 (Training Config) to launch training.
+
+---
+
+## 5. HDF5 File Format (Manual Data Collection Option)
+
+If you are collecting data manually (without RoboCOIN), store each episode as a separate HDF5 file. The existing conversion script (`scripts/convert_rm75_data_to_lerobot.py`) expects this layout. If using RoboCOIN, you skip this section — go directly to Section 4 above.
+
+### 5.1 File structure
+
 
 ```
 episode_001.hdf5
@@ -100,13 +217,13 @@ episode_001.hdf5
 
 Where N = number of timesteps in this episode.
 
-### 3.2 Naming convention
+### 5.2 Naming convention
 
 - Place all episode files in a single flat directory.
 - File extension: `.hdf5` or `.h5` (both are auto-detected).
 - Naming is arbitrary (e.g., `episode_001.hdf5`, `demo_2024_001.h5`). Files are sorted by name during conversion.
 
-### 3.3 Custom HDF5 key names
+### 5.3 Custom HDF5 key names
 
 If your recording code uses different key names inside the HDF5 file (e.g., `images/wrist_rgb` instead of `wrist_image`), you do NOT need to change your code. The conversion script supports a `--key-map` argument to remap keys:
 
@@ -116,7 +233,7 @@ If your recording code uses different key names inside the HDF5 file (e.g., `ima
 
 Only specify keys you want to override; the rest use defaults.
 
-### 3.4 Minimal Python example for writing one episode
+### 5.4 Minimal Python example for writing one episode
 
 ```python
 import h5py
@@ -151,7 +268,7 @@ episode = {
 save_episode("data/raw/episode_001.hdf5", episode)
 ```
 
-### 3.5 Sanity checklist before conversion
+### 5.5 Sanity checklist before conversion
 
 Run through this checklist on your first recorded episode before converting the full dataset:
 
@@ -167,11 +284,13 @@ Run through this checklist on your first recorded episode before converting the 
 
 ---
 
-## 4. Data Conversion: HDF5 → LeRobot
+## 6. Data Conversion: HDF5 → LeRobot
+
+If you collected data using the manual HDF5 method (not RoboCOIN), use this section to convert to LeRobot format. (RoboCOIN users should already have followed Section 4 above and can skip to Section 7 directly.) The conversion script already exists.
 
 The conversion script already exists. No code to write here.
 
-### 4.1 Dry run (inspect schema without writing)
+### 6.1 Dry run (inspect schema without writing)
 
 ```bash
 uv run scripts/convert_rm75_data_to_lerobot.py \
@@ -183,7 +302,7 @@ uv run scripts/convert_rm75_data_to_lerobot.py \
 
 This prints the detected schema from your first episode file and verifies shapes/dtypes. Always run this first.
 
-### 4.2 Full conversion
+### 6.2 Full conversion
 
 ```bash
 uv run scripts/convert_rm75_data_to_lerobot.py \
@@ -203,7 +322,7 @@ The script will:
 3. Write a LeRobot dataset with dot-notation keys (LeRobot v0.1.0 requirement)
 4. Print a verification summary after completion
 
-### 4.3 What the conversion produces
+### 6.3 What the conversion produces
 
 ```
 ~/.cache/huggingface/lerobot/myorg/rm75_wipe_solar/
@@ -225,11 +344,11 @@ The LeRobot dataset features:
 
 ---
 
-## 5. Training Config
+## 7. Training Config
 
 A training config named `pi05_rm75_wipe` needs to be registered so that the openpi training pipeline knows how to process your data. This config will be created in the repo (see section 5.2 for exact location and code).
 
-### 5.1 What the config does
+### 7.1 What the config does
 
 The config wires together:
 - **Model**: pi0.5 base with LoRA adapters (for parameter-efficient fine-tuning)
@@ -237,11 +356,11 @@ The config wires together:
 - **Weight loader**: Downloads the pi0.5 base checkpoint from Google Cloud
 - **Freeze filter**: Freezes everything except LoRA parameters
 
-### 5.2 Config location
+### 7.2 Config location
 
 The config will be added to `src/openpi/training/config.py` in the `_CONFIGS` list, following the exact pattern of `pi05_libero`.
 
-### 5.3 Training commands
+### 7.3 Training commands
 
 **Step 1: Compute normalization statistics** (required before first training)
 
@@ -275,9 +394,9 @@ uv run scripts/train.py pi05_rm75_wipe \
 
 ---
 
-## 6. Inference (Deploying the Trained Model)
+## 8. Inference (Deploying the Trained Model)
 
-### 6.1 Start the policy server
+### 8.1 Start the policy server
 
 ```bash
 uv run scripts/serve_policy.py policy:checkpoint \
@@ -287,7 +406,7 @@ uv run scripts/serve_policy.py policy:checkpoint \
 
 Replace `10000` with the checkpoint step you want to serve. This starts a WebSocket server on port 8000.
 
-### 6.2 Query from your robot code
+### 8.2 Query from your robot code
 
 Install the lightweight client on your robot machine:
 
@@ -413,7 +532,7 @@ for step in range(num_steps):
 
 ---
 
-## 7. End-to-End Checklist
+## 9. End-to-End Checklist
 
 ```
 [ ] 1. Write data collection code (your teleop + recording)
@@ -452,7 +571,7 @@ for step in range(num_steps):
 
 ---
 
-## 8. FAQ & Troubleshooting
+## 10. FAQ & Troubleshooting
 
 **Q: Do I need a scene/base camera?**
 A: Yes, a scene/base camera IS required. The RM75 policy maps the scene image to `base_0_rgb` (the model's primary scene view slot). Studies show removing the scene camera can degrade performance significantly (up to 50% success rate drop). Mount a fixed RGB camera with a wide view of the workspace.
