@@ -537,4 +537,4 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"], batch["actions_is_pad"] if "actions_is_pad" in batch else None
+            yield _model.Observation.from_dict(batch), batch["actions"], batch.get("actions_is_pad", None)

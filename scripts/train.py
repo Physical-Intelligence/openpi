@@ -145,22 +145,29 @@ def train_step(
 
     @at.typecheck
     def loss_fn(
-        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, action_pad_mask: at.Array | None
+        model: _model.BaseModel,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        action_pad_mask: at.Array | None,
     ):
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        if action_pad_mask is not None and chunked_loss.shape == action_pad_mask.shape: 
+        if action_pad_mask is not None and chunked_loss.shape == action_pad_mask.shape:
             # applied only to flow matching variants, not FAST
             action_pad_mask = ~action_pad_mask
-            return jnp.sum(chunked_loss * action_pad_mask) / (jnp.sum(action_pad_mask) + 1e-8)
+            loss = jnp.sum(chunked_loss * action_pad_mask) / (jnp.sum(action_pad_mask) + 1e-8)
         else:
-            return jnp.mean(chunked_loss)
+            loss = jnp.mean(chunked_loss)
+        return loss
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions, action_pad_mask = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions, action_pad_mask)
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(
+        model, train_rng, observation, actions, action_pad_mask
+    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
