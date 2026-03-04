@@ -167,6 +167,11 @@ uv run scripts/convert_robocoin_to_hdf5.py \
 - `--robocoin-dir`: Path to the RoboCOIN dataset (the `repo_id` directory from the recording step)
 - `--output-dir`: Where to write the converted HDF5 episode files
 - `--task-label`: The task description (should match the prompt used during recording)
+- `--wrist-camera` *(optional)*: Substring to match wrist camera video directory (default: `wrist`). Matches both `observation.images.wrist` and `observation.wrist_image`.
+- `--scene-camera` *(optional)*: Substring to match scene camera video directory (default: `scene`). Matches both `observation.images.scene` and `observation.scene_image`.
+- `--action-shift` *(optional)*: Temporal shift for actions (default: `0`). Use `1` if RoboCOIN action[t] corresponds to observation[t+1].
+
+**Note:** The converter auto-detects `info.json` at the dataset root or in `meta/`. It also supports both standard RoboCOIN naming (`observation.images.<cam>`) and alternative naming (`observation.<cam_name>`) via substring matching.
 
 ### 4.2 Step 2: HDF5 → LeRobot v0.1 (Existing Pipeline)
 

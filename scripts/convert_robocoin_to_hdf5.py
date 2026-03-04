@@ -5,11 +5,11 @@ per-episode files matching the RM75 schema. The output is compatible with
 the existing `convert_rm75_data_to_lerobot.py` converter for the full pipeline.
 
 RoboCOIN Structure (LeRobot v2.1 format):
-    meta/info.json                          → FPS, camera keys, state shape
-    meta/episodes.jsonl                     → Episode metadata
-    meta/tasks.jsonl                        → Task descriptions
-    data/chunk-*/episode_NNNNNN.parquet     → State/action arrays
-    videos/chunk-*/observation.images.<cam>/episode_NNNNNN.mp4  → Video frames
+    info.json (root) OR meta/info.json      → FPS, camera keys, state shape
+    meta/episodes.jsonl                      → Episode metadata
+    meta/tasks.jsonl                         → Task descriptions
+    data/chunk-*/episode_NNNNNN.parquet      → State/action arrays
+    videos/chunk-*/observation.<cam_key>/episode_NNNNNN.mp4  → Video frames
 
 Output HDF5 Schema (per episode):
     joint_position    (N, 7)          float32
@@ -101,13 +101,13 @@ def parse_args() -> argparse.Namespace:
         "--wrist-camera",
         type=str,
         default="wrist",
-        help="Camera key name for wrist camera in RoboCOIN (default: 'wrist').",
+        help="Substring to match wrist camera video directory (default: 'wrist'). Matches 'observation.images.wrist' or 'observation.wrist_image'.",
     )
     parser.add_argument(
         "--scene-camera",
         type=str,
         default="scene",
-        help="Camera key name for scene camera in RoboCOIN (default: 'scene').",
+        help="Substring to match scene camera video directory (default: 'scene'). Matches 'observation.images.scene' or 'observation.scene_image'.",
     )
     parser.add_argument(
         "--action-shift",
@@ -127,14 +127,15 @@ def discover_robocoin_dataset(dataset_dir: Path) -> dict[str, Any]:
     Returns:
         Dictionary with keys: fps, features, episode_count, parquet_paths, video_dirs
     """
-    # Validate structure
-    meta_dir = dataset_dir / "meta"
-    if not meta_dir.exists():
-        raise FileNotFoundError(f"meta/ directory not found in {dataset_dir}")
-
-    info_path = meta_dir / "info.json"
+    # Validate structure — info.json can be at root or in meta/
+    info_path = dataset_dir / "info.json"
     if not info_path.exists():
-        raise FileNotFoundError(f"meta/info.json not found in {dataset_dir}")
+        meta_dir = dataset_dir / "meta"
+        info_path = meta_dir / "info.json"
+        if not info_path.exists():
+            raise FileNotFoundError(
+                f"info.json not found at {dataset_dir / 'info.json'} or {meta_dir / 'info.json'}"
+            )
 
     # Read info.json
     info = json.loads(info_path.read_text())
@@ -163,8 +164,10 @@ def discover_robocoin_dataset(dataset_dir: Path) -> dict[str, Any]:
     if not parquet_paths:
         raise FileNotFoundError(f"No parquet files found in {data_dir}")
 
-    # Find video directories
-    video_dirs = sorted(videos_dir.glob("chunk-*/observation.images.*"))
+    # Find video directories (support both observation.<key> and observation.images.<key>)
+    video_dirs = sorted(videos_dir.glob("chunk-*/observation.*"))
+    # Filter to only actual directories (exclude non-observation files)
+    video_dirs = [d for d in video_dirs if d.is_dir()]
 
     return {
         "fps": fps,
@@ -306,7 +309,7 @@ def convert_episode(
     gripper_needs_norm = detect_gripper_normalization(states[:, 7:8])
 
     # Extract and decode videos
-    # Construct video path: videos/chunk-NNN/observation.images.<cam>/episode_NNNNNN.mp4
+    # Construct video path: videos/chunk-NNN/observation.<cam_key>/episode_NNNNNN.mp4
     episode_name = parquet_path.stem  # "episode_000000", etc.
     chunk_name = parquet_path.parent.name  # "chunk-000", etc.
 

@@ -43,7 +43,7 @@ def create_fake_robocoin_dataset(
         n_frames: Frames per episode
         img_h: Image height
         img_w: Image width
-        camera_keys: List of camera keys to include (default: ["wrist", "scene"])
+        camera_keys: List of camera names (default: ["wrist", "scene"]). Dirs are created as observation.images.<key>
         gripper_range: "raw" for [1, 500, 1000] or "normalized" for [0.0, 0.5, 1.0]
 
     Returns:
