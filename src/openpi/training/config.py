@@ -572,9 +572,16 @@ def _get_lunarcompose_configs():
     return lunarcompose_config.get_lunarcompose_configs()
 
 
-def _get_rm75_wipe_configs():
-    """Vanilla pi0.5 fine-tuning configs for RM75 solar panel wiping task."""
+def _get_rm75_pick_place_configs():
+    """Vanilla pi0.5 fine-tuning configs for RM75 single-task pick-and-place."""
+    import os
+
     from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
+
+    rm75_repo_id = os.environ.get(
+        "RM75_DATA_REPO_ID",
+        "bingqi/rm75_pick_place_2_converters_a_side",
+    )
 
     _lora_freeze = pi0_config.Pi0Config(
         pi05=True,
@@ -585,14 +592,14 @@ def _get_rm75_wipe_configs():
     return [
         # LoRA fine-tuning (recommended, ~22.5 GB VRAM)
         TrainConfig(
-            name="pi05_rm75_wipe",
+            name="pi05_rm75_pick_place",
             model=pi0_config.Pi0Config(
                 pi05=True,
                 paligemma_variant="gemma_2b_lora",
                 action_expert_variant="gemma_300m_lora",
             ),
             data=LeRobotRM75DataConfig(
-                repo_id="myorg/rm75_wipe_solar",
+                repo_id=rm75_repo_id,
                 base_config=DataConfig(prompt_from_task=True),
             ),
             weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -600,22 +607,23 @@ def _get_rm75_wipe_configs():
             ),
             freeze_filter=_lora_freeze,
             ema_decay=None,
-            num_train_steps=10_000,
-            batch_size=32,
+            num_train_steps=30_000,
+            batch_size=48,
+            num_workers=12,
         ),
         # Full fine-tuning variant (>= 70 GB VRAM)
         TrainConfig(
-            name="pi05_rm75_wipe_full",
+            name="pi05_rm75_pick_place_full",
             model=pi0_config.Pi0Config(pi05=True),
             data=LeRobotRM75DataConfig(
-                repo_id="myorg/rm75_wipe_solar",
+                repo_id=rm75_repo_id,
                 base_config=DataConfig(prompt_from_task=True),
             ),
             weight_loader=weight_loaders.CheckpointWeightLoader(
                 "gs://openpi-assets/checkpoints/pi05_base/params"
             ),
             ema_decay=0.99,
-            num_train_steps=10_000,
+            num_train_steps=30_000,
             batch_size=32,
         ),
     ]
@@ -1056,12 +1064,12 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    # RoboArena, PolaRiS, SpaceCIL, LunarCompose, & RM75 wipe configs.
+    # RoboArena, PolaRiS, SpaceCIL, LunarCompose, & RM75 pick-place configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
     *_get_spacecil_configs(),
     *_get_lunarcompose_configs(),
-    *_get_rm75_wipe_configs(),
+    *_get_rm75_pick_place_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

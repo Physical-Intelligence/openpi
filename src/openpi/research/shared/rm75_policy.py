@@ -13,6 +13,7 @@ RM75 robot platform:
 """
 
 import dataclasses
+import logging
 import pathlib
 from typing import Any
 
@@ -77,6 +78,90 @@ def _parse_image(image) -> np.ndarray:
     if image.shape[0] == 3:
         image = einops.rearrange(image, "c h w -> h w c")
     return image
+
+
+def _first_present(data: dict, keys: tuple[str, ...], *, field: str):
+    for key in keys:
+        if key in data:
+            return data[key]
+    raise KeyError(f"Missing {field}. Tried keys: {keys}")
+
+
+def _resolve_action_sequence_keys(repo_id: str) -> tuple[str, ...]:
+    """Pick the correct LeRobot action key for delta timestamp expansion."""
+    try:
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
+        feature_keys = set(LeRobotDatasetMetadata(repo_id).features.keys())
+        if "actions" in feature_keys:
+            return ("actions",)
+        if "action" in feature_keys:
+            return ("action",)
+    except Exception as exc:  # noqa: BLE001
+        logging.info("Failed to inspect LeRobot metadata for %s: %s", repo_id, exc)
+
+    # Backwards-compatible default used by existing RM75 conversion.
+    return ("actions",)
+
+
+@dataclasses.dataclass(frozen=True)
+class RM75LeRobotCanonicalize(transforms.DataTransformFn):
+    """Canonicalize LeRobot sample keys for RM75.
+
+    Supports both:
+    - Legacy RM75 schema from convert_rm75_data_to_lerobot.py:
+      observation.wrist_image, observation.scene_image, observation.joint_position,
+      observation.joint_velocity, observation.gripper_position, actions
+    - LeRobot v2.1 state-style schema from RoboCOIN-like pipelines:
+      observation.images.wrist_image, observation.images.scene_image, observation.state, action
+    """
+
+    def __call__(self, data: dict) -> dict:
+        wrist_image = _first_present(
+            data,
+            ("observation.images.wrist_image", "observation.wrist_image"),
+            field="wrist image",
+        )
+        scene_image = _first_present(
+            data,
+            ("observation.images.scene_image", "observation.scene_image"),
+            field="scene image",
+        )
+
+        if "observation.state" in data:
+            state = np.asarray(data["observation.state"], dtype=np.float32)
+            if state.shape[-1] != 8:
+                raise ValueError(f"Expected observation.state last dim 8, got {state.shape}")
+            joint_position = state[..., :7]
+            gripper_position = state[..., 7:]
+            joint_velocity = np.zeros_like(joint_position, dtype=np.float32)
+        else:
+            joint_position = np.asarray(
+                _first_present(data, ("observation.joint_position",), field="joint position"),
+                dtype=np.float32,
+            )
+            gripper_position = np.asarray(
+                _first_present(data, ("observation.gripper_position",), field="gripper position"),
+                dtype=np.float32,
+            )
+            if "observation.joint_velocity" in data:
+                joint_velocity = np.asarray(data["observation.joint_velocity"], dtype=np.float32)
+            else:
+                joint_velocity = np.zeros_like(joint_position, dtype=np.float32)
+
+        actions = np.asarray(_first_present(data, ("actions", "action"), field="action sequence"), dtype=np.float32)
+
+        canonical = {
+            "observation/wrist_image": wrist_image,
+            "observation/scene_image": scene_image,
+            "observation/joint_position": joint_position,
+            "observation/joint_velocity": joint_velocity,
+            "observation/gripper_position": gripper_position,
+            "actions": actions,
+        }
+        if "prompt" in data:
+            canonical["prompt"] = data["prompt"]
+        return canonical
 
 
 @dataclasses.dataclass(frozen=True)
@@ -161,22 +246,8 @@ class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
     """
 
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> Any:
-        # Repack: map LeRobot dot-notation keys to pipeline slash-notation keys.
-        repack_transform = transforms.Group(
-            inputs=[
-                transforms.RepackTransform(
-                    {
-                        "observation/wrist_image": "observation.wrist_image",
-                        "observation/scene_image": "observation.scene_image",
-                        "observation/joint_position": "observation.joint_position",
-                        "observation/joint_velocity": "observation.joint_velocity",
-                        "observation/gripper_position": "observation.gripper_position",
-                        "actions": "actions",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
+        # Canonicalize keys across both RM75 LeRobot schema variants.
+        repack_transform = transforms.Group(inputs=[RM75LeRobotCanonicalize()])
 
         # Data transforms: RM75-specific input/output mapping.
         data_transforms = transforms.Group(
@@ -193,10 +264,12 @@ class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
 
         # Model transforms (tokenization, etc.) — standard, no customization needed.
         model_transforms = _RM75ModelTransformFactory()(model_config)
+        action_sequence_keys = _resolve_action_sequence_keys(self.repo_id)
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            action_sequence_keys=action_sequence_keys,
         )

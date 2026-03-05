@@ -6,6 +6,7 @@ from openpi.models import model as _model
 from openpi.research.shared.action_transforms import ACTION_DIM
 from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
 from openpi.research.shared.rm75_policy import RM75Inputs
+from openpi.research.shared.rm75_policy import RM75LeRobotCanonicalize
 from openpi.research.shared.rm75_policy import RM75Outputs
 from openpi.research.shared.rm75_policy import make_rm75_example
 
@@ -168,3 +169,44 @@ def test_action_dim_is_8():
 def test_lerobot_rm75_data_config_instantiation():
     config = LeRobotRM75DataConfig(repo_id="dummy/repo")
     assert config.repo_id == "dummy/repo"
+
+
+def test_canonicalize_lerobot_v21_schema():
+    transform = RM75LeRobotCanonicalize()
+    sample = {
+        "observation.images.wrist_image": np.random.rand(3, 64, 64).astype(np.float32),
+        "observation.images.scene_image": np.random.rand(3, 64, 64).astype(np.float32),
+        "observation.state": np.random.rand(8).astype(np.float32),
+        "action": np.random.rand(50, 8).astype(np.float32),
+    }
+
+    result = transform(sample)
+
+    assert result["observation/wrist_image"].shape == (3, 64, 64)
+    assert result["observation/scene_image"].shape == (3, 64, 64)
+    assert result["observation/joint_position"].shape == (7,)
+    assert result["observation/gripper_position"].shape == (1,)
+    assert result["observation/joint_velocity"].shape == (7,)
+    assert result["actions"].shape == (50, 8)
+    np.testing.assert_allclose(result["observation/joint_velocity"], 0.0)
+
+
+def test_canonicalize_legacy_schema():
+    transform = RM75LeRobotCanonicalize()
+    sample = {
+        "observation.wrist_image": np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8),
+        "observation.scene_image": np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8),
+        "observation.joint_position": np.random.rand(7).astype(np.float32),
+        "observation.joint_velocity": np.random.rand(7).astype(np.float32),
+        "observation.gripper_position": np.random.rand(1).astype(np.float32),
+        "actions": np.random.rand(50, 8).astype(np.float32),
+    }
+
+    result = transform(sample)
+
+    np.testing.assert_array_equal(result["observation/wrist_image"], sample["observation.wrist_image"])
+    np.testing.assert_array_equal(result["observation/scene_image"], sample["observation.scene_image"])
+    np.testing.assert_array_equal(result["observation/joint_position"], sample["observation.joint_position"])
+    np.testing.assert_array_equal(result["observation/joint_velocity"], sample["observation.joint_velocity"])
+    np.testing.assert_array_equal(result["observation/gripper_position"], sample["observation.gripper_position"])
+    np.testing.assert_array_equal(result["actions"], sample["actions"])
