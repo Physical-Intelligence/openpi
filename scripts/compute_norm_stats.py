@@ -3,7 +3,16 @@
 This script is used to compute the normalization statistics for a given config. It
 will compute the mean and standard deviation of the data in the dataset and save it
 to the config assets directory.
+
+For multi-embodiment configs (MultiEmbodimentDataConfig), statistics are computed
+independently per embodiment and saved in a hierarchical directory structure::
+
+    <assets_dir>/<config_name>/<embodiment_name>/norm_stats.json
 """
+
+from __future__ import annotations
+
+import pathlib
 
 import numpy as np
 import tqdm
@@ -86,8 +95,31 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
-    config = _config.get_config(config_name)
+def _compute_and_save_stats(
+    data_loader: _data_loader.Dataset,
+    num_batches: int,
+    output_path: pathlib.Path,
+    description: str = "Computing stats",
+) -> None:
+    """Iterate over a data loader, compute running statistics, and save."""
+    keys = ["state", "actions"]
+    stats = {key: normalize.RunningStats() for key in keys}
+
+    for batch in tqdm.tqdm(data_loader, total=num_batches, desc=description):
+        for key in keys:
+            stats[key].update(np.asarray(batch[key]))
+
+    norm_stats = {key: s.get_statistics() for key, s in stats.items()}
+
+    print(f"Writing stats to: {output_path}")
+    normalize.save(output_path, norm_stats)
+
+
+def compute_single_config_stats(
+    config: _config.TrainConfig,
+    max_frames: int | None = None,
+) -> None:
+    """Compute norm stats for a standard (single-embodiment) config."""
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -99,18 +131,67 @@ def main(config_name: str, max_frames: int | None = None):
             data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
         )
 
-    keys = ["state", "actions"]
-    stats = {key: normalize.RunningStats() for key in keys}
-
-    for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
-        for key in keys:
-            stats[key].update(np.asarray(batch[key]))
-
-    norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
-
     output_path = config.assets_dirs / data_config.repo_id
-    print(f"Writing stats to: {output_path}")
-    normalize.save(output_path, norm_stats)
+    _compute_and_save_stats(data_loader, num_batches, output_path)
+
+
+def compute_multi_embodiment_stats(
+    config: _config.TrainConfig,
+    max_frames: int | None = None,
+) -> None:
+    """Compute norm stats independently for each embodiment in a multi-embodiment config.
+
+    Stats are saved to: <assets_dir>/<config_name>/<embodiment_name>/norm_stats.json
+    """
+    assert isinstance(config.data, _config.MultiEmbodimentDataConfig)
+    embodiments = config.data.embodiments
+
+    for emb in embodiments:
+        print(f"\n{'='*60}")
+        print(f"Computing norm stats for embodiment: {emb.name}")
+        print(f"  data_path: {emb.data_path}")
+        print(f"  tag_id: {emb.tag_id}")
+        print(f"{'='*60}")
+
+        if emb.data_path == "fake":
+            print(f"Skipping fake embodiment '{emb.name}'")
+            continue
+
+        # Create a temporary DataConfig for this embodiment.
+        repack = emb.get_repack_transforms()
+        emb_data_config = _config.DataConfig(
+            repo_id=emb.data_path,
+            repack_transforms=repack,
+            data_transforms=emb.data_transforms,
+            action_sequence_keys=emb.action_sequence_keys,
+            prompt_from_task=emb.prompt_from_task,
+        )
+
+        data_loader, num_batches = create_torch_dataloader(
+            emb_data_config,
+            config.model.action_horizon,
+            config.batch_size,
+            config.model,
+            config.num_workers,
+            max_frames,
+        )
+
+        output_path = config.assets_dirs / emb.name
+        _compute_and_save_stats(
+            data_loader,
+            num_batches,
+            output_path,
+            description=f"Computing stats [{emb.name}]",
+        )
+
+
+def main(config_name: str, max_frames: int | None = None):
+    config = _config.get_config(config_name)
+
+    if isinstance(config.data, _config.MultiEmbodimentDataConfig):
+        compute_multi_embodiment_stats(config, max_frames)
+    else:
+        compute_single_config_stats(config, max_frames)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.data.embodiments.config as _embodiment_config
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -460,6 +461,52 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class MultiEmbodimentDataConfig(DataConfigFactory):
+    """Data config factory for training on multiple embodiments simultaneously.
+
+    Each embodiment has independent norm_stats, transforms, key mappings, and
+    sampling weights.  At runtime the data loader interleaves samples from all
+    embodiments and injects an ``embodiment_id`` into every sample so that the
+    model or loss function can branch per robot.
+
+    Norm stats are loaded from a hierarchical directory::
+
+        <assets_dir>/<config_name>/<embodiment_name>/norm_stats.json
+    """
+
+    # Per-embodiment configurations.
+    embodiments: tyro.conf.Suppress[Sequence[_embodiment_config.EmbodimentConfig]] = ()
+    # Factory for model transforms (shared across all embodiments).
+    model_transforms: tyro.conf.Suppress[GroupFactory] = dataclasses.field(default_factory=ModelTransformFactory)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        """Create a DataConfig.
+
+        For multi-embodiment workflows the per-embodiment logic (norm stats,
+        transforms, dataset creation) is handled by the data loader.  The
+        DataConfig returned here carries shared model transforms and a
+        reference ``repo_id`` equal to the first embodiment's data_path so
+        that existing single-embodiment code paths still function.
+        """
+        if not self.embodiments:
+            raise ValueError("At least one embodiment must be provided.")
+
+        first = self.embodiments[0]
+        base = self.create_base_config(assets_dirs, model_config)
+        model_transforms = self.model_transforms(model_config)
+        return dataclasses.replace(
+            base,
+            repo_id=first.data_path,
+            model_transforms=model_transforms,
+        )
+
+
+# Re-export for convenience.
+EmbodimentConfig = _embodiment_config.EmbodimentConfig
 
 
 @dataclasses.dataclass(frozen=True)
@@ -964,6 +1011,74 @@ _CONFIGS = [
         overwrite=True,
         exp_name="debug_pi05",
         wandb_enabled=False,
+    ),
+    #
+    # Multi-embodiment example config.
+    #
+    # This demonstrates how to train on multiple robot embodiments simultaneously.
+    # Each embodiment has its own norm_stats, transforms, and sampling weight.
+    # Run `scripts/compute_norm_stats.py --config-name=pi0_multi_embodiment_example`
+    # to compute per-embodiment norm stats before training.
+    TrainConfig(
+        name="pi0_multi_embodiment_example",
+        model=pi0_config.Pi0Config(),
+        data=MultiEmbodimentDataConfig(
+            # repo_id is required by DataConfigFactory but is overridden at runtime
+            # to the first embodiment's data_path.
+            repo_id="multi_embodiment",
+            embodiments=[
+                EmbodimentConfig(
+                    name="aloha_sim",
+                    tag_id=0,
+                    action_dim=14,
+                    data_path="lerobot/aloha_sim_transfer_cube_human",
+                    repack_transforms=_transforms.Group(
+                        inputs=[
+                            _transforms.RepackTransform(
+                                {
+                                    "images": {"cam_high": "observation.images.top"},
+                                    "state": "observation.state",
+                                    "actions": "action",
+                                }
+                            )
+                        ]
+                    ),
+                    data_transforms=_transforms.Group(
+                        inputs=[aloha_policy.AlohaInputs(adapt_to_pi=False)],
+                        outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=False)],
+                    ),
+                    action_sequence_keys=("action",),
+                    default_prompt="Transfer cube",
+                    sampling_weight=1.0,
+                ),
+                EmbodimentConfig(
+                    name="aloha_sim_insertion",
+                    tag_id=1,
+                    action_dim=14,
+                    data_path="lerobot/aloha_sim_insertion_human",
+                    repack_transforms=_transforms.Group(
+                        inputs=[
+                            _transforms.RepackTransform(
+                                {
+                                    "images": {"cam_high": "observation.images.top"},
+                                    "state": "observation.state",
+                                    "actions": "action",
+                                }
+                            )
+                        ]
+                    ),
+                    data_transforms=_transforms.Group(
+                        inputs=[aloha_policy.AlohaInputs(adapt_to_pi=False)],
+                        outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=False)],
+                    ),
+                    action_sequence_keys=("action",),
+                    default_prompt="Insert the peg",
+                    sampling_weight=1.0,
+                ),
+            ],
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=20_000,
     ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),

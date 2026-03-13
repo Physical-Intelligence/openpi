@@ -239,6 +239,17 @@ def create_data_loader(
         skip_norm_stats: Whether to skip data normalization.
         framework: The framework to use ("jax" or "pytorch").
     """
+    # Multi-embodiment path.
+    if isinstance(config.data, _config.MultiEmbodimentDataConfig):
+        return create_multi_embodiment_data_loader(
+            config,
+            sharding=sharding,
+            shuffle=shuffle,
+            num_batches=num_batches,
+            skip_norm_stats=skip_norm_stats,
+            framework=framework,
+        )
+
     data_config = config.data.create(config.assets_dirs, config.model)
     logging.info(f"data_config: {data_config}")
 
@@ -525,6 +536,81 @@ class RLDSDataLoader:
                     break  # We've exhausted the dataset. Create a new iterator and start over.
                 num_items += 1
                 yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
+
+
+def create_multi_embodiment_data_loader(
+    config: _config.TrainConfig,
+    *,
+    sharding: jax.sharding.Sharding | None = None,
+    shuffle: bool = False,
+    num_batches: int | None = None,
+    skip_norm_stats: bool = False,
+    framework: str = "jax",
+) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+    """Create a data loader that interleaves samples from multiple embodiments.
+
+    Each embodiment gets its own norm_stats, transforms, and sampling weight.
+    Every sample in the batch includes an ``embodiment_id`` key.
+    """
+    from openpi.data.embodiments.data_loader import (
+        MultiEmbodimentDataset,
+        WeightedMultiEmbodimentSampler,
+        create_multi_embodiment_dataset,
+    )
+
+    assert isinstance(config.data, _config.MultiEmbodimentDataConfig)
+    data_config = config.data.create(config.assets_dirs, config.model)
+    embodiments = config.data.embodiments
+
+    logging.info(f"Creating multi-embodiment data loader with {len(embodiments)} embodiments")
+    for emb in embodiments:
+        logging.info(f"  - {emb.name} (tag_id={emb.tag_id}, weight={emb.sampling_weight})")
+
+    # Build the combined dataset with per-embodiment transforms & norm_stats.
+    dataset = create_multi_embodiment_dataset(
+        embodiments,
+        config.assets_dirs,
+        action_horizon=config.model.action_horizon,
+        model_config=config.model,
+        skip_norm_stats=skip_norm_stats,
+    )
+
+    # Apply model transforms (shared across embodiments) on top.
+    dataset = TransformedDataset(
+        dataset,
+        list(data_config.model_transforms.inputs),
+    )
+
+    # Determine local batch size.
+    if framework == "pytorch":
+        if torch.distributed.is_initialized():
+            local_batch_size = config.batch_size // torch.distributed.get_world_size()
+        else:
+            local_batch_size = config.batch_size
+    else:
+        local_batch_size = config.batch_size // jax.process_count()
+
+    # Use weighted sampler when shuffling to respect per-embodiment weights.
+    sampler = None
+    if shuffle:
+        sampler = WeightedMultiEmbodimentSampler(
+            dataset._dataset,  # The underlying MultiEmbodimentDataset
+            seed=config.seed,
+        )
+
+    loader = TorchDataLoader(
+        dataset,
+        local_batch_size=local_batch_size,
+        sharding=None if framework == "pytorch" else sharding,
+        shuffle=(sampler is None and shuffle),
+        sampler=sampler,
+        num_batches=num_batches,
+        num_workers=config.num_workers,
+        seed=config.seed,
+        framework=framework,
+    )
+
+    return DataLoaderImpl(data_config, loader)
 
 
 class DataLoaderImpl(DataLoader):

@@ -1,7 +1,8 @@
 # Data directories.
 assets/
 checkpoints/
-data/
+/data/
+!src/openpi/data/
 wandb/
 
 # Byte-compiled / optimized / DLL files

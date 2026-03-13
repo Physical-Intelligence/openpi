@@ -337,6 +337,21 @@ class PadStatesAndActions(DataTransformFn):
         return data
 
 
+@dataclasses.dataclass(frozen=True)
+class InjectEmbodimentId(DataTransformFn):
+    """Injects an integer embodiment_id into every data sample.
+
+    This allows downstream model/loss logic to branch based on the source
+    robot embodiment (e.g., selecting specific action heads).
+    """
+
+    embodiment_id: int
+
+    def __call__(self, data: DataDict) -> DataDict:
+        data["embodiment_id"] = np.asarray(self.embodiment_id, dtype=np.int32)
+        return data
+
+
 def flatten_dict(tree: at.PyTree) -> dict:
     """Flatten a nested dictionary. Uses '/' as the separator."""
     return traverse_util.flatten_dict(tree, sep="/")
