@@ -41,3 +41,12 @@ Useful flags:
   --save-interval 500 \
   --overwrite
 ```
+
+Resume from the latest saved `step_*` checkpoint:
+
+```bash
+.venv/bin/python prune_distill/train_prefix_distill.py \
+  --exp-name gemma_prune_prefix \
+  --num-train-steps 10000 \
+  --resume
+```

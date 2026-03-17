@@ -75,6 +75,7 @@ class DistillConfig:
     hidden_loss_weight: float = 1.0
     cosine_loss_weight: float = 0.1
     dtype: str = "bfloat16"
+    resume: bool = False
     overwrite: bool = False
 
 
@@ -190,11 +191,13 @@ class PrefixDistillModel(nnx.Module):
 
 
 class MixedBatchIterator:
-    def __init__(self, real_iter, fake_iter, *, real_batch_prob: float, seed: int):
+    def __init__(self, real_iter, fake_iter, *, real_batch_prob: float, seed: int, skip_steps: int = 0):
         self._real_iter = real_iter
         self._fake_iter = fake_iter
         self._real_batch_prob = real_batch_prob
         self._rng = random.Random(seed)
+        for _ in range(skip_steps):
+            self._rng.random()
 
     def __iter__(self):
         return self
@@ -385,24 +388,140 @@ def key_param_stats(state: nnx.State) -> dict[str, float]:
     return stats
 
 
-def save_student_checkpoint(output_dir: pathlib.Path, state: DistillState) -> None:
+def extract_student_params(state: DistillState) -> dict[str, Any]:
     model = nnx.merge(state.model_def, state.params)
-    student_params = {"params": nnx.state(model.student).to_pure_dict()}
+    return nnx.state(model.student).to_pure_dict()
+
+
+def save_student_checkpoint(output_dir: pathlib.Path, student_params: dict[str, Any]) -> None:
     ckpt = output_dir / "student"
     if ckpt.exists():
         shutil.rmtree(ckpt)
     with ocp.PyTreeCheckpointer() as checkpointer:
-        checkpointer.save(ckpt, student_params)
+        checkpointer.save(ckpt, {"params": student_params})
+
+
+def save_resume_checkpoint(
+    output_dir: pathlib.Path,
+    *,
+    student_params: dict[str, Any],
+    opt_state: optax.OptState,
+    step: int,
+    train_rng: jax.Array,
+) -> None:
+    ckpt = output_dir / "resume_state"
+    if ckpt.exists():
+        shutil.rmtree(ckpt)
+    with ocp.PyTreeCheckpointer() as checkpointer:
+        checkpointer.save(
+            ckpt,
+            {
+                "student_params": student_params,
+                "opt_state": opt_state,
+                "step": np.asarray(step, dtype=np.int32),
+                "train_rng": np.asarray(train_rng),
+            },
+        )
+
+
+def save_step_checkpoint(output_dir: pathlib.Path, state: DistillState, train_rng: jax.Array) -> None:
+    student_params = extract_student_params(state)
+    step = int(state.step)
+    save_student_checkpoint(output_dir, student_params)
+    save_resume_checkpoint(output_dir, student_params=student_params, opt_state=state.opt_state, step=step, train_rng=train_rng)
+
+
+def _parse_step_dir(step_dir: pathlib.Path) -> int:
+    return int(step_dir.name.split("_", 1)[1])
+
+
+def _latest_step_dir(output_dir: pathlib.Path) -> pathlib.Path | None:
+    step_dirs = sorted((p for p in output_dir.glob("step_*") if p.is_dir()), key=_parse_step_dir)
+    if not step_dirs:
+        return None
+    return step_dirs[-1]
+
+
+def _has_count_field(node: Any) -> bool:
+    if hasattr(node, "_fields") and "count" in node._fields:
+        return True
+    if dataclasses.is_dataclass(node):
+        return any(field.name == "count" for field in dataclasses.fields(node))
+    return False
+
+
+def _set_opt_state_step(opt_state: optax.OptState, step: int) -> optax.OptState:
+    def replace_count(node: Any) -> Any:
+        if hasattr(node, "_fields") and "count" in node._fields:
+            return node._replace(count=jnp.asarray(step, dtype=jnp.asarray(node.count).dtype))
+        if dataclasses.is_dataclass(node):
+            return dataclasses.replace(node, count=jnp.asarray(step, dtype=jnp.asarray(node.count).dtype))
+        return node
+
+    return jax.tree.map(replace_count, opt_state, is_leaf=_has_count_field)
+
+
+def maybe_resume_state(
+    config: DistillConfig,
+    output_dir: pathlib.Path,
+    state: DistillState,
+) -> tuple[DistillState, jax.Array]:
+    if not config.resume:
+        return state, jax.random.key(config.seed + 1)
+
+    step_dir = _latest_step_dir(output_dir)
+    if step_dir is None:
+        raise FileNotFoundError(f"No step_* checkpoints found under {output_dir} to resume from.")
+
+    resume_dir = step_dir / "resume_state"
+    if resume_dir.exists():
+        with ocp.PyTreeCheckpointer() as checkpointer:
+            restored = checkpointer.restore(resume_dir)
+        state.params.replace_by_pure_dict({"student": restored["student_params"]})
+        resumed_state = dataclasses.replace(
+            state,
+            step=jnp.asarray(restored["step"], dtype=jnp.int32),
+            opt_state=restored["opt_state"],
+        )
+        train_rng = jnp.asarray(restored["train_rng"])
+        LOGGER.info("Resumed exact distill state from %s at step=%d", step_dir, int(resumed_state.step))
+        return resumed_state, train_rng
+
+    student_params = _model.restore_params(step_dir / "student", restore_type=np.ndarray)
+    resumed_step = _parse_step_dir(step_dir)
+    state.params.replace_by_pure_dict({"student": student_params})
+    resumed_state = dataclasses.replace(
+        state,
+        step=jnp.asarray(resumed_step, dtype=jnp.int32),
+        opt_state=_set_opt_state_step(state.opt_state, resumed_step),
+    )
+    train_rng = jax.random.fold_in(jax.random.key(config.seed + 1), resumed_step)
+    LOGGER.warning(
+        "Resumed from legacy student-only checkpoint %s at step=%d. "
+        "Student weights were restored, but optimizer moments were reinitialized.",
+        step_dir,
+        resumed_step,
+    )
+    return resumed_state, train_rng
 
 
 def prepare_output_dir(config: DistillConfig) -> pathlib.Path:
     output_dir = pathlib.Path(config.output_dir) / config.exp_name
     if output_dir.exists():
+        if config.resume and config.overwrite:
+            raise ValueError("Cannot use resume and overwrite at the same time.")
         if not config.overwrite:
-            raise FileExistsError(f"{output_dir} already exists. Pass --overwrite to replace it.")
-        shutil.rmtree(output_dir)
+            if not config.resume:
+                raise FileExistsError(f"{output_dir} already exists. Pass --overwrite or --resume.")
+        else:
+            shutil.rmtree(output_dir)
+    elif config.resume:
+        raise FileNotFoundError(f"{output_dir} does not exist, so there is nothing to resume.")
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "config.json").write_text(json.dumps(dataclasses.asdict(config), indent=2))
+    config_path = output_dir / "config.json"
+    if not config.resume or not config_path.exists():
+        config_path.write_text(json.dumps(dataclasses.asdict(config), indent=2))
     return output_dir
 
 
@@ -437,15 +556,23 @@ def main(config: DistillConfig) -> None:
 
     real_loader = data_loader.create_data_loader(base_data_config, shuffle=True)
     fake_loader = data_loader.create_data_loader(fake_data_config, shuffle=True, skip_norm_stats=True)
-    batch_iter = MixedBatchIterator(iter(real_loader), iter(fake_loader), real_batch_prob=config.real_batch_prob, seed=config.seed)
 
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     try:
         state = init_state(config)
+        state, rng = maybe_resume_state(config, output_dir, state)
+        start_step = int(state.step)
+        batch_iter = MixedBatchIterator(
+            iter(real_loader),
+            iter(fake_loader),
+            real_batch_prob=config.real_batch_prob,
+            seed=config.seed,
+            skip_steps=start_step,
+        )
         total_params = count_params(state.params)
         frozen_params = count_params(state.params, FROZEN_FILTER)
         trainable_params = count_params(state.params, TRAINABLE_FILTER)
-        initial_key_params = key_param_stats(state.params)
+        current_key_params = key_param_stats(state.params)
 
         LOGGER.info(
             "Params: total=%d frozen=%d trainable=%d",
@@ -453,17 +580,22 @@ def main(config: DistillConfig) -> None:
             frozen_params,
             trainable_params,
         )
-        LOGGER.info("Initial key params: %s", initial_key_params)
+        LOGGER.info("Current key params at step=%d: %s", start_step, current_key_params)
         writer.add_text(
             "run/config",
             json.dumps(dataclasses.asdict(config), indent=2),
-            0,
+            start_step,
         )
-        writer.add_scalar("params/total", total_params, 0)
-        writer.add_scalar("params/frozen", frozen_params, 0)
-        writer.add_scalar("params/trainable", trainable_params, 0)
-        for name, value in initial_key_params.items():
-            writer.add_scalar(f"key_params/{name}", value, 0)
+        writer.add_scalar("params/total", total_params, start_step)
+        writer.add_scalar("params/frozen", frozen_params, start_step)
+        writer.add_scalar("params/trainable", trainable_params, start_step)
+        for name, value in current_key_params.items():
+            writer.add_scalar(f"key_params/{name}", value, start_step)
+
+        if start_step >= config.num_train_steps:
+            LOGGER.info("Current step %d is already at or beyond num_train_steps=%d.", start_step, config.num_train_steps)
+            writer.flush()
+            return
 
         ptrain_step = jax.jit(
             functools.partial(
@@ -474,8 +606,7 @@ def main(config: DistillConfig) -> None:
             donate_argnums=(0,),
         )
 
-        rng = jax.random.key(config.seed + 1)
-        for step in range(config.num_train_steps):
+        for _ in range(start_step, config.num_train_steps):
             batch, source = next(batch_iter)
             rng, step_rng = jax.random.split(rng)
             state, info = ptrain_step(state, step_rng, batch)
@@ -503,7 +634,7 @@ def main(config: DistillConfig) -> None:
             if step_num % config.save_interval == 0 or step_num == config.num_train_steps:
                 step_dir = output_dir / f"step_{step_num:07d}"
                 step_dir.mkdir(parents=True, exist_ok=True)
-                save_student_checkpoint(step_dir, state)
+                save_step_checkpoint(step_dir, state, rng)
                 writer.flush()
 
         final_key_params = key_param_stats(state.params)

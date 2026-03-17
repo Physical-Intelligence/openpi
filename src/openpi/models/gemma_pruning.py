@@ -34,7 +34,7 @@ Variant = Literal["gemma_prune", "gemma_prune_lora"]
 # Layers: 18 → 14
 # Heads: 8
 # MLP: 12_288
-# params: 2.1B →
+# params: 2.1B → 1.36B
 def get_config(variant):
     """Returns config for specified gemma variant."""
     if variant == "gemma_prune":
