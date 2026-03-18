@@ -5,7 +5,6 @@ import functools
 import json
 import logging
 import pathlib
-import random
 import shutil
 from typing import Any
 
@@ -14,6 +13,7 @@ from flax import struct
 import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
+import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import optax
 import orbax.checkpoint as ocp
@@ -29,6 +29,7 @@ from openpi.models import siglip
 from openpi.shared import nnx_utils
 import openpi.training.config as training_config
 import openpi.training.data_loader as data_loader
+import openpi.transforms as _transforms
 
 
 LOGGER = logging.getLogger("prune_distill")
@@ -62,6 +63,11 @@ class DistillConfig:
     teacher_checkpoint: str = "/root/pi_train/pi05_libero/params"
     output_dir: str = "/root/openpi-wr/checkpoints/prune_distill"
     train_config_name: str = "pi05_libero"
+    dataset_path: str = "/root/flatten_fold_v2"
+    norm_stats_assets_dir: str = "/root/pi_train/pi05_libero/assets"
+    norm_stats_asset_id: str = "physical-intelligence/libero"
+    max_examples: int | None = 50_000
+    max_episodes: int | None = None
     batch_size: int = 8
     num_workers: int = 2
     num_train_steps: int = 10_000
@@ -71,7 +77,6 @@ class DistillConfig:
     learning_rate: float = 1e-4
     warmup_steps: int = 200
     weight_decay: float = 1e-2
-    real_batch_prob: float = 0.8
     hidden_loss_weight: float = 1.0
     cosine_loss_weight: float = 0.1
     dtype: str = "bfloat16"
@@ -190,25 +195,6 @@ class PrefixDistillModel(nnx.Module):
         }
 
 
-class MixedBatchIterator:
-    def __init__(self, real_iter, fake_iter, *, real_batch_prob: float, seed: int, skip_steps: int = 0):
-        self._real_iter = real_iter
-        self._fake_iter = fake_iter
-        self._real_batch_prob = real_batch_prob
-        self._rng = random.Random(seed)
-        for _ in range(skip_steps):
-            self._rng.random()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        use_real = self._rng.random() < self._real_batch_prob
-        if use_real:
-            return next(self._real_iter), "libero"
-        return next(self._fake_iter), "random"
-
-
 def init_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -224,13 +210,196 @@ def _repo_root() -> pathlib.Path:
 def build_data_config(config: DistillConfig) -> training_config.TrainConfig:
     repo_root = _repo_root()
     base = training_config.get_config(config.train_config_name)
+    custom_data = dataclasses.replace(
+        base.data,
+        repo_id=config.dataset_path,
+        assets=training_config.AssetsConfig(
+            assets_dir=config.norm_stats_assets_dir,
+            asset_id=config.norm_stats_asset_id,
+        ),
+    )
     return dataclasses.replace(
         base,
+        data=custom_data,
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         assets_base_dir=str(repo_root / "assets"),
         checkpoint_base_dir=str(repo_root / "checkpoints"),
     )
+
+
+def _dataset_root(config: DistillConfig) -> pathlib.Path:
+    return pathlib.Path(config.dataset_path).expanduser().resolve()
+
+
+def _dataset_repo_id(dataset_root: pathlib.Path) -> str:
+    return dataset_root.name
+
+
+def select_episode_subset(
+    config: DistillConfig,
+    dataset_meta: lerobot_dataset.LeRobotDatasetMetadata,
+) -> list[int] | None:
+    if config.max_examples is None and config.max_episodes is None:
+        return None
+
+    selected: list[int] = []
+    total_examples = 0
+    episodes = sorted(dataset_meta.episodes.items())
+    for episode_idx, episode in episodes:
+        if config.max_episodes is not None and len(selected) >= config.max_episodes:
+            break
+
+        length = int(episode["length"])
+        if config.max_examples is not None and selected and total_examples + length > config.max_examples:
+            break
+
+        selected.append(int(episode_idx))
+        total_examples += length
+
+        if config.max_examples is not None and total_examples >= config.max_examples:
+            break
+
+    if not selected and episodes:
+        first_idx, first_episode = episodes[0]
+        selected = [int(first_idx)]
+        total_examples = int(first_episode["length"])
+
+    LOGGER.info(
+        "Using %d episodes with about %d examples from %s",
+        len(selected),
+        total_examples,
+        _dataset_root(config),
+    )
+    return selected
+
+
+def _make_repack_transform(mapping: dict[str, str]) -> _transforms.Group:
+    return _transforms.Group(inputs=[_transforms.RepackTransform(mapping)])
+
+
+def _first_present(keys: set[str], *candidates: str) -> str | None:
+    for key in candidates:
+        if key in keys:
+            return key
+    return None
+
+
+def adapt_data_config_to_dataset(
+    data_config: training_config.DataConfig,
+    dataset: lerobot_dataset.LeRobotDataset,
+) -> training_config.DataConfig:
+    raw_keys = set(dataset.features)
+    preview_keys = sorted(
+        key
+        for key in raw_keys
+        if key in {"actions", "prompt", "state", "task_index"} or any(token in key for token in ("image", "state", "hand", "head", "camera"))
+    )
+    LOGGER.info("Detected raw dataset keys: %s", preview_keys[:16])
+
+    base_image_key = _first_present(
+        raw_keys,
+        "observation/image",
+        "observation.image",
+        "observation/images/base_0_rgb",
+        "observation.images.base_0_rgb",
+        "front_head",
+        "image",
+    )
+    wrist_image_key = _first_present(
+        raw_keys,
+        "observation/wrist_image",
+        "observation.wrist_image",
+        "observation/images/left_wrist_0_rgb",
+        "observation.images.left_wrist_0_rgb",
+        "left_hand",
+        "right_hand",
+        "wrist_image",
+    )
+    state_key = _first_present(
+        raw_keys,
+        "observation/state",
+        "observation.state",
+        "state",
+    )
+
+    repack_transforms = data_config.repack_transforms
+    if (
+        base_image_key == "observation/image"
+        and wrist_image_key == "observation/wrist_image"
+        and state_key == "observation/state"
+    ):
+        LOGGER.info("Dataset already uses observation/* LIBERO keys. Disabling repack transform.")
+        repack_transforms = _transforms.Group()
+    elif base_image_key is not None and wrist_image_key is not None and state_key is not None:
+        LOGGER.info(
+            "Adapting dataset schema to LIBERO keys: base=%s wrist=%s state=%s",
+            base_image_key,
+            wrist_image_key,
+            state_key,
+        )
+        mapping = {
+            "observation/image": base_image_key,
+            "observation/wrist_image": wrist_image_key,
+            "observation/state": state_key,
+            "actions": "actions",
+        }
+        if "prompt" in raw_keys or data_config.prompt_from_task:
+            mapping["prompt"] = "prompt"
+        repack_transforms = _make_repack_transform(mapping)
+    else:
+        LOGGER.warning(
+            "Could not infer a custom dataset image/state schema from keys %s. Keeping the configured repack transform.",
+            preview_keys[:16],
+        )
+
+    prompt_from_task = data_config.prompt_from_task
+    if "prompt" in raw_keys and prompt_from_task:
+        LOGGER.info("Dataset already contains a prompt column. Disabling prompt_from_task.")
+        prompt_from_task = False
+
+    return dataclasses.replace(
+        data_config,
+        repack_transforms=repack_transforms,
+        prompt_from_task=prompt_from_task,
+    )
+
+
+def create_distill_data_loader(
+    train_config: training_config.TrainConfig,
+    distill_config: DistillConfig,
+):
+    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    dataset_root = _dataset_root(distill_config)
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(_dataset_repo_id(dataset_root), root=dataset_root)
+    selected_episodes = select_episode_subset(distill_config, dataset_meta)
+
+    dataset = lerobot_dataset.LeRobotDataset(
+        _dataset_repo_id(dataset_root),
+        root=dataset_root,
+        episodes=selected_episodes,
+        delta_timestamps={
+            key: [t / dataset_meta.fps for t in range(train_config.model.action_horizon)]
+            for key in data_config.action_sequence_keys
+        },
+    )
+    data_config = adapt_data_config_to_dataset(data_config, dataset)
+    if data_config.prompt_from_task:
+        dataset = data_loader.TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+
+    # Prefix distillation only uses images and tokenized prompts, so we can skip dataset-specific
+    # state/action normalization and avoid mismatches with custom robot state dimensions.
+    dataset = data_loader.transform_dataset(dataset, data_config, skip_norm_stats=True)
+    local_batch_size = train_config.batch_size // jax.process_count()
+    torch_loader = data_loader.TorchDataLoader(
+        dataset,
+        local_batch_size=local_batch_size,
+        shuffle=True,
+        num_workers=train_config.num_workers,
+        seed=train_config.seed,
+        framework="jax",
+    )
+    return data_loader.DataLoaderImpl(data_config, torch_loader)
 
 
 def load_checkpoint_params(params_path: str) -> dict[str, Any]:
@@ -404,31 +573,16 @@ def save_student_checkpoint(output_dir: pathlib.Path, student_params: dict[str, 
 def save_resume_checkpoint(
     output_dir: pathlib.Path,
     *,
-    student_params: dict[str, Any],
-    opt_state: optax.OptState,
     step: int,
-    train_rng: jax.Array,
 ) -> None:
-    ckpt = output_dir / "resume_state"
-    if ckpt.exists():
-        shutil.rmtree(ckpt)
-    with ocp.PyTreeCheckpointer() as checkpointer:
-        checkpointer.save(
-            ckpt,
-            {
-                "student_params": student_params,
-                "opt_state": opt_state,
-                "step": np.asarray(step, dtype=np.int32),
-                "train_rng": np.asarray(train_rng),
-            },
-        )
+    (output_dir / "resume_state.json").write_text(json.dumps({"step": step}, indent=2))
 
 
-def save_step_checkpoint(output_dir: pathlib.Path, state: DistillState, train_rng: jax.Array) -> None:
+def save_step_checkpoint(output_dir: pathlib.Path, state: DistillState) -> None:
     student_params = extract_student_params(state)
     step = int(state.step)
     save_student_checkpoint(output_dir, student_params)
-    save_resume_checkpoint(output_dir, student_params=student_params, opt_state=state.opt_state, step=step, train_rng=train_rng)
+    save_resume_checkpoint(output_dir, step=step)
 
 
 def _parse_step_dir(step_dir: pathlib.Path) -> int:
@@ -465,44 +619,33 @@ def maybe_resume_state(
     config: DistillConfig,
     output_dir: pathlib.Path,
     state: DistillState,
-) -> tuple[DistillState, jax.Array]:
+) -> DistillState:
     if not config.resume:
-        return state, jax.random.key(config.seed + 1)
+        return state
 
     step_dir = _latest_step_dir(output_dir)
     if step_dir is None:
         raise FileNotFoundError(f"No step_* checkpoints found under {output_dir} to resume from.")
 
-    resume_dir = step_dir / "resume_state"
-    if resume_dir.exists():
-        with ocp.PyTreeCheckpointer() as checkpointer:
-            restored = checkpointer.restore(resume_dir)
-        state.params.replace_by_pure_dict({"student": restored["student_params"]})
-        resumed_state = dataclasses.replace(
-            state,
-            step=jnp.asarray(restored["step"], dtype=jnp.int32),
-            opt_state=restored["opt_state"],
-        )
-        train_rng = jnp.asarray(restored["train_rng"])
-        LOGGER.info("Resumed exact distill state from %s at step=%d", step_dir, int(resumed_state.step))
-        return resumed_state, train_rng
-
     student_params = _model.restore_params(step_dir / "student", restore_type=np.ndarray)
-    resumed_step = _parse_step_dir(step_dir)
+    resume_json = step_dir / "resume_state.json"
+    if resume_json.exists():
+        resumed_step = int(json.loads(resume_json.read_text())["step"])
+    else:
+        resumed_step = _parse_step_dir(step_dir)
     state.params.replace_by_pure_dict({"student": student_params})
     resumed_state = dataclasses.replace(
         state,
         step=jnp.asarray(resumed_step, dtype=jnp.int32),
         opt_state=_set_opt_state_step(state.opt_state, resumed_step),
     )
-    train_rng = jax.random.fold_in(jax.random.key(config.seed + 1), resumed_step)
     LOGGER.warning(
-        "Resumed from legacy student-only checkpoint %s at step=%d. "
+        "Resumed from %s at step=%d. "
         "Student weights were restored, but optimizer moments were reinitialized.",
         step_dir,
         resumed_step,
     )
-    return resumed_state, train_rng
+    return resumed_state
 
 
 def prepare_output_dir(config: DistillConfig) -> pathlib.Path:
@@ -530,7 +673,6 @@ def log_tensorboard_scalars(
     step: int,
     info: dict[str, float],
     *,
-    source: str,
     key_params: dict[str, float] | None = None,
 ) -> None:
     writer.add_scalar("train/loss", info["loss"], step)
@@ -539,7 +681,6 @@ def log_tensorboard_scalars(
     writer.add_scalar("train/grad_norm", info["grad_norm"], step)
     writer.add_scalar("train/param_norm", info["param_norm"], step)
     writer.add_scalar("train/valid_tokens", info["valid_tokens"], step)
-    writer.add_scalar("train/source_is_libero", 1.0 if source == "libero" else 0.0, step)
     if key_params is not None:
         for name, value in key_params.items():
             writer.add_scalar(f"key_params/{name}", value, step)
@@ -552,23 +693,14 @@ def main(config: DistillConfig) -> None:
     output_dir = prepare_output_dir(config)
     tensorboard_dir = output_dir / "tensorboard"
     base_data_config = build_data_config(config)
-    fake_data_config = dataclasses.replace(base_data_config, data=training_config.FakeDataConfig())
-
-    real_loader = data_loader.create_data_loader(base_data_config, shuffle=True)
-    fake_loader = data_loader.create_data_loader(fake_data_config, shuffle=True, skip_norm_stats=True)
+    train_loader = create_distill_data_loader(base_data_config, config)
 
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     try:
         state = init_state(config)
-        state, rng = maybe_resume_state(config, output_dir, state)
+        state = maybe_resume_state(config, output_dir, state)
         start_step = int(state.step)
-        batch_iter = MixedBatchIterator(
-            iter(real_loader),
-            iter(fake_loader),
-            real_batch_prob=config.real_batch_prob,
-            seed=config.seed,
-            skip_steps=start_step,
-        )
+        batch_iter = iter(train_loader)
         total_params = count_params(state.params)
         frozen_params = count_params(state.params, FROZEN_FILTER)
         trainable_params = count_params(state.params, TRAINABLE_FILTER)
@@ -606,23 +738,23 @@ def main(config: DistillConfig) -> None:
             donate_argnums=(0,),
         )
 
+        base_rng = jax.random.key(config.seed + 1)
         for _ in range(start_step, config.num_train_steps):
-            batch, source = next(batch_iter)
-            rng, step_rng = jax.random.split(rng)
+            batch = next(batch_iter)
+            step_rng = jax.random.fold_in(base_rng, int(state.step))
             state, info = ptrain_step(state, step_rng, batch)
 
             step_num = int(state.step)
             host_info = jax.tree.map(lambda x: float(x), info)
-            log_tensorboard_scalars(writer, step_num, host_info, source=source)
+            log_tensorboard_scalars(writer, step_num, host_info)
 
             if step_num % config.log_interval == 0 or step_num == 1:
                 key_params = key_param_stats(state.params)
                 for name, value in key_params.items():
                     writer.add_scalar(f"key_params/{name}", value, step_num)
                 LOGGER.info(
-                    "step=%d source=%s loss=%.6f hidden_mse=%.6f cosine=%.6f grad_norm=%.6f param_norm=%.6f key_params=%s",
+                    "step=%d loss=%.6f hidden_mse=%.6f cosine=%.6f grad_norm=%.6f param_norm=%.6f key_params=%s",
                     step_num,
-                    source,
                     host_info["loss"],
                     host_info["hidden_mse"],
                     host_info["cosine_loss"],
@@ -634,7 +766,7 @@ def main(config: DistillConfig) -> None:
             if step_num % config.save_interval == 0 or step_num == config.num_train_steps:
                 step_dir = output_dir / f"step_{step_num:07d}"
                 step_dir.mkdir(parents=True, exist_ok=True)
-                save_step_checkpoint(step_dir, state, rng)
+                save_step_checkpoint(step_dir, state)
                 writer.flush()
 
         final_key_params = key_param_stats(state.params)
