@@ -37,6 +37,7 @@ dependencies = [
     "transformers==4.53.2",
     "rich>=14.0.0",
     "polars>=1.30.0",
+    "gpustat>=1.1.1",
 ]
 
 
@@ -66,6 +67,11 @@ override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
 openpi-client = { workspace = true }
 lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
 dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+# torch = { index = "pytorch-cu126" }
+
+# [[tool.uv.index]]
+# name = "pytorch-cu126"
+# url = "https://download.pytorch.org/whl/cu126"
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -128,9 +134,13 @@ force-sort-within-sections = true
 single-line-exclusions = ["collections.abc", "typing", "typing_extensions"]
 known-third-party = ["wandb"]
 
+# [build-system]
+# requires = ["hatchling"]
+# build-backend = "hatchling.build"
+
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools", "torch==2.7.1"]
+build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 markers = ["manual: should be run manually."]

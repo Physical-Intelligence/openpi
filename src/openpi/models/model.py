@@ -17,6 +17,12 @@ import orbax.checkpoint as ocp
 import safetensors
 import torch
 
+from openpi.models_cuda import pi0_cuda
+from openpi.models_cuda.models.config import GemmaExpertConfig
+from openpi.models_cuda.models.config import GemmaTextConfig
+from openpi.models_cuda.models.config import SiglipVisionConfig
+from openpi.models_cuda.models.gemma import GemmaModel
+from openpi.models_cuda.models.siglip import SiglipVisionModel
 from openpi.models_pytorch import pi0_pytorch
 from openpi.shared import image_tools
 import openpi.shared.array_typing as at
@@ -244,6 +250,23 @@ class BaseModelConfig(abc.ABC):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
         safetensors.torch.load_model(model, weight_path)
+        return model
+
+    def load_cuda_model(self, train_config, weight_path: str):
+        logger.info(f"train_config: {train_config}")
+        model = pi0_cuda.PI0CUDA(config=train_config.model)
+        safetensors.torch.load_model(model, weight_path)
+        orig_vision_tower_state_dict = model.paligemma_with_expert.paligemma.model.vision_tower.state_dict()
+        orig_language_model_state_dict = model.paligemma_with_expert.paligemma.model.language_model.state_dict()
+        orig_gemma_expert_state_dict = model.paligemma_with_expert.gemma_expert.model.state_dict()
+
+        model.paligemma_with_expert.paligemma.model.vision_tower = SiglipVisionModel(config=SiglipVisionConfig())
+        model.paligemma_with_expert.paligemma.model.language_model = GemmaModel(config=GemmaTextConfig())
+        model.paligemma_with_expert.gemma_expert.model = GemmaModel(config=GemmaExpertConfig())
+
+        model.paligemma_with_expert.paligemma.model.vision_tower.load_state_dict(orig_vision_tower_state_dict)
+        model.paligemma_with_expert.paligemma.model.language_model.load_state_dict(orig_language_model_state_dict)
+        model.paligemma_with_expert.gemma_expert.model.load_state_dict(orig_gemma_expert_state_dict, strict=False)
         return model
 
     @abc.abstractmethod
