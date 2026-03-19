@@ -25,6 +25,8 @@ from openpi.models import model as _model
 from openpi.research.shared.action_transforms import RM75_DELTA_MASK
 from openpi.research.shared.action_transforms import RM75AbsoluteActions
 from openpi.research.shared.action_transforms import RM75DeltaActions
+from openpi.research.shared.illumination_augment import IlluminationAugmentationConfig
+from openpi.research.shared.illumination_augment import RM75IlluminationAugmentation
 
 
 def _resolve_training_config_types() -> tuple[Any, Any]:
@@ -245,6 +247,8 @@ class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
     - Delta action conversion (absolute joint → delta for training, delta → absolute for inference)
     """
 
+    illumination_augmentation: IlluminationAugmentationConfig | None = None
+
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> Any:
         # Canonicalize keys across both RM75 LeRobot schema variants.
         repack_transform = transforms.Group(inputs=[RM75LeRobotCanonicalize()])
@@ -254,6 +258,10 @@ class LeRobotRM75DataConfig(_RM75DataConfigFactoryBase):
             inputs=[RM75Inputs(model_type=model_config.model_type)],
             outputs=[RM75Outputs()],
         )
+        if self.illumination_augmentation is not None:
+            data_transforms = data_transforms.push(
+                inputs=[RM75IlluminationAugmentation(self.illumination_augmentation)]
+            )
 
         # RM75 uses absolute joint position actions — convert to delta for training.
         # Joint dims (0:7) get delta conversion; gripper dim (7) stays absolute.

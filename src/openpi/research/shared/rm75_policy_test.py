@@ -1,14 +1,23 @@
 """Tests for rm75_policy module."""
 
+import pathlib
+
 import numpy as np
 
 from openpi.models import model as _model
+from openpi import transforms
+from openpi.models import pi0_config
+from openpi.research.shared import rm75_policy
 from openpi.research.shared.action_transforms import ACTION_DIM
+from openpi.research.shared.illumination_augment import IlluminationAugmentationConfig
+from openpi.research.shared.illumination_augment import RM75IlluminationAugmentation
 from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
 from openpi.research.shared.rm75_policy import RM75Inputs
 from openpi.research.shared.rm75_policy import RM75LeRobotCanonicalize
 from openpi.research.shared.rm75_policy import RM75Outputs
 from openpi.research.shared.rm75_policy import make_rm75_example
+from openpi.training.config import DataConfig
+from openpi.training.config import get_config
 
 
 def test_module_imports():
@@ -171,6 +180,32 @@ def test_lerobot_rm75_data_config_instantiation():
     assert config.repo_id == "dummy/repo"
 
 
+def test_lerobot_rm75_data_config_supports_optional_illumination_augmentation():
+    aug_config = IlluminationAugmentationConfig(apply_probability=1.0, seed=3)
+    config = LeRobotRM75DataConfig(repo_id="dummy/repo", illumination_augmentation=aug_config)
+
+    assert config.illumination_augmentation == aug_config
+
+
+def test_lerobot_rm75_data_config_inserts_illumination_transform(monkeypatch):
+    monkeypatch.setattr(rm75_policy, '_RM75ModelTransformFactory', lambda: (lambda model_config: transforms.Group()))
+    monkeypatch.setattr(
+        LeRobotRM75DataConfig,
+        'create_base_config',
+        lambda self, assets_dirs, model_config: DataConfig(prompt_from_task=True),
+    )
+
+    config = LeRobotRM75DataConfig(
+        repo_id="dummy/repo",
+        base_config=DataConfig(prompt_from_task=True),
+        illumination_augmentation=IlluminationAugmentationConfig(apply_probability=1.0, seed=3),
+    )
+    model_config = pi0_config.Pi0Config(pi05=True)
+    data_config = config.create(assets_dirs=pathlib.Path('.'), model_config=model_config)
+
+    assert any(isinstance(transform, RM75IlluminationAugmentation) for transform in data_config.data_transforms.inputs)
+
+
 def test_canonicalize_lerobot_v21_schema():
     transform = RM75LeRobotCanonicalize()
     sample = {
@@ -210,3 +245,11 @@ def test_canonicalize_legacy_schema():
     np.testing.assert_array_equal(result["observation/joint_velocity"], sample["observation.joint_velocity"])
     np.testing.assert_array_equal(result["observation/gripper_position"], sample["observation.gripper_position"])
     np.testing.assert_array_equal(result["actions"], sample["actions"])
+
+
+def test_pi05_rm75_pick_place_illum_config_resolves():
+    cfg = get_config("pi05_rm75_pick_place_illum")
+
+    assert cfg.name == "pi05_rm75_pick_place_illum"
+    assert isinstance(cfg.data, LeRobotRM75DataConfig)
+    assert cfg.data.illumination_augmentation is not None

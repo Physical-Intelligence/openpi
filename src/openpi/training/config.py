@@ -576,6 +576,7 @@ def _get_rm75_pick_place_configs():
     """Vanilla pi0.5 fine-tuning configs for RM75 single-task pick-and-place."""
     import os
 
+    from openpi.research.shared.illumination_augment import IlluminationAugmentationConfig
     from openpi.research.shared.rm75_policy import LeRobotRM75DataConfig
 
     rm75_repo_id = os.environ.get(
@@ -601,6 +602,27 @@ def _get_rm75_pick_place_configs():
             data=LeRobotRM75DataConfig(
                 repo_id=rm75_repo_id,
                 base_config=DataConfig(prompt_from_task=True),
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            freeze_filter=_lora_freeze,
+            ema_decay=None,
+            num_train_steps=30_000,
+            batch_size=48,
+            num_workers=12,
+        ),
+        TrainConfig(
+            name="pi05_rm75_pick_place_illum",
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+            ),
+            data=LeRobotRM75DataConfig(
+                repo_id=rm75_repo_id,
+                base_config=DataConfig(prompt_from_task=True),
+                illumination_augmentation=IlluminationAugmentationConfig(),
             ),
             weight_loader=weight_loaders.CheckpointWeightLoader(
                 "gs://openpi-assets/checkpoints/pi05_base/params"
