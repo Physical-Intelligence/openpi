@@ -86,6 +86,11 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        
+        # introduce action mask for later loss compute
+        action_mask = torch.zeros(1, 1, self.config.action_dim, dtype=torch.bool)
+        action_mask[:, :, :self.config.actual_action_dim] = True
+        self.register_buffer("action_mask", action_mask)
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -370,7 +375,7 @@ class PI0Pytorch(nn.Module):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        return F.mse_loss(u_t, v_t, reduction="none") * self.action_mask # use mask to mask out losses from padding actions
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
