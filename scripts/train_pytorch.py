@@ -329,15 +329,23 @@ def train_loop(config: _config.TrainConfig):
         else:
             raise FileNotFoundError(f"Experiment checkpoint directory {exp_checkpoint_dir} does not exist for resume")
     elif config.overwrite and config.checkpoint_dir.exists():
-        shutil.rmtree(config.checkpoint_dir)
-        logging.info(f"Overwriting checkpoint directory: {config.checkpoint_dir}")
+        # Only rank 0 should delete to avoid race conditions in DDP (see #868).
+        if is_main:
+            shutil.rmtree(config.checkpoint_dir)
+            logging.info(f"Overwriting checkpoint directory: {config.checkpoint_dir}")
+        if use_ddp:
+            dist.barrier()
 
     # Create checkpoint directory with experiment name
     if not resuming:
-        # For new runs, create experiment-specific checkpoint directory
+        # Only rank 0 creates the directory; other ranks wait behind the barrier.
+        if is_main:
+            exp_checkpoint_dir = config.checkpoint_dir
+            exp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            logging.info(f"Created experiment checkpoint directory: {exp_checkpoint_dir}")
+        if use_ddp:
+            dist.barrier()
         exp_checkpoint_dir = config.checkpoint_dir
-        exp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        logging.info(f"Created experiment checkpoint directory: {exp_checkpoint_dir}")
     else:
         # For resume, checkpoint_dir is already set to the experiment directory
         logging.info(f"Using existing experiment checkpoint directory: {config.checkpoint_dir}")
