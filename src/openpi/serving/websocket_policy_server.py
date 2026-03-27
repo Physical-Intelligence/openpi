@@ -52,6 +52,8 @@ class WebsocketPolicyServer:
         await websocket.send(packer.pack(self._metadata))
 
         prev_total_time = None
+        stage_timing_records = []
+
         while True:
             try:
                 start_time = time.monotonic()
@@ -60,6 +62,10 @@ class WebsocketPolicyServer:
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
+
+                # Collect per-stage timing if available
+                if "stage_timing" in action:
+                    stage_timing_records.append(action.pop("stage_timing"))
 
                 action["server_timing"] = {
                     "infer_ms": infer_time * 1000,
@@ -73,6 +79,19 @@ class WebsocketPolicyServer:
 
             except websockets.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
+                # Print per-connection timing summary
+                n = len(stage_timing_records)
+                if n > 0:
+                    keys = ["token_prep_ms", "llm_backbone_ms", "action_expert_ms", "total_ms"]
+                    avgs = {k: sum(r.get(k, 0.0) for r in stage_timing_records) / n for k in keys}
+                    print(
+                        f"\n=== Inference Timing Summary "
+                        f"(connection {websocket.remote_address}, {n} calls) ===\n"
+                        f"  Token Preparation : {avgs['token_prep_ms']:.1f} ms\n"
+                        f"  LLM Backbone      : {avgs['llm_backbone_ms']:.1f} ms\n"
+                        f"  Action Expert     : {avgs['action_expert_ms']:.1f} ms\n"
+                        f"  Total Inference   : {avgs['total_ms']:.1f} ms\n"
+                    )
                 break
             except Exception:
                 await websocket.send(traceback.format_exc())

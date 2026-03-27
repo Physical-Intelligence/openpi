@@ -62,8 +62,8 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
         dir="gs://openpi-assets/checkpoints/pi05_base",
     ),
     EnvMode.ALOHA_SIM: Checkpoint(
-        config="pi0_aloha_sim",
-        dir="gs://openpi-assets/checkpoints/pi0_aloha_sim",
+        config="pi05_aloha_sim",
+        dir="gs://openpi-assets/checkpoints/pi05_base",
     ),
     EnvMode.DROID: Checkpoint(
         config="pi05_droid",

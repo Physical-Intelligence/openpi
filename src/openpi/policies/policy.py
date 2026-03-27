@@ -59,10 +59,19 @@ class Policy(BasePolicy):
             self._model = self._model.to(pytorch_device)
             self._model.eval()
             self._sample_actions = model.sample_actions
+            self._staged_inference = False
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
+            # Staged inference for per-stage timing (each stage separately JIT-compiled)
+            if hasattr(model, "_stage1_embed_prefix"):
+                self._jit_stage1 = nnx_utils.module_jit(model._stage1_embed_prefix)
+                self._jit_stage2 = nnx_utils.module_jit(model._stage2_fill_kv_cache)
+                self._jit_stage3 = nnx_utils.module_jit(model._stage3_denoise)
+                self._staged_inference = True
+            else:
+                self._staged_inference = False
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -88,21 +97,65 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         observation = _model.Observation.from_dict(inputs)
-        start_time = time.monotonic()
-        outputs = {
-            "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
-        }
-        model_time = time.monotonic() - start_time
-        if self._is_pytorch_model:
-            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
-        else:
-            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
-        outputs = self._output_transform(outputs)
-        outputs["policy_timing"] = {
-            "infer_ms": model_time * 1000,
-        }
+        if self._staged_inference:
+            # --- Staged inference with per-stage timing ---
+            t_total = time.monotonic()
+
+            t0 = time.monotonic()
+            stage1_out = self._jit_stage1(observation)
+            jax.block_until_ready(stage1_out)
+            token_prep_ms = (time.monotonic() - t0) * 1000
+
+            obs_prep, prefix_tokens, prefix_mask, prefix_attn_mask, positions = stage1_out
+
+            t1 = time.monotonic()
+            kv_cache = self._jit_stage2(prefix_tokens, prefix_attn_mask, positions)
+            jax.block_until_ready(kv_cache)
+            llm_backbone_ms = (time.monotonic() - t1) * 1000
+
+            t2 = time.monotonic()
+            step_noise = sample_kwargs.get("noise", None)
+            if step_noise is None:
+                batch_size = observation.state.shape[0]
+                step_noise = jax.random.normal(
+                    sample_rng_or_pytorch_device,
+                    (batch_size, self._model.action_horizon, self._model.action_dim),
+                )
+            actions = self._jit_stage3(obs_prep, step_noise, prefix_mask, kv_cache)
+            jax.block_until_ready(actions)
+            action_expert_ms = (time.monotonic() - t2) * 1000
+
+            total_ms = (time.monotonic() - t_total) * 1000
+
+            outputs = {
+                "state": inputs["state"],
+                "actions": actions,
+            }
+            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+            outputs = self._output_transform(outputs)
+            outputs["policy_timing"] = {"infer_ms": total_ms}
+            outputs["stage_timing"] = {
+                "token_prep_ms": token_prep_ms,
+                "llm_backbone_ms": llm_backbone_ms,
+                "action_expert_ms": action_expert_ms,
+                "total_ms": total_ms,
+            }
+        else:
+            # --- Original inference path (unchanged) ---
+            start_time = time.monotonic()
+            outputs = {
+                "state": inputs["state"],
+                "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            }
+            model_time = time.monotonic() - start_time
+            if self._is_pytorch_model:
+                outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
+            else:
+                outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+            outputs = self._output_transform(outputs)
+            outputs["policy_timing"] = {"infer_ms": model_time * 1000}
+
         return outputs
 
     @property

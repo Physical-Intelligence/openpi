@@ -9,11 +9,13 @@ from typing_extensions import override
 class AlohaSimEnvironment(_environment.Environment):
     """An environment for an Aloha robot in simulation."""
 
-    def __init__(self, task: str, obs_type: str = "pixels_agent_pos", seed: int = 0) -> None:
+    def __init__(self, task: str, obs_type: str = "pixels_agent_pos", seed: int = 0, display: bool = False) -> None:
         np.random.seed(seed)
         self._rng = np.random.default_rng(seed)
 
-        self._gym = gymnasium.make(task, obs_type=obs_type)
+        render_mode = "human" if display else None
+        self._gym = gymnasium.make(task, obs_type=obs_type, render_mode=render_mode)
+        self._display = display
 
         self._last_obs = None
         self._done = True
@@ -43,6 +45,8 @@ class AlohaSimEnvironment(_environment.Environment):
         self._last_obs = self._convert_observation(gym_obs)  # type: ignore
         self._done = terminated or truncated
         self._episode_reward = max(self._episode_reward, reward)
+        if self._display:
+            self._gym.render()
 
     def _convert_observation(self, gym_obs: dict) -> dict:
         img = gym_obs["pixels"]["top"]

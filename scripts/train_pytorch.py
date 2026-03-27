@@ -443,9 +443,10 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
-        )
+        unwrapped_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        safetensors.torch.load_model(unwrapped_model, model_path, strict=False)
+        # embed_tokens.weight is tied to lm_head.weight; checkpoint only stores lm_head.weight
+        unwrapped_model.paligemma_with_expert.paligemma.tie_weights()
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
     # Optimizer + learning rate schedule from config

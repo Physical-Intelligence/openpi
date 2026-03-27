@@ -3,7 +3,9 @@ import dataclasses
 import logging
 import math
 import pathlib
+import time
 
+import cv2
 import imageio
 from libero.libero import benchmark
 from libero.libero import get_libero_path
@@ -11,11 +13,13 @@ from libero.libero.envs import OffScreenRenderEnv
 import numpy as np
 from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
+from PIL import Image, ImageDraw
 import tqdm
 import tyro
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+VIDEO_FPS = 50
 
 
 @dataclasses.dataclass
@@ -34,12 +38,13 @@ class Args:
     task_suite_name: str = (
         "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
-    num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
+    num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
     num_trials_per_task: int = 50  # Number of rollouts per task
 
     #################################################################################################################
     # Utils
     #################################################################################################################
+    display: bool = False  # Show real-time render window (requires WSLg / X11)
     video_out_path: str = "data/libero/videos"  # Path to save videos
 
     seed: int = 7  # Random Seed (for reproducibility)
@@ -96,9 +101,14 @@ def eval_libero(args: Args) -> None:
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
 
-            # Setup
+            # Recording state: frame + wall-clock timestamp after each env.step().
+            # Inference latency is captured because step_duration between consecutive
+            # timestamps includes both sim step time and inference time.
+            images = []
+            timestamps = []
+
             t = 0
-            replay_images = []
+            done = False
 
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
@@ -107,6 +117,7 @@ def eval_libero(args: Args) -> None:
                     # and we need to wait for them to fall
                     if t < args.num_steps_wait:
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
+                        _record_step(obs, images, timestamps, args.display)
                         t += 1
                         continue
 
@@ -120,9 +131,6 @@ def eval_libero(args: Args) -> None:
                     wrist_img = image_tools.convert_to_uint8(
                         image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
                     )
-
-                    # Save preprocessed image for replay video
-                    replay_images.append(img)
 
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
@@ -151,6 +159,8 @@ def eval_libero(args: Args) -> None:
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
+                    _record_step(obs, images, timestamps, args.display)
+
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -161,17 +171,18 @@ def eval_libero(args: Args) -> None:
                     logging.error(f"Caught exception: {e}")
                     break
 
-            task_episodes += 1
-            total_episodes += 1
+            if args.display:
+                cv2.destroyAllWindows()
 
-            # Save a replay video of the episode
+            # Save video: repeat each frame according to real wall-clock step duration
+            # so that inference latency is visible in the video.
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
-            imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
-                fps=10,
-            )
+            out_path = pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4"
+            _save_video(images, timestamps, out_path)
+
+            task_episodes += 1
+            total_episodes += 1
 
             # Log current results
             logging.info(f"Success: {done}")
@@ -184,6 +195,54 @@ def eval_libero(args: Args) -> None:
 
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
     logging.info(f"Total episodes: {total_episodes}")
+
+
+def _record_step(obs, images, timestamps, display):
+    """Record agentview frame and wall-clock timestamp after each env.step()."""
+    im = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+    images.append(im)
+    timestamps.append(time.monotonic())
+    if display:
+        bgr = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
+        cv2.imshow("LIBERO", bgr)
+        cv2.waitKey(1)
+
+
+def _save_video(images, timestamps, out_path):
+    """Repeat each frame proportionally to its real wall-clock duration, then save."""
+    if not images:
+        return
+
+    frames = []
+    for i, (im, ts) in enumerate(zip(images, timestamps)):
+        if i + 1 < len(timestamps):
+            step_duration = timestamps[i + 1] - ts
+        else:
+            step_duration = timestamps[-1] - timestamps[-2] if len(timestamps) > 1 else 1.0 / VIDEO_FPS
+
+        latency_ms = step_duration * 1000
+        annotated = _draw_latency(im, latency_ms)
+
+        repeat = max(1, round(step_duration * VIDEO_FPS))
+        frames.extend([annotated] * repeat)
+
+    logging.info(f"Saving video to {out_path} ({len(frames)} frames @ {VIDEO_FPS}fps = {len(frames)/VIDEO_FPS:.1f}s real time)")
+    imageio.mimwrite(str(out_path), frames, fps=VIDEO_FPS)
+
+
+def _draw_latency(im: np.ndarray, latency_ms: float) -> np.ndarray:
+    """Draw latency overlay on frame using PIL."""
+    img = Image.fromarray(im.astype(np.uint8))
+    draw = ImageDraw.Draw(img)
+
+    text = f"{latency_ms:.0f} ms"
+    x, y = 8, 8
+
+    # shadow for readability
+    draw.text((x + 1, y + 1), text, fill=(0, 0, 0))
+    draw.text((x, y), text, fill=(255, 80, 80))
+
+    return np.array(img)
 
 
 def _get_libero_env(task, resolution, seed):

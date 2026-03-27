@@ -31,6 +31,7 @@ def main(args: Args) -> None:
         environment=_env.AlohaSimEnvironment(
             task=args.task,
             seed=args.seed,
+            display=args.display,
         ),
         agent=_policy_agent.PolicyAgent(
             policy=action_chunk_broker.ActionChunkBroker(

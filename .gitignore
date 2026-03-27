@@ -4,6 +4,20 @@ checkpoints/
 data/
 wandb/
 
+# Model weights and large binary files.
+physical-intelligence/
+pi05_base/
+*.hdf5
+*.pt
+*.safetensors
+*.bin
+
+# Misc server files.
+li
+
+# Claude Code settings.
+.claude
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
