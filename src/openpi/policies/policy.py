@@ -59,7 +59,7 @@ class Policy(BasePolicy):
             self._model = self._model.to(pytorch_device)
             self._model.eval()
             self._sample_actions = model.sample_actions
-            self._staged_inference = False
+            self._staged_inference = hasattr(model, "_stage1_token_prep")
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
@@ -98,8 +98,54 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
 
-        if self._staged_inference:
-            # --- Staged inference with per-stage timing ---
+        if self._staged_inference and self._is_pytorch_model:
+            # --- Staged PyTorch inference with per-stage timing ---
+            def _sync():
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+            t_total = time.monotonic()
+
+            t0 = time.monotonic()
+            with torch.no_grad():
+                state, prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids = self._model._stage1_token_prep(observation)
+            _sync()
+            token_prep_ms = (time.monotonic() - t0) * 1000
+
+            t1 = time.monotonic()
+            with torch.no_grad():
+                past_key_values = self._model._stage2_llm_backbone(prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids)
+            _sync()
+            llm_backbone_ms = (time.monotonic() - t1) * 1000
+
+            t2 = time.monotonic()
+            step_noise = sample_kwargs.get("noise", None)
+            if step_noise is None:
+                bsize = observation.state.shape[0]
+                actions_shape = (bsize, self._model.config.action_horizon, self._model.config.action_dim)
+                step_noise = self._model.sample_noise(actions_shape, sample_rng_or_pytorch_device)
+            with torch.no_grad():
+                actions = self._model._stage3_action_expert(state, prefix_pad_masks, past_key_values, step_noise)
+            _sync()
+            action_expert_ms = (time.monotonic() - t2) * 1000
+
+            total_ms = (time.monotonic() - t_total) * 1000
+
+            outputs = {
+                "state": inputs["state"],
+                "actions": actions,
+            }
+            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
+            outputs = self._output_transform(outputs)
+            outputs["policy_timing"] = {"infer_ms": total_ms}
+            outputs["stage_timing"] = {
+                "token_prep_ms": token_prep_ms,
+                "llm_backbone_ms": llm_backbone_ms,
+                "action_expert_ms": action_expert_ms,
+                "total_ms": total_ms,
+            }
+        elif self._staged_inference:
+            # --- Staged JAX inference with per-stage timing ---
             t_total = time.monotonic()
 
             t0 = time.monotonic()

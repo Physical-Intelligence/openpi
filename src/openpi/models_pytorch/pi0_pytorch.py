@@ -373,6 +373,41 @@ class PI0Pytorch(nn.Module):
 
         return F.mse_loss(u_t, v_t, reduction="none")
 
+    def _stage1_token_prep(self, observation):
+        """Stage 1 (timing): preprocess observation and embed prefix tokens."""
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
+        return state, prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids
+
+    def _stage2_llm_backbone(self, prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids):
+        """Stage 2 (timing): fill KV cache using the LLM backbone."""
+        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+        _, past_key_values = self.paligemma_with_expert.forward(
+            attention_mask=prefix_att_2d_masks_4d,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=True,
+        )
+        return past_key_values
+
+    def _stage3_action_expert(self, state, prefix_pad_masks, past_key_values, noise, num_steps=10):
+        """Stage 3 (timing): denoising loop using the action expert."""
+        device = state.device
+        bsize = state.shape[0]
+        dt = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
+        x_t = noise
+        timestep = torch.tensor(1.0, dtype=torch.float32, device=device)
+        while timestep >= -dt / 2:
+            expanded_time = timestep.expand(bsize)
+            v_t = self.denoise_step(state, prefix_pad_masks, past_key_values, x_t, expanded_time)
+            x_t = x_t + dt * v_t
+            timestep += dt
+        return x_t
+
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
@@ -381,43 +416,9 @@ class PI0Pytorch(nn.Module):
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
-
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
-
-        # Compute image and language key value cache
-        prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
-        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-
-        _, past_key_values = self.paligemma_with_expert.forward(
-            attention_mask=prefix_att_2d_masks_4d,
-            position_ids=prefix_position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs, None],
-            use_cache=True,
-        )
-
-        dt = -1.0 / num_steps
-        dt = torch.tensor(dt, dtype=torch.float32, device=device)
-
-        x_t = noise
-        time = torch.tensor(1.0, dtype=torch.float32, device=device)
-        while time >= -dt / 2:
-            expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
-            )
-
-            # Euler step - use new tensor assignment instead of in-place operation
-            x_t = x_t + dt * v_t
-            time += dt
-        return x_t
+        state, prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids = self._stage1_token_prep(observation)
+        past_key_values = self._stage2_llm_backbone(prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids)
+        return self._stage3_action_expert(state, prefix_pad_masks, past_key_values, noise, num_steps)
 
     def denoise_step(
         self,
