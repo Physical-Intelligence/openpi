@@ -121,6 +121,8 @@ pip install -e packages/openpi-client
 
 ## 四、运行
 
+> **注意**：该脚本使用 `tyro` 嵌套参数解析，所有运行参数必须加 `--args.` 前缀，例如 `--args.host`、`--args.port`、`--args.display`。直接写 `--host` 会报 `Unrecognized options` 错误。
+
 ### 方案 A：保存视频文件（推荐，最稳定）
 
 不需要窗口，视频自动保存为 mp4。
@@ -128,8 +130,8 @@ pip install -e packages/openpi-client
 ```bash
 cd /path/to/openpi
 MUJOCO_GL=egl python examples/aloha_sim/main.py \
-    --host 155.98.36.47 \
-    --port 9000
+    --args.host 155.98.36.47 \
+    --args.port 9000
 ```
 
 视频保存路径：`data/aloha_sim/videos/out_0.mp4`
@@ -139,9 +141,9 @@ MUJOCO_GL=egl python examples/aloha_sim/main.py \
 ```bash
 cd /path/to/openpi
 MUJOCO_GL=glfw python examples/aloha_sim/main.py \
-    --host 155.98.36.47 \
-    --port 9000 \
-    --display
+    --args.host 155.98.36.47 \
+    --args.port 9000 \
+    --args.display
 ```
 
 > **检查 WSLg 是否可用**：在 WSL2 中运行 `echo $DISPLAY`，有输出（如 `:0`）则可用。Windows 10 不支持 WSLg，请使用方案 A。

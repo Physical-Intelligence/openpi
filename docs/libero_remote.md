@@ -303,6 +303,8 @@ pip install -e packages/openpi-client
 
 ## 四、运行
 
+> **注意**：该脚本使用 `tyro` 嵌套参数解析，所有运行参数必须加 `--args.` 前缀，例如 `--args.host`、`--args.port`、`--args.display`。直接写 `--host` 会报 `Unrecognized options` 错误。
+
 ### 方案 A：只保存视频（无渲染窗口，最稳定）
 
 ```bash
