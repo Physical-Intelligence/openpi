@@ -1,23 +1,23 @@
-# LIBERO Remote Inference Guide
+# LIBERO 远程推理指南
 
-The simulator runs on the local WSL2 machine, while model inference runs on a remote GPU server, communicating via WebSocket.
+模拟器运行在本机 WSL2，模型推理运行在远端 GPU 服务器，通过 WebSocket 通信。
 
 ```
-[Local WSL2]                        [GPU Server]
-  LIBERO simulator    <--websocket-->   π0.5 model inference
-  main.py                              serve_policy.py
-  port 9000 (client)                   port 9000 (server)
+[本机 WSL2]                        [GPU 服务器]
+  LIBERO 模拟器    <--websocket-->   π0.5 模型推理
+  main.py                            serve_policy.py
+  port 9000 (client)                 port 9000 (server)
 ```
 
-Video recording strategy: A background thread captures frames at a fixed rate (30fps). **During inference wait periods, the last frame is repeated**, so inference latency is faithfully reflected in the recorded video.
+视频录制策略：使用后台线程以固定帧率（30fps）持续捕帧，**推理等待期间重复最后一帧**，从而将推理延迟真实录入视频。
 
 ---
 
-## 1. Code Modifications
+## 一、代码修改
 
-The original `examples/libero/main.py` only saves frames after `env.step()`, meaning inference latency is not captured in the video and there is no real-time rendering window. The following modifications are needed.
+原始 `examples/libero/main.py` 只在 `env.step()` 后保存帧，推理延迟不会录入视频，也没有实时渲染窗口。需要做以下修改。
 
-Replace `examples/libero/main.py` with the following:
+将 `examples/libero/main.py` 替换为如下内容：
 
 ```python
 import collections
@@ -41,7 +41,7 @@ import tyro
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
-RECORD_FPS = 30  # Recording frame rate, independent of simulation step rate
+RECORD_FPS = 30  # 录制帧率，独立于仿真步长
 
 
 @dataclasses.dataclass
@@ -55,7 +55,7 @@ class Args:
     num_steps_wait: int = 10
     num_trials_per_task: int = 50
 
-    display: bool = False        # Whether to show a real-time rendering window (requires WSLg / X11)
+    display: bool = False        # 是否弹出实时渲染窗口（需要 WSLg / X11）
     video_out_path: str = "data/libero/videos"
     seed: int = 7
 
@@ -99,8 +99,8 @@ def eval_libero(args: Args) -> None:
             obs = env.set_init_state(initial_states[episode_idx])
             action_plan = collections.deque()
 
-            # ── Recording state ──────────────────────────────────
-            current_frame = [None]       # Shared frame read by background thread (list as mutable container)
+            # ── 录制状态 ──────────────────────────────────────────
+            current_frame = [None]       # 后台线程读取的共享帧（list 作可变容器）
             recorded_frames = []
             stop_event = threading.Event()
 
@@ -134,10 +134,10 @@ def eval_libero(args: Args) -> None:
 
                     img = _preprocess_img(obs["agentview_image"], args.resize_size)
                     wrist_img = _preprocess_img(obs["robot0_eye_in_hand_image"], args.resize_size)
-                    current_frame[0] = _get_display_frame(obs)  # Update display frame
+                    current_frame[0] = _get_display_frame(obs)  # 更新显示帧
 
                     if not action_plan:
-                        # ── Background thread keeps repeating last frame during inference ──
+                        # ── 推理期间后台线程持续重复最后一帧 ──────────
                         element = {
                             "observation/image": img,
                             "observation/wrist_image": wrist_img,
@@ -167,7 +167,7 @@ def eval_libero(args: Args) -> None:
                     logging.error(f"Caught exception: {e}")
                     break
 
-            # ── Stop recording and save video ────────────────────
+            # ── 停止录制并保存视频 ────────────────────────────────
             stop_event.set()
             recorder.join()
             if args.display:
@@ -203,7 +203,7 @@ def _get_libero_env(task, resolution, seed):
 
 
 def _preprocess_img(raw_img, resize_size):
-    """Flip + resize to match training preprocessing."""
+    """翻转 + resize，与训练预处理对齐。"""
     img = np.ascontiguousarray(raw_img[::-1, ::-1])
     return image_tools.convert_to_uint8(
         image_tools.resize_with_pad(img, resize_size, resize_size)
@@ -211,7 +211,7 @@ def _preprocess_img(raw_img, resize_size):
 
 
 def _get_display_frame(obs):
-    """Get the agentview image (flipped) for display/recording at original resolution."""
+    """取 agentview 图像翻转后用于显示/录制（保持原始分辨率）。"""
     return np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
 
 
@@ -233,11 +233,11 @@ if __name__ == "__main__":
 
 ---
 
-## 2. Server Side (GPU Machine)
+## 二、服务器端（GPU 机器）
 
-Server-side setup is identical to aloha_sim.
+服务器端配置与 aloha_sim 完全相同。
 
-### Installation
+### 安装
 
 ```bash
 git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git
@@ -249,51 +249,51 @@ GIT_LFS_SKIP_SMUDGE=1 uv sync
 GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ```
 
-### Start the Policy Server
+### 启动 Policy Server
 
 ```bash
 uv run scripts/serve_policy.py --env LIBERO
 ```
 
-- Uses the `pi05_libero` config (defined in `src/openpi/training/config.py`)
-- Weights are automatically downloaded to `~/.cache/openpi`
-- Listens on `0.0.0.0:8000` by default — make sure port 8000 is open in the firewall
+- 使用 `pi05_libero` config（`src/openpi/training/config.py` 中已定义）
+- 权重自动下载到 `~/.cache/openpi`
+- 默认监听 `0.0.0.0:8000`，确保防火墙放开 8000 端口
 
 ---
 
-## 3. Local WSL2 (Simulator)
+## 三、本地 WSL2（模拟器）
 
-### Install System Dependencies
+### 安装系统依赖
 
 ```bash
 sudo apt-get install -y libegl1-mesa-dev libgles2-mesa-dev libglfw3 libglfw3-dev
 ```
 
-For the real-time rendering window, also install:
+如需实时渲染窗口还需要：
 
 ```bash
 sudo apt-get install -y libopencv-dev python3-opencv
 ```
 
-### Create a Conda Environment
+### 创建 conda 环境
 
-> **Python 3.8 is required.** LIBERO's dependency `numba==0.53.1` does not support Python 3.9+. You cannot reuse the aloha_sim conda environment.
+> **必须用 Python 3.8**，LIBERO 的依赖 `numba==0.53.1` 不支持 Python 3.9+，无法复用 aloha_sim 的 conda 环境。
 
 ```bash
 conda create -n libero_sim python=3.8 -y
 conda activate libero_sim
 ```
 
-### Install Python Dependencies
+### 安装 Python 依赖
 
 ```bash
 cd /path/to/openpi
 
-# Install dependencies (note: PyTorch requires the CUDA 11.3 index)
+# 安装依赖（注意 PyTorch 需要 CUDA 11.3 的源）
 pip install -r examples/libero/requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cu113
 
-# Install libero from PyPI (no git submodule needed)
+# 从 PyPI 安装 libero（无需 git submodule）
 pip install libero
 
 pip install -e packages/openpi-client
@@ -301,11 +301,11 @@ pip install -e packages/openpi-client
 
 ---
 
-## 4. Running
+## 四、运行
 
-> **Note:** This script uses `tyro` nested argument parsing. All runtime arguments must be prefixed with `--args.`, e.g., `--args.host`, `--args.port`, `--args.display`. Using `--host` directly will cause an `Unrecognized options` error.
+> **注意**：该脚本使用 `tyro` 嵌套参数解析，所有运行参数必须加 `--args.` 前缀，例如 `--args.host`、`--args.port`、`--args.display`。直接写 `--host` 会报 `Unrecognized options` 错误。
 
-### Option A: Save Video Only (No Rendering Window, Most Stable)
+### 方案 A：只保存视频（无渲染窗口，最稳定）
 
 ```bash
 cd /path/to/openpi
@@ -318,9 +318,9 @@ MUJOCO_GL=egl python examples/libero/main.py \
     --args.task-suite-name libero_spatial
 ```
 
-Videos are saved to: `data/libero/videos/rollout_<task>_<success|failure>.mp4`
+视频保存到：`data/libero/videos/rollout_<task>_<success|failure>.mp4`
 
-### Option B: Real-Time Rendering Window + Video (Requires WSLg, Windows 11 Only)
+### 方案 B：实时渲染窗口 + 保存视频（需要 WSLg，仅 Windows 11）
 
 ```bash
 MUJOCO_GL=egl python examples/libero/main.py \
@@ -330,40 +330,41 @@ MUJOCO_GL=egl python examples/libero/main.py \
     --args.display
 ```
 
-> **Check if WSLg is available:** Run `echo $DISPLAY`. If there is output (e.g., `:0`), WSLg is available. Windows 10 does not support WSLg — use Option A instead.
+> **检查 WSLg 是否可用**：运行 `echo $DISPLAY`，有输出（如 `:0`）则可用。Windows 10 不支持 WSLg，请使用方案 A。
 
-### Common Parameters
+### 常用参数
 
-| Parameter | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--host` | `155.98.36.47` | Server IP |
-| `--port` | `9000` | Server port |
-| `--task-suite-name` | `libero_spatial` | Task suite: `libero_spatial` / `libero_object` / `libero_goal` / `libero_10` / `libero_90` |
-| `--replan-steps` | `5` | Re-infer every N steps |
-| `--num-trials-per-task` | `50` | Number of episodes per task |
-| `--display` | `False` | Show real-time rendering window |
-| `--video-out-path` | `data/libero/videos` | Video output directory |
+| `--host` | `155.98.36.47` | 服务器 IP |
+| `--port` | `9000` | 服务器端口 |
+| `--task-suite-name` | `libero_spatial` | 任务套件，可选 `libero_spatial` / `libero_object` / `libero_goal` / `libero_10` / `libero_90` |
+| `--replan-steps` | `5` | 每执行多少步重新推理一次 |
+| `--num-trials-per-task` | `50` | 每个任务的 episode 数 |
+| `--display` | `False` | 是否弹出实时渲染窗口 |
+| `--video-out-path` | `data/libero/videos` | 视频保存目录 |
 
 ---
 
-## 5. Verify Connection
+## 五、验证连接
 
-Before starting the simulator, confirm the server is reachable:
+启动模拟器前先确认服务器可达：
 
 ```bash
 nc -zv 155.98.36.47 9000
+
 ```
 
-Start the local simulator only after the server log shows `Listening on port 8000`.
+服务器日志出现 `Listening on port 8000` 后再启动本地模拟器。
 
 ---
 
-## 6. Video Recording Details
+## 六、视频录制说明
 
-| Original Behavior | Modified Behavior |
+| 原始行为 | 修改后行为 |
 |---|---|
-| Frames saved only after `env.step()` | Background thread records continuously at **30fps** |
-| Inference latency not captured in video | Last frame repeated during inference — latency fully reflected |
-| No real-time rendering | `--display` flag opens a cv2 window |
+| 只在 `env.step()` 后保存帧 | 后台线程以 **30fps** 持续录制 |
+| 推理延迟不录入视频 | 推理期间重复最后一帧，延迟完整体现 |
+| 无实时渲染 | 支持 `--display` 弹出 cv2 窗口 |
 
-The recording frame rate can be changed via `RECORD_FPS = 30` at the top of `main.py`.
+录制帧率在 `main.py` 顶部的 `RECORD_FPS = 30` 修改。
