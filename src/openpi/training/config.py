@@ -17,6 +17,7 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
+import openpi.models_pytorch.lora_pytorch as lora_pytorch
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -534,6 +535,9 @@ class TrainConfig:
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
 
+    # LoRA training configuration for PyTorch. Set enabled=True to use LoRA fine-tuning.
+    lora_config: lora_pytorch.LoRATrainingConfig | None = None
+
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
@@ -760,6 +764,46 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_libero_lora_pytorch",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            # Use standard variants - LoRA will be applied dynamically
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,  # Higher LR for LoRA
+            decay_steps=30_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,  # Disable EMA for LoRA training
+        pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        num_train_steps=30_000,
+        # PyTorch LoRA configuration
+        lora_config=lora_pytorch.LoRATrainingConfig(
+            enabled=True,
+            attn_rank=16,        # LoRA rank for attention layers
+            ffn_rank=16,         # LoRA rank for FFN layers
+            attn_alpha=16.0,     # LoRA alpha for attention
+            ffn_alpha=16.0,      # LoRA alpha for FFN
+            use_rslora=False,    # Use rank-stabilized LoRA
+            dropout=0.0,
+            apply_to="all",      # Apply to both PaliGemma and Expert
+            train_non_lora_layers=True,  # Also train action projections
+            train_vision_encoder=True,   # Train vision encoder (JAX-consistent)
+        ),
     ),
     #
     # Fine-tuning Aloha configs.
