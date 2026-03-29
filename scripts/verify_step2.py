@@ -148,23 +148,39 @@ stale_checks = [
         'interceptor.py code must not output "stage_timing" key',
         True,
     ),
-    (
-        "scripts/serve_policy.py",
-        "timing_csv_dir",
-        "serve_policy.py must expose --timing_csv_dir argument",
-        False,
-    ),
-    (
-        "scripts/serve_policy.py",
-        "timer=timer",
-        "serve_policy.py must pass timer instance to InferenceInterceptor",
-        False,
-    ),
 ]
 
 for path, pattern, label, code_only in stale_checks:
     content = _code_lines(path) if code_only else open(path).read()
     check(label, pattern not in content, f"found '{pattern}' in {path}")
+
+# Positive checks: these patterns MUST be present.
+required_checks = [
+    (
+        "scripts/serve_policy.py",
+        "timing_csv_dir",
+        "serve_policy.py must expose --timing_csv_dir argument",
+    ),
+    (
+        "scripts/serve_policy.py",
+        "timer=timer",
+        "serve_policy.py must pass timer instance to InferenceInterceptor",
+    ),
+    (
+        "src/openpi/cache/interceptor.py",
+        "torch.compile",
+        "interceptor.py must compile stage methods with torch.compile",
+    ),
+    (
+        "src/openpi/cache/interceptor.py",
+        "pytorch_compile_mode",
+        "interceptor.py must read compile mode from model config",
+    ),
+]
+
+for path, pattern, label in required_checks:
+    content = open(path).read()
+    check(label, pattern in content, f"'{pattern}' not found in {path}")
 
 # ---------------------------------------------------------------------------
 # Test 3: SystemTimer — CPU probe basic cycle
