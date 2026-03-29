@@ -59,7 +59,8 @@ Limitations
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import logging
+from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
@@ -70,6 +71,8 @@ from typing_extensions import override
 from openpi.cache.timing import SystemTimer, TaskLifecycle
 from openpi.models import model as _model
 from openpi.policies import policy as _policy
+
+logger = logging.getLogger(__name__)
 
 
 class InferenceInterceptor(_base_policy.BasePolicy):
@@ -117,7 +120,50 @@ class InferenceInterceptor(_base_policy.BasePolicy):
         self._output_transform = policy._output_transform  # composed transform fn  # noqa: SLF001
         self._pytorch_device = policy._pytorch_device      # e.g. "cuda:0"          # noqa: SLF001
 
-        # Set up SystemTimer.
+        # ---- torch.compile for the three stage methods ----
+        # sample_actions() is compiled by PI0Pytorch.__init__ using
+        # config.pytorch_compile_mode (default "max-autotune").  The stage
+        # methods are compiled here with the same mode so the interceptor
+        # achieves equivalent throughput.
+        #
+        # Persistent cache: torch.compile (inductor backend) automatically
+        # saves compiled artifacts to disk between restarts:
+        #   default location : ~/.cache/torch/inductor/
+        #   override via env : TORCHINDUCTOR_CACHE_DIR=/your/path
+        # On first run the compilation takes 30–120 s; subsequent starts with
+        # the same model and input shapes load from cache and skip recompilation.
+        #
+        # If pytorch_compile_mode is None (disabled in config), the stage
+        # methods run in eager mode — correct but slower.
+        compile_mode: str | None = getattr(
+            self._model.config, "pytorch_compile_mode", None
+        )
+        if compile_mode is not None:
+            self._stage1_fn: Callable = torch.compile(
+                self._model.run_stage1, mode=compile_mode
+            )
+            self._stage2_fn: Callable = torch.compile(
+                self._model.run_stage2, mode=compile_mode
+            )
+            self._stage3_fn: Callable = torch.compile(
+                self._model.run_stage3, mode=compile_mode
+            )
+            logger.info(
+                "InferenceInterceptor: stage methods compiled "
+                "(mode='%s', cache: ~/.cache/torch/inductor or $TORCHINDUCTOR_CACHE_DIR).",
+                compile_mode,
+            )
+        else:
+            # Compile disabled — run in eager mode.
+            self._stage1_fn = self._model.run_stage1
+            self._stage2_fn = self._model.run_stage2
+            self._stage3_fn = self._model.run_stage3
+            logger.info(
+                "InferenceInterceptor: pytorch_compile_mode is None, "
+                "stage methods running in eager mode."
+            )
+
+        # ---- SystemTimer setup ----
         # Each probe corresponds to one pipeline component.  The backend
         # ("cuda" vs "cpu") determines the timing method:
         #   "cuda"  → torch.cuda.Event (accurate GPU execution time)
@@ -127,9 +173,9 @@ class InferenceInterceptor(_base_policy.BasePolicy):
         # are registered here as well (using "cpu" or "cuda" as appropriate
         # for the checkpoint's dominant compute location).
         self._timer: SystemTimer = timer if timer is not None else SystemTimer()
-        self._timer.register_probe("stage1_vision", backend="cuda")
-        self._timer.register_probe("stage2_llm",    backend="cuda")
-        self._timer.register_probe("stage3_flow",   backend="cuda")
+        self._timer.register_probe("stage1_vision",   backend="cuda")
+        self._timer.register_probe("stage2_llm",      backend="cuda")
+        self._timer.register_probe("stage3_flow",     backend="cuda")
         # CPU wall time wrapping all three stages; captures Python + sync
         # overhead in addition to pure GPU time.  Useful as the "felt" latency
         # from the robot's perspective.
@@ -214,21 +260,20 @@ class InferenceInterceptor(_base_policy.BasePolicy):
         with self._timer.measure("total_inference"):
             with torch.no_grad():
                 # Stage 1: SigLIP vision encoding + prefix embedding.
-                # CUDA Event records GPU execution time on the default stream.
+                # Uses self._stage1_fn which is either torch.compile'd or eager
+                # depending on config.pytorch_compile_mode.
                 with self._timer.measure("stage1_vision"):
-                    stage1 = self._model.run_stage1(observation)
+                    stage1 = self._stage1_fn(observation)
 
                 # Stage 2: Gemma 2B backbone forward pass → KV cache.
-                # CUDA Event records GPU execution time on the default stream.
                 # TODO(Step 4): insert CP1 cache check between stage1 and stage2.
                 with self._timer.measure("stage2_llm"):
-                    stage2 = self._model.run_stage2(stage1)
+                    stage2 = self._stage2_fn(stage1)
 
                 # Stage 3: Action Expert — 10-step Euler flow-matching loop.
-                # CUDA Event records GPU execution time on the default stream.
                 # TODO(Step 4): insert CP2 cache check between stage2 and stage3.
                 with self._timer.measure("stage3_flow"):
-                    stage3 = self._model.run_stage3(stage2, noise=start_noise)
+                    stage3 = self._stage3_fn(stage2, noise=start_noise)
 
                 # TODO(Step 4): insert CP3 predictive cache check after stage3.
 

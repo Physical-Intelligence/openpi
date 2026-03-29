@@ -148,6 +148,18 @@ stale_checks = [
         'interceptor.py code must not output "stage_timing" key',
         True,
     ),
+    (
+        "scripts/serve_policy.py",
+        "timing_csv_dir",
+        "serve_policy.py must expose --timing_csv_dir argument",
+        False,
+    ),
+    (
+        "scripts/serve_policy.py",
+        "timer=timer",
+        "serve_policy.py must pass timer instance to InferenceInterceptor",
+        False,
+    ),
 ]
 
 for path, pattern, label, code_only in stale_checks:

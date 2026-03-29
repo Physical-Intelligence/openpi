@@ -56,6 +56,15 @@ class Args:
     # External behavior (actions, timing fields) is identical to the default path.
     cache: bool = False
 
+    # Directory to write per-task timing CSV files.  Only takes effect when
+    # --cache is also set (requires InferenceInterceptor / SystemTimer).
+    # Each client connection produces one file named
+    # timing_task_NNNN_YYYYMMDD_HHMMSS.csv in the specified directory.
+    # When None (default), timing data is printed to the terminal at task end
+    # but not written to disk.
+    # Example: --timing_csv_dir /tmp/timing
+    timing_csv_dir: str | None = None
+
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
@@ -110,8 +119,12 @@ def main(args: Args) -> None:
     # and all clients see identical behaviour.
     if args.cache:
         from openpi.cache.interceptor import InferenceInterceptor
+        from openpi.cache.timing import SystemTimer
+        timer = SystemTimer(enabled=True, output_csv_dir=args.timing_csv_dir)
+        if args.timing_csv_dir:
+            logging.info("Timing CSV output enabled: writing to %s", args.timing_csv_dir)
         logging.info("Cache mode enabled: routing inference through InferenceInterceptor.")
-        policy = InferenceInterceptor(policy)
+        policy = InferenceInterceptor(policy, timer=timer)
 
     # Record the policy's behavior.
     if args.record:
