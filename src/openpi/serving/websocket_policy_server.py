@@ -1,3 +1,40 @@
+"""WebSocket server that exposes a policy for remote inference.
+
+Overview
+--------
+``WebsocketPolicyServer`` accepts one client connection at a time and serves
+``infer`` requests over a msgpack-encoded WebSocket protocol.  See
+``openpi_client.websocket_client_policy`` for the matching client.
+
+Timing integration
+------------------
+When the wrapped policy implements the ``TaskLifecycle`` protocol (i.e. it
+has ``on_task_begin`` and ``on_task_end`` methods — as ``InferenceInterceptor``
+does), the server calls:
+
+* ``on_task_begin()`` when a client connection **opens**.
+* ``on_task_end()`` when a client connection **closes** (or errors out).
+
+``on_task_end()`` triggers ``SystemTimer.on_task_end()``, which prints a
+per-probe timing summary to the terminal and writes a CSV (if configured).
+
+When the policy does *not* implement ``TaskLifecycle`` (plain ``Policy``
+without ``--cache``), the ``hasattr`` checks are simply skipped — no
+behaviour change for the non-cache path.
+
+Note on ``stage_timing`` removal
+---------------------------------
+The Step 1 design collected per-inference ``stage_timing`` dicts from the
+action output and aggregated them manually at connection close.  That logic
+has been removed in Step 2.  Timing aggregation is now entirely the
+responsibility of ``SystemTimer``, which is called via the ``TaskLifecycle``
+hooks above.  The ``server_timing`` key (wall-clock infer time measured by
+this server) is still present in every action response.
+
+Currently only the ``load`` and ``infer`` methods of the client protocol
+are implemented.
+"""
+
 import asyncio
 import http
 import logging
@@ -13,9 +50,18 @@ logger = logging.getLogger(__name__)
 
 
 class WebsocketPolicyServer:
-    """Serves a policy using the websocket protocol. See websocket_client_policy.py for a client implementation.
+    """Serves a policy using the WebSocket protocol.
 
-    Currently only implements the `load` and `infer` methods.
+    Args:
+        policy: Any object implementing ``BasePolicy.infer()``.  If the
+                policy also implements the ``TaskLifecycle`` protocol (has
+                ``on_task_begin`` / ``on_task_end``), the server will call
+                those methods at connection open / close.
+        host: Bind address (default ``"0.0.0.0"`` — all interfaces).
+        port: TCP port.  ``None`` lets the OS choose a free port.
+        metadata: Arbitrary dict sent to the client immediately after the
+                  WebSocket handshake.  Typically includes robot type, action
+                  shape, etc.  Defaults to ``{}``.
     """
 
     def __init__(
@@ -49,10 +95,18 @@ class WebsocketPolicyServer:
         logger.info(f"Connection from {websocket.remote_address} opened")
         packer = msgpack_numpy.Packer()
 
+        # Notify the policy that a new task (connection) is starting.
+        # InferenceInterceptor implements on_task_begin(); plain Policy does not.
+        # The hasattr check keeps this server decoupled from cache internals.
+        if hasattr(self._policy, "on_task_begin"):
+            self._policy.on_task_begin()
+
         await websocket.send(packer.pack(self._metadata))
 
+        # prev_total_time tracks total round-trip time of the *previous*
+        # request (infer + send) so it can be reported in the *next* response.
+        # This gives the client visibility into end-to-end cycle time.
         prev_total_time = None
-        stage_timing_records = []
 
         while True:
             try:
@@ -63,15 +117,14 @@ class WebsocketPolicyServer:
                 action = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
 
-                # Collect per-stage timing if available
-                if "stage_timing" in action:
-                    stage_timing_records.append(action.pop("stage_timing"))
-
+                # server_timing: wall-clock time spent in policy.infer(),
+                # as measured by this server.  Does not include network IO.
+                # For per-stage GPU timing, see SystemTimer output at task end.
                 action["server_timing"] = {
                     "infer_ms": infer_time * 1000,
                 }
                 if prev_total_time is not None:
-                    # We can only record the last total time since we also want to include the send time.
+                    # Round-trip time of the previous cycle (infer + network send).
                     action["server_timing"]["prev_total_ms"] = prev_total_time * 1000
 
                 await websocket.send(packer.pack(action))
@@ -79,31 +132,31 @@ class WebsocketPolicyServer:
 
             except websockets.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
-                # Print per-connection timing summary
-                n = len(stage_timing_records)
-                if n > 0:
-                    keys = ["token_prep_ms", "llm_backbone_ms", "action_expert_ms", "total_ms"]
-                    avgs = {k: sum(r.get(k, 0.0) for r in stage_timing_records) / n for k in keys}
-                    print(
-                        f"\n=== Inference Timing Summary "
-                        f"(connection {websocket.remote_address}, {n} calls) ===\n"
-                        f"  Token Preparation : {avgs['token_prep_ms']:.1f} ms\n"
-                        f"  LLM Backbone      : {avgs['llm_backbone_ms']:.1f} ms\n"
-                        f"  Action Expert     : {avgs['action_expert_ms']:.1f} ms\n"
-                        f"  Total Inference   : {avgs['total_ms']:.1f} ms\n"
-                    )
+                # Notify the policy that the task has ended.
+                # SystemTimer.on_task_end() will print the per-probe timing
+                # summary and (if configured) write a CSV file.
+                if hasattr(self._policy, "on_task_end"):
+                    self._policy.on_task_end()
                 break
+
             except Exception:
+                # Send the traceback to the client before closing so remote
+                # debugging is possible without SSH access to the server.
                 await websocket.send(traceback.format_exc())
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,
                     reason="Internal server error. Traceback included in previous frame.",
                 )
+                # Ensure task-end hooks run even on error so timing records
+                # are not silently lost (e.g. CSV is still flushed).
+                if hasattr(self._policy, "on_task_end"):
+                    self._policy.on_task_end()
                 raise
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
+    """Respond to ``GET /healthz`` with 200 OK; pass other requests through."""
     if request.path == "/healthz":
         return connection.respond(http.HTTPStatus.OK, "OK\n")
-    # Continue with the normal request handling.
+    # Continue with the normal WebSocket handshake for all other paths.
     return None
