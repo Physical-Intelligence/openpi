@@ -1,6 +1,8 @@
 import dataclasses
 import enum
 import logging
+import os
+from pathlib import Path
 import socket
 
 import tyro
@@ -110,7 +112,22 @@ def create_policy(args: Args) -> _policy.Policy:
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 
+def _configure_torchinductor_cache_dir() -> None:
+    """Set a stable torch.compile cache path under the current working directory.
+
+    If TORCHINDUCTOR_CACHE_DIR is already set by the caller, keep it unchanged.
+    """
+    if os.environ.get("TORCHINDUCTOR_CACHE_DIR"):
+        return
+
+    cache_dir = Path.cwd() / ".cache" / "torch" / "inductor"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
+    logging.info("TORCHINDUCTOR_CACHE_DIR=%s", cache_dir)
+
+
 def main(args: Args) -> None:
+    _configure_torchinductor_cache_dir()
     policy = create_policy(args)
     policy_metadata = policy.metadata
 

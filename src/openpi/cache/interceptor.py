@@ -135,9 +135,21 @@ class InferenceInterceptor(_base_policy.BasePolicy):
         #
         # If pytorch_compile_mode is None (disabled in config), the stage
         # methods run in eager mode — correct but slower.
-        compile_mode: str | None = getattr(
+        raw_compile_mode: str | None = getattr(
             self._model.config, "pytorch_compile_mode", None
         )
+        # Staged run_stage1/2/3 execution passes outputs across independently
+        # compiled functions. In practice, max-autotune can trigger CUDAGraph
+        # output-lifetime issues in this pattern; prefer the no-cudagraph mode.
+        compile_mode: str | None = raw_compile_mode
+        if raw_compile_mode == "max-autotune":
+            compile_mode = "max-autotune-no-cudagraphs"
+            logger.info(
+                "InferenceInterceptor: overriding compile mode for staged path "
+                "from '%s' to '%s' to avoid CUDAGraph output reuse errors.",
+                raw_compile_mode,
+                compile_mode,
+            )
         if compile_mode is not None:
             self._stage1_fn: Callable = torch.compile(
                 self._model.run_stage1, mode=compile_mode
@@ -257,6 +269,10 @@ class InferenceInterceptor(_base_policy.BasePolicy):
         # total_inference uses a CPU (perf_counter) backend and wraps all
         # three stages.  It captures end-to-end wall time including Python
         # overhead and the per-stage CUDA event synchronizations.
+        # Mark a fresh compiled-step boundary before invoking staged compiled
+        # functions; this prevents CUDAGraph-managed outputs from being read
+        # across step boundaries.
+        torch.compiler.cudagraph_mark_step_begin()
         with self._timer.measure("total_inference"):
             with torch.no_grad():
                 # Stage 1: SigLIP vision encoding + prefix embedding.
