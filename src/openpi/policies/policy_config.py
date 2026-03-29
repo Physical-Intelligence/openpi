@@ -13,6 +13,23 @@ from openpi.training import config as _config
 import openpi.transforms as transforms
 
 
+def _infer_checkpoint_asset_id(assets_dir: pathlib.Path) -> str:
+    """Infer the single asset_id stored under a checkpoint's `assets/` directory."""
+    if not assets_dir.exists():
+        raise FileNotFoundError(f"Checkpoint assets directory does not exist: {assets_dir}")
+
+    candidates = sorted([p.name for p in assets_dir.iterdir() if p.is_dir()])
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) == 0:
+        raise FileNotFoundError(f"No asset directories found under checkpoint assets dir: {assets_dir}")
+    raise ValueError(
+        "Cannot infer which asset_id to use from checkpoint assets directory "
+        f"(multiple candidates found): {candidates}. "
+        "Please specify the correct asset_id via the training config's data.assets.asset_id."
+    )
+
+
 def create_trained_policy(
     train_config: _config.TrainConfig,
     checkpoint_dir: pathlib.Path | str,
@@ -59,9 +76,26 @@ def create_trained_policy(
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.
-        if data_config.asset_id is None:
-            raise ValueError("Asset id is required to load norm stats.")
-        norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
+        assets_dir = pathlib.Path(checkpoint_dir) / "assets"
+        asset_id = data_config.asset_id
+
+        # Fine-tunes can override `--data.repo-id` during training, so the checkpoint may contain a different
+        # `assets/<asset_id>` than the static train config. In that case, infer the correct asset id from the
+        # checkpoint itself.
+        if asset_id is None or not (assets_dir / asset_id).is_dir():
+            inferred = _infer_checkpoint_asset_id(assets_dir)
+            if asset_id is None:
+                logging.info("No asset_id set in config; inferred %r from checkpoint assets.", inferred)
+            else:
+                logging.warning(
+                    "asset_id=%r not found under checkpoint assets (%s); using inferred %r instead.",
+                    asset_id,
+                    assets_dir,
+                    inferred,
+                )
+            asset_id = inferred
+
+        norm_stats = _checkpoints.load_norm_stats(assets_dir, asset_id)
 
     # Determine the device to use for PyTorch models
     if is_pytorch and pytorch_device is None:
