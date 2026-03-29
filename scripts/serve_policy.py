@@ -51,6 +51,11 @@ class Args:
     # Record the policy's behavior for debugging.
     record: bool = False
 
+    # Enable the staged inference cache system.
+    # When True, inference is routed through InferenceInterceptor (run_stage1/2/3).
+    # External behavior (actions, timing fields) is identical to the default path.
+    cache: bool = False
+
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
@@ -99,6 +104,14 @@ def create_policy(args: Args) -> _policy.Policy:
 def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
+
+    # Wrap with cache-aware interceptor if requested.
+    # The interceptor implements the same BasePolicy interface, so the server
+    # and all clients see identical behaviour.
+    if args.cache:
+        from openpi.cache.interceptor import InferenceInterceptor
+        logging.info("Cache mode enabled: routing inference through InferenceInterceptor.")
+        policy = InferenceInterceptor(policy)
 
     # Record the policy's behavior.
     if args.record:

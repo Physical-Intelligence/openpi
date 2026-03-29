@@ -1,5 +1,7 @@
 import logging
 import math
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import torch
 from torch import Tensor
@@ -9,6 +11,69 @@ import torch.nn.functional as F  # noqa: N812
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+
+
+# ---------------------------------------------------------------------------
+# Inter-stage data structures for the cache system
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Stage1Output:
+    """Output of Stage 1: observation preprocessing + SigLIP vision encoding + prefix embedding.
+
+    All tensors live on the model's device.
+
+    Notes on `state`:
+      - Pi0  (pi05=False): continuous state vector; will be projected by state_proj in Stage 3.
+      - Pi0.5 (pi05=True): continuous state vector that has already been discretised into
+        language tokens by the transform pipeline.  It is NOT fed into the model here;
+        this field is kept solely for cache-key construction.
+    """
+
+    state: torch.Tensor
+    """[B, action_dim]"""
+
+    prefix_embs: torch.Tensor
+    """[B, prefix_len, emb_dim]  (bfloat16)"""
+
+    prefix_pad_masks: torch.Tensor
+    """[B, prefix_len]  (bool)"""
+
+    prefix_att_2d_masks_4d: torch.Tensor
+    """[B, 1, prefix_len, prefix_len]  (float32 additive mask: 0.0 or -inf)"""
+
+    prefix_position_ids: torch.Tensor
+    """[B, prefix_len]  (int64)"""
+
+
+@dataclass
+class Stage2Output:
+    """Output of Stage 2: LLM backbone forward pass that fills the KV cache.
+
+    `past_key_values` is a HuggingFace DynamicCache object.
+    It must be passed as-is to denoise_step(); do NOT clone or deepcopy it.
+    """
+
+    stage1: Stage1Output
+    past_key_values: Any
+    """HuggingFace DynamicCache (or tuple-of-tuples).  Read-only during Stage 3."""
+
+
+@dataclass
+class Stage3Output:
+    """Output of Stage 3: Action Expert flow-matching denoising loop."""
+
+    action_chunk: torch.Tensor
+    """[B, action_horizon, action_dim]  (float32)"""
+
+    intermediates: Optional[dict[float, torch.Tensor]] = None
+    """Populated only when run_stage3(return_intermediates=True).
+    Key = timestep value (e.g. 0.7, 0.5, 0.3).
+    Value = x_t *before* the denoise_step at that timestep, shape [B, action_horizon, action_dim].
+    These snapshots serve as warm-start starting points for run_stage3_from()."""
+
+
+# ---------------------------------------------------------------------------
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -407,6 +472,197 @@ class PI0Pytorch(nn.Module):
             x_t = x_t + dt * v_t
             timestep += dt
         return x_t
+
+    # ------------------------------------------------------------------
+    # Public staged API for the cache system (InferenceInterceptor)
+    # All methods delegate to the private _stage* helpers; no new
+    # computation is introduced.  Callers are responsible for wrapping
+    # calls in torch.no_grad() when appropriate.
+    # ------------------------------------------------------------------
+
+    def run_stage1(self, observation) -> Stage1Output:
+        """Stage 1: observation preprocessing + SigLIP encoding + prefix embedding.
+
+        Thin wrapper around _stage1_token_prep() that returns a typed Stage1Output
+        instead of a raw tuple.  Behaviour is identical to the private method.
+        """
+        state, prefix_embs, prefix_pad_masks, prefix_att_2d_masks_4d, prefix_position_ids = \
+            self._stage1_token_prep(observation)
+        return Stage1Output(
+            state=state,
+            prefix_embs=prefix_embs,
+            prefix_pad_masks=prefix_pad_masks,
+            prefix_att_2d_masks_4d=prefix_att_2d_masks_4d,
+            prefix_position_ids=prefix_position_ids,
+        )
+
+    def run_stage2(self, stage1: Stage1Output) -> Stage2Output:
+        """Stage 2: LLM backbone forward pass to fill the KV cache.
+
+        Thin wrapper around _stage2_llm_backbone().  Behaviour is identical
+        for both Pi0 (pi05=False) and Pi0.5 (pi05=True).
+        """
+        past_key_values = self._stage2_llm_backbone(
+            stage1.prefix_embs,
+            stage1.prefix_pad_masks,
+            stage1.prefix_att_2d_masks_4d,
+            stage1.prefix_position_ids,
+        )
+        return Stage2Output(stage1=stage1, past_key_values=past_key_values)
+
+    def run_stage3(
+        self,
+        stage2: Stage2Output,
+        *,
+        noise: Optional[torch.Tensor] = None,
+        num_steps: int = 10,
+        return_intermediates: bool = False,
+        save_timesteps: tuple = (0.7, 0.5, 0.3),
+    ) -> Stage3Output:
+        """Stage 3: Action Expert full flow-matching denoising (default 10 Euler steps).
+
+        When return_intermediates=False (default), delegates directly to
+        _stage3_action_expert() with zero overhead — performance is identical
+        to the original inference path.
+
+        When return_intermediates=True, runs an equivalent loop via denoise_step()
+        and saves a clone of x_t at each timestep listed in save_timesteps.
+        These snapshots can later be used as warm-start seeds by run_stage3_from().
+
+        Args:
+            stage2: Output of run_stage2().
+            noise: Initial noise tensor [B, action_horizon, action_dim].
+                   Sampled automatically when None.
+            num_steps: Number of Euler denoising steps (default 10).
+            return_intermediates: Whether to capture intermediate x_t snapshots.
+            save_timesteps: Timesteps at which to save x_t (only used when
+                            return_intermediates=True).
+
+        Returns:
+            Stage3Output with action_chunk and optional intermediates.
+        """
+        stage1 = stage2.stage1
+        device = stage1.state.device
+        bsize = stage1.state.shape[0]
+
+        if noise is None:
+            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
+            noise = self.sample_noise(actions_shape, device)
+
+        if not return_intermediates:
+            # Zero-overhead path: delegate entirely to the existing private method.
+            action_chunk = self._stage3_action_expert(
+                stage1.state,
+                stage1.prefix_pad_masks,
+                stage2.past_key_values,
+                noise,
+                num_steps,
+            )
+            return Stage3Output(action_chunk=action_chunk)
+
+        action_chunk, intermediates = self._stage3_with_intermediates(
+            stage1.state,
+            stage1.prefix_pad_masks,
+            stage2.past_key_values,
+            noise,
+            num_steps,
+            save_timesteps,
+        )
+        return Stage3Output(action_chunk=action_chunk, intermediates=intermediates)
+
+    def run_stage3_from(
+        self,
+        stage2: Stage2Output,
+        start_x: torch.Tensor,
+        start_t: float,
+        *,
+        num_steps: int = 10,
+    ) -> Stage3Output:
+        """Warm-start Stage 3: resume flow-matching from a cached intermediate state.
+
+        Uses the same dt = -1/num_steps as the full denoising loop, stepping
+        from start_t down to 0.  The number of steps executed equals
+        round(start_t * num_steps), e.g.:
+          - start_t=0.3, num_steps=10  →  3 steps  (saves 70% of Stage 3)
+          - start_t=0.5, num_steps=10  →  5 steps  (saves 50%)
+          - start_t=0.7, num_steps=10  →  7 steps  (saves 30%)
+
+        Args:
+            stage2: Output of run_stage2() for the *current* observation.
+                    The KV cache and state must correspond to the current scene.
+            start_x: Cached intermediate noisy action tensor [B, action_horizon, action_dim].
+            start_t: Timestep of start_x (e.g. 0.3 means x_t at t=0.3).
+            num_steps: Total number of steps used in the original denoising
+                       (determines dt; must match the value used when the
+                       intermediate was cached).
+
+        Returns:
+            Stage3Output with the final denoised action_chunk.
+        """
+        stage1 = stage2.stage1
+        device = stage1.state.device
+        bsize = stage1.state.shape[0]
+
+        dt = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
+        x_t = start_x
+        timestep = torch.tensor(start_t, dtype=torch.float32, device=device)
+
+        while timestep >= -dt / 2:
+            expanded_time = timestep.expand(bsize)
+            v_t = self.denoise_step(
+                stage1.state,
+                stage1.prefix_pad_masks,
+                stage2.past_key_values,
+                x_t,
+                expanded_time,
+            )
+            x_t = x_t + dt * v_t
+            timestep += dt
+
+        return Stage3Output(action_chunk=x_t)
+
+    def _stage3_with_intermediates(
+        self,
+        state: torch.Tensor,
+        prefix_pad_masks: torch.Tensor,
+        past_key_values: Any,
+        noise: torch.Tensor,
+        num_steps: int,
+        save_timesteps: tuple,
+    ) -> tuple:
+        """Denoising loop equivalent to _stage3_action_expert, with x_t snapshots.
+
+        Snapshots are taken *before* the denoise_step at each matching timestep,
+        so intermediates[t] is the correct starting point for run_stage3_from(start_t=t).
+
+        Returns:
+            (action_chunk, intermediates)
+            intermediates: dict mapping float timestep → x_t tensor [B, H, D]
+        """
+        device = state.device
+        bsize = state.shape[0]
+        dt = torch.tensor(-1.0 / num_steps, dtype=torch.float32, device=device)
+        half_dt = 0.5 / num_steps  # tolerance for floating-point timestep matching
+
+        x_t = noise
+        timestep = torch.tensor(1.0, dtype=torch.float32, device=device)
+        intermediates: dict[float, torch.Tensor] = {}
+
+        while timestep >= -dt / 2:
+            t_val = timestep.item()
+            for st in save_timesteps:
+                if abs(t_val - st) < half_dt:
+                    intermediates[st] = x_t.clone()
+                    break
+
+            expanded_time = timestep.expand(bsize)
+            v_t = self.denoise_step(state, prefix_pad_masks, past_key_values, x_t, expanded_time)
+            x_t = x_t + dt * v_t
+            timestep += dt
+
+        return x_t, intermediates
+
+    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
