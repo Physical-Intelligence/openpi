@@ -17,8 +17,8 @@ logic is applied yet — the output is numerically identical to ``Policy.infer``
 Caching logic (``CacheOrchestrator``) will be injected at the TODO markers in
 Step 4.
 
-The manual ``time.monotonic()`` / ``torch.cuda.synchronize()`` timing from
-Step 1 has been removed.  All timing now flows through ``SystemTimer``:
+The manual wall-clock / global-synchronize timing from Step 1 has been
+removed.  All timing now flows through ``SystemTimer``:
 
 * Stage 1 (vision + token prep)  → probe ``"stage1_vision"`` (CUDA backend)
 * Stage 2 (LLM backbone)         → probe ``"stage2_llm"``    (CUDA backend)
@@ -43,9 +43,10 @@ External contract (what the client / server sees)
         "server_timing" is added by the server, not here,
     }
 
-The ``stage_timing`` and ``policy_timing`` keys present in the Step 1 version
-have been removed.  Timing output is now handled entirely by ``SystemTimer``
-(printed at task end, optionally written to CSV).
+The per-inference timing keys (``policy_timing`` / per-stage ms dict) that
+were present in the Step 1 version have been removed.  Timing output is now
+handled entirely by ``SystemTimer`` (printed at task end, optionally written
+to CSV).
 
 Limitations
 -----------

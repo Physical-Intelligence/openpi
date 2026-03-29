@@ -76,37 +76,82 @@ for path in FILES:
 # ---------------------------------------------------------------------------
 print("\n[2] Stale code removal check")
 
+def _code_lines(path: str) -> str:
+    """Return only executable code lines (strip comments and docstring lines).
+
+    This is intentionally simple: we drop lines whose first non-whitespace
+    character is ``#``, and lines that consist only of triple-quote delimiters
+    or content inside a module/function docstring.  It is good enough to
+    distinguish ``time.monotonic`` appearing in a docstring (explaining what
+    was removed) from the same string appearing as a live function call.
+
+    A proper AST-based check would be more robust but is unnecessary here.
+    """
+    lines = open(path).readlines()
+    result = []
+    in_docstring = False
+    for line in lines:
+        stripped = line.strip()
+        # Toggle docstring state on triple-quote markers.
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            # A line that opens AND closes a docstring on the same line
+            # (e.g. '''one-liner''') stays outside.
+            delim = '"""' if stripped.startswith('"""') else "'''"
+            count = stripped.count(delim)
+            if in_docstring:
+                in_docstring = False  # closing delimiter
+                continue
+            elif count >= 2:
+                continue  # single-line docstring
+            else:
+                in_docstring = True
+                continue
+        if in_docstring:
+            continue
+        if stripped.startswith("#"):
+            continue
+        result.append(line)
+    return "".join(result)
+
+
 stale_checks = [
-    # (file, pattern, description)
+    # (file, pattern, description, code_only)
+    # code_only=True  → search only executable lines (skip comments/docstrings)
+    # code_only=False → search the entire file (pattern must not appear anywhere)
     (
         "src/openpi/serving/websocket_policy_server.py",
         "stage_timing_records",
         "websocket_policy_server.py must not contain stage_timing_records",
+        False,
     ),
     (
         "src/openpi/serving/websocket_policy_server.py",
         "token_prep_ms",
         "websocket_policy_server.py must not contain token_prep_ms",
+        False,
     ),
     (
         "src/openpi/cache/interceptor.py",
         "time.monotonic",
-        "interceptor.py must not contain time.monotonic",
+        "interceptor.py code must not call time.monotonic",
+        True,   # may appear in docstrings explaining removal; check code only
     ),
     (
         "src/openpi/cache/interceptor.py",
         "cuda.synchronize",
-        "interceptor.py must not contain cuda.synchronize",
+        "interceptor.py code must not call cuda.synchronize",
+        True,
     ),
     (
         "src/openpi/cache/interceptor.py",
-        "stage_timing",
-        "interceptor.py must not output stage_timing key",
+        '"stage_timing"',   # the dict key as a string literal
+        'interceptor.py code must not output "stage_timing" key',
+        True,
     ),
 ]
 
-for path, pattern, label in stale_checks:
-    content = open(path).read()
+for path, pattern, label, code_only in stale_checks:
+    content = _code_lines(path) if code_only else open(path).read()
     check(label, pattern not in content, f"found '{pattern}' in {path}")
 
 # ---------------------------------------------------------------------------
