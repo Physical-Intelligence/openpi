@@ -1,6 +1,7 @@
 import asyncio
 import http
 import logging
+import os
 import time
 import traceback
 
@@ -10,6 +11,9 @@ import websockets.asyncio.server as _server
 import websockets.frames
 
 logger = logging.getLogger(__name__)
+
+# How many elements to print when sampling large arrays. Configure via env OPENPI_SAMPLE_MAX.
+SAMPLE_MAX = int(os.environ.get("OPENPI_SAMPLE_MAX", "10"))
 
 
 class WebsocketPolicyServer:
@@ -56,10 +60,46 @@ class WebsocketPolicyServer:
             try:
                 start_time = time.monotonic()
                 obs = msgpack_numpy.unpackb(await websocket.recv())
+                # Log received observation keys and a small sample for debugging.
+                try:
+                    logger.info("Received obs from %s keys=%s", websocket.remote_address, list(obs.keys()) if isinstance(obs, dict) else None)
+                    # Small sample at DEBUG level to avoid spamming INFO logs for large arrays.
+                    try:
+                        import numpy as _np
+
+                        if isinstance(obs, dict) and "state" in obs:
+                            sample = _np.array(obs.get("state"))
+                            logger.debug(
+                                "obs state shape=%s sample=%s",
+                                getattr(sample, "shape", None),
+                                str(sample.ravel()[:SAMPLE_MAX]),
+                            )
+                    except Exception:
+                        logger.debug("Could not sample obs values", exc_info=True)
+                except Exception:
+                    logger.exception("Failed to log incoming obs")
 
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
+
+                # Log action keys and a small sample for debugging.
+                try:
+                    logger.info("Sending action to %s keys=%s", websocket.remote_address, list(action.keys()) if isinstance(action, dict) else None)
+                    try:
+                        import numpy as _np
+
+                        if isinstance(action, dict) and "actions" in action:
+                            sample = _np.array(action.get("actions"))
+                            logger.debug(
+                                "action['actions'] shape=%s sample=%s",
+                                getattr(sample, "shape", None),
+                                str(sample.ravel()[:SAMPLE_MAX]),
+                            )
+                    except Exception:
+                        logger.debug("Could not sample action values", exc_info=True)
+                except Exception:
+                    logger.exception("Failed to log action output")
 
                 action["server_timing"] = {
                     "infer_ms": infer_time * 1000,
