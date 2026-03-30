@@ -8,8 +8,11 @@ for larger datasets like DROID -- they are working on improving it though). Belo
 
 ## Install
 
-We need a few additional dependencies for RLDS data loading. Run:
+We need a few additional dependencies for RLDS data loading. The RLDS group depends on `tensorflow-cpu==2.15.0`, which only ships wheels for **Python 3.11**. Make sure you create your virtual environment with Python 3.11 before syncing:
+
 ```bash
+uv python install 3.11
+uv venv --python 3.11
 uv sync --group rlds
 ```
 

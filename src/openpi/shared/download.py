@@ -81,18 +81,19 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
                 else:
                     local_path.unlink()
 
-            # Download the data to a local cache.
-            logger.info(f"Downloading {url} to {local_path}")
-            scratch_path = local_path.with_suffix(".partial")
-            # Route openpi-assets through gsutil to avoid gcsfs auth issues with this bucket.
-            # All other gs:// URLs (e.g. big_vision) continue to use gcsfs as normal.
-            if parsed.scheme == "gs" and parsed.netloc == "openpi-assets":
-                _download_gsutil(url, scratch_path, **kwargs)
-            else:
-                _download_fsspec(url, scratch_path, **kwargs)
+            if not local_path.exists():
+                # Download the data to a local cache.
+                logger.info(f"Downloading {url} to {local_path}")
+                scratch_path = local_path.with_suffix(".partial")
+                # Route openpi-assets through gsutil to avoid gcsfs auth issues with this bucket.
+                # All other gs:// URLs (e.g. big_vision) continue to use gcsfs as normal.
+                if parsed.scheme == "gs" and parsed.netloc == "openpi-assets":
+                    _download_gsutil(url, scratch_path, **kwargs)
+                else:
+                    _download_fsspec(url, scratch_path, **kwargs)
 
-            shutil.move(scratch_path, local_path)
-            _ensure_permissions(local_path)
+                shutil.move(scratch_path, local_path)
+                _ensure_permissions(local_path)
 
     except PermissionError as e:
         msg = (

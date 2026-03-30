@@ -55,6 +55,8 @@ dev = [
     "pynvml>=12.0.0",
 ]
 rlds = [
+    # NOTE: tensorflow-cpu 2.15.0 only ships cp311 wheels on PyPI.
+    # Use `uv venv --python 3.11` before `uv sync --group rlds`.
     "dlimp",
     "tensorflow-cpu==2.15.0",
     "tensorflow-datasets==4.9.9",
