@@ -79,6 +79,7 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
+    global_episode_id = 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task
         task = task_suite.get_task(task_id)
@@ -96,7 +97,7 @@ def eval_libero(args: Args) -> None:
             client.episode_start(
                 experiment=args.task_suite_name,
                 task=str(task_description),
-                episode_id=episode_idx,
+                episode_id=global_episode_id,
             )
 
             # Reset environment
@@ -189,6 +190,7 @@ def eval_libero(args: Args) -> None:
 
             task_episodes += 1
             total_episodes += 1
+            global_episode_id += 1
 
             # Log current results
             logging.info(f"Success: {done}")
