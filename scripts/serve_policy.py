@@ -55,7 +55,7 @@ class Args:
     # Enable per-episode embedding collection to HDF5.
     collect: bool = False
     # Root directory for collected episode files.
-    collect_dir: str = "/data"
+    collect_dir: str = "./data"
 
     # Enable the staged inference cache system.
     # When True, inference is routed through InferenceInterceptor (run_stage1/2/3).
