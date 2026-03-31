@@ -113,6 +113,24 @@ class WebsocketPolicyServer:
                 start_time = time.monotonic()
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
+                if "__ctrl__" in obs:
+                    ctrl = obs["__ctrl__"]
+                    if ctrl == "episode_start":
+                        if hasattr(self._policy, "on_episode_start"):
+                            self._policy.on_episode_start(
+                                obs.get("__experiment__", "unknown"),
+                                obs.get("__task__", ""),
+                                obs.get("__episode_id__", -1),
+                            )
+                        await websocket.send(packer.pack({"__ack__": "episode_start"}))
+                    elif ctrl == "episode_end":
+                        if hasattr(self._policy, "on_episode_end"):
+                            self._policy.on_episode_end(obs.get("__success__", False))
+                        await websocket.send(packer.pack({"__ack__": "episode_end"}))
+                    else:
+                        await websocket.send(packer.pack({"__ack__": "ignored"}))
+                    continue
+
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time

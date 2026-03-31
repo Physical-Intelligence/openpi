@@ -93,6 +93,11 @@ def eval_libero(args: Args) -> None:
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
+            client.episode_start(
+                experiment=args.task_suite_name,
+                task=str(task_description),
+                episode_id=episode_idx,
+            )
 
             # Reset environment
             env.reset()
@@ -180,6 +185,7 @@ def eval_libero(args: Args) -> None:
             task_segment = task_description.replace(" ", "_")
             out_path = pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4"
             _save_video(images, timestamps, out_path)
+            client.episode_end(success=done)
 
             task_episodes += 1
             total_episodes += 1

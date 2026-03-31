@@ -53,6 +53,29 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             raise RuntimeError(f"Error in inference server:\n{response}")
         return msgpack_numpy.unpackb(response)
 
+    def episode_start(self, experiment: str, task: str = "", episode_id: int = -1) -> Dict:
+        self._ws.send(
+            self._packer.pack(
+                {
+                    "__ctrl__": "episode_start",
+                    "__experiment__": experiment,
+                    "__task__": task,
+                    "__episode_id__": episode_id,
+                }
+            )
+        )
+        response = self._ws.recv()
+        if isinstance(response, str):
+            raise RuntimeError(f"Error in inference server:\n{response}")
+        return msgpack_numpy.unpackb(response)
+
+    def episode_end(self, success: bool = False) -> Dict:
+        self._ws.send(self._packer.pack({"__ctrl__": "episode_end", "__success__": success}))
+        response = self._ws.recv()
+        if isinstance(response, str):
+            raise RuntimeError(f"Error in inference server:\n{response}")
+        return msgpack_numpy.unpackb(response)
+
     @override
     def reset(self) -> None:
         pass

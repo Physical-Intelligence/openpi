@@ -52,6 +52,10 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
+    # Enable per-episode embedding collection to HDF5.
+    collect: bool = False
+    # Root directory for collected episode files.
+    collect_dir: str = "/data"
 
     # Enable the staged inference cache system.
     # When True, inference is routed through InferenceInterceptor (run_stage1/2/3).
@@ -146,6 +150,14 @@ def main(args: Args) -> None:
     # Record the policy's behavior.
     if args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")
+
+    if args.collect:
+        from openpi.collect.collection_policy import CollectionPolicy
+        from openpi.collect.data_collector import EpisodeDataCollector
+
+        collector = EpisodeDataCollector(base_dir=args.collect_dir)
+        policy = CollectionPolicy(policy, collector)
+        logging.info("Data collection enabled -> %s", args.collect_dir)
 
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
