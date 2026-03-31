@@ -4,6 +4,7 @@ import logging
 import math
 from typing import Any
 
+import jax
 import numpy as np
 import torch
 from openpi_client import base_policy as _base_policy
@@ -27,6 +28,16 @@ def _find_inner_model(policy: Any) -> Any:
     raise ValueError("CollectionPolicy: cannot find _model in policy chain.")
 
 
+def _find_wrapped_attr(policy: Any, attr_name: str) -> Any:
+    """Walk wrapper chain until an object exposing attr_name is found."""
+    obj = policy
+    while obj is not None:
+        if hasattr(obj, attr_name):
+            return getattr(obj, attr_name)
+        obj = getattr(obj, "_policy", None)
+    raise ValueError(f"CollectionPolicy: cannot find {attr_name!r} in policy chain.")
+
+
 class CollectionPolicy(_base_policy.BasePolicy):
     """Observer wrapper that records embeddings while preserving the normal infer path."""
 
@@ -35,6 +46,7 @@ class CollectionPolicy(_base_policy.BasePolicy):
         self._collector = collector
         self._collecting = False
         self._inner_model = _find_inner_model(policy)
+        self._input_transform = _find_wrapped_attr(policy, "_input_transform")
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -73,6 +85,7 @@ class CollectionPolicy(_base_policy.BasePolicy):
             model.action_in_proj.register_forward_hook(_action_in_hook),
             model.action_out_proj.register_forward_hook(_action_out_hook),
         ]
+        robot_state_np = self._extract_robot_state(obs)
         try:
             result = self._policy.infer(obs, **infer_kwargs)
         finally:
@@ -80,7 +93,7 @@ class CollectionPolicy(_base_policy.BasePolicy):
                 handle.remove()
 
         try:
-            self._record(result, vision_captures, lang_capture[0], action_in_captures, action_out_captures)
+            self._record(robot_state_np, vision_captures, lang_capture[0], action_in_captures, action_out_captures)
         except Exception:
             logger.exception("CollectionPolicy: failed to record inference embeddings; skipping step.")
 
@@ -111,7 +124,7 @@ class CollectionPolicy(_base_policy.BasePolicy):
 
     def _record(
         self,
-        result: dict[str, Any],
+        robot_state_np: np.ndarray,
         vision_captures: list[torch.Tensor],
         lang_emb: torch.Tensor | None,
         action_in_captures: list[torch.Tensor],
@@ -122,10 +135,6 @@ class CollectionPolicy(_base_policy.BasePolicy):
         if lang_emb is None:
             raise RuntimeError("CollectionPolicy: embed_tokens hook did not fire.")
         prompt_emb_np = lang_emb.squeeze(0).cpu().to(torch.float16).numpy()
-
-        if "state" not in result:
-            raise RuntimeError("CollectionPolicy: wrapped policy result is missing the 'state' field.")
-        robot_state_np = np.asarray(result["state"], dtype=np.float32).flatten()
 
         num_steps = len(action_in_captures)
         if num_steps < 2 or len(action_out_captures) != num_steps:
@@ -151,3 +160,11 @@ class CollectionPolicy(_base_policy.BasePolicy):
                 clean_action=clean_action_np,
             )
         )
+
+    def _extract_robot_state(self, obs: dict) -> np.ndarray:
+        """Apply the wrapped policy's input transform and read normalized state."""
+        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = self._input_transform(inputs)
+        if "state" not in inputs:
+            raise RuntimeError("CollectionPolicy: transformed inputs are missing the 'state' field.")
+        return np.asarray(inputs["state"], dtype=np.float32).flatten()
