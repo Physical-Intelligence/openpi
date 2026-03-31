@@ -75,10 +75,14 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ### Start the Policy Server
 
 ```bash
-uv run scripts/serve_policy.py --env ALOHA_SIM
+uv run scripts/serve_policy.py \
+    --env ALOHA_SIM \
+    policy:checkpoint \
+    --policy.config pi05_aloha_sim \
+    --policy.dir "$HOME/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch"
 ```
 
-- Uses the π0.5 base model (`gs://openpi-assets/checkpoints/pi05_base`); weights are automatically downloaded to `~/.cache/openpi`
+- Uses the `pi05_aloha_sim` config with the converted PyTorch π0.5 base checkpoint at `~/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch`
 - Listens on `0.0.0.0:8000` by default — make sure port 8000 is open in the firewall
 
 > **Note:** The upstream repository's `ALOHA_SIM` environment defaults to the π0 model. This guide has been modified in the following two places to use π0.5 instead:

@@ -252,11 +252,14 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ### 启动 Policy Server
 
 ```bash
-uv run scripts/serve_policy.py --env LIBERO
+uv run scripts/serve_policy.py \
+    --env LIBERO \
+    policy:checkpoint \
+    --policy.config pi05_libero \
+    --policy.dir "$HOME/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch"
 ```
 
-- 使用 `pi05_libero` config（`src/openpi/training/config.py` 中已定义）
-- 权重自动下载到 `~/.cache/openpi`
+- 使用 `pi05_libero` config，并显式加载已转换好的 PyTorch checkpoint：`~/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch`
 - 默认监听 `0.0.0.0:8000`，确保防火墙放开 8000 端口
 
 ---

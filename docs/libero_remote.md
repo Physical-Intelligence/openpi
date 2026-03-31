@@ -252,11 +252,14 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ### Start the Policy Server
 
 ```bash
-uv run scripts/serve_policy.py --env LIBERO
+uv run scripts/serve_policy.py \
+    --env LIBERO \
+    policy:checkpoint \
+    --policy.config pi05_libero \
+    --policy.dir "$HOME/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch"
 ```
 
-- Uses the `pi05_libero` config (defined in `src/openpi/training/config.py`)
-- Weights are automatically downloaded to `~/.cache/openpi`
+- Uses the `pi05_libero` config and explicitly loads the converted PyTorch checkpoint at `~/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch`
 - Listens on `0.0.0.0:8000` by default — make sure port 8000 is open in the firewall
 
 ---

@@ -75,10 +75,14 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ### 启动 Policy Server
 
 ```bash
-uv run scripts/serve_policy.py --env ALOHA_SIM
+uv run scripts/serve_policy.py \
+    --env ALOHA_SIM \
+    policy:checkpoint \
+    --policy.config pi05_aloha_sim \
+    --policy.dir "$HOME/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch"
 ```
 
-- 使用 π0.5 base 模型（`gs://openpi-assets/checkpoints/pi05_base`），权重自动下载到 `~/.cache/openpi`
+- 使用 `pi05_aloha_sim` config，并显式加载已转换好的 PyTorch 版 π0.5 base checkpoint：`~/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch`
 - 默认监听 `0.0.0.0:8000`，确保防火墙放开 8000 端口
 
 > **注意**：仓库默认的 `ALOHA_SIM` 环境使用的是 π0 模型。本指南已在以下两处做了修改以使用 π0.5：
