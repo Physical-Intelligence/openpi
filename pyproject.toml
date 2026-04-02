@@ -11,30 +11,30 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.8",
     "flatbuffers>=24.3.25",
-    "flax==0.10.2",
+    "flax>=0.10.2",
     "fsspec[gcs]>=2024.6.0",
     "gym-aloha>=0.1.1",
     "imageio>=2.36.1",
-    "jax[cuda12]==0.5.3",
-    "jaxtyping==0.2.36",
+    "jax[cuda12]>=0.5.3",
+    "jaxtyping>=0.2.36",
     "lerobot",
-    "ml_collections==1.0.0",
+    "ml_collections>=1.0.0",
     "numpy>=1.22.4,<2.0.0",
     "numpydantic>=1.6.6",
     "opencv-python>=4.10.0.84",
     "openpi-client",
-    "orbax-checkpoint==0.11.13",
+    "orbax-checkpoint>=0.11.13",
     "pillow>=11.0.0",
     "sentencepiece>=0.2.0",
-    "torch==2.7.1",
+    "torch>=2.7.1",
     "tqdm-loggable>=0.2",
     "typing-extensions>=4.12.2",
     "tyro>=0.9.5",
     "wandb>=0.19.1",
     "filelock>=3.16.1",
-    "beartype==0.19.0",
+    "beartype>=0.19.0",
     "treescope>=0.1.7",
-    "transformers==4.53.2",
+    "transformers>=4.53.2",
     "rich>=14.0.0",
     "polars>=1.30.0",
 ]
@@ -57,12 +57,12 @@ rlds = [
     # NOTE: tensorflow-cpu 2.15.0 only ships cp311 wheels on PyPI.
     # Use `uv venv --python 3.11` before `uv sync --group rlds`.
     "dlimp",
-    "tensorflow-cpu==2.15.0",
-    "tensorflow-datasets==4.9.9",
+    "tensorflow-cpu>=2.15.0",
+    "tensorflow-datasets>=4.9.9",
 ]
 
 [tool.uv]
-override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+override-dependencies = ["ml-dtypes>=0.4.1", "tensorstore>=0.1.74"]
 
 [tool.uv.sources]
 openpi-client = { workspace = true }
