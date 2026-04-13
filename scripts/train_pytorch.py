@@ -47,6 +47,48 @@ import openpi.training.config as _config
 import openpi.training.data_loader as _data
 
 
+def expand_observation_with_dummy_frames(observation, num_frames: int):
+    """Expand single-frame observation to multi-frame by adding dummy past frames.
+
+    Current frame becomes the last frame (index N-1). Past frames (indices 0..N-2)
+    are filled with zeros. Image masks for dummy frames are set to False.
+
+    Args:
+        observation: Observation object with .images dict (values: [B, C, H, W] or [B, H, W, C])
+                     and .image_masks dict (values: [B] bool).
+        num_frames: Total number of frames N.
+
+    Returns:
+        Modified observation with images [B, N, ...] and image_masks [B, N].
+    """
+    if num_frames <= 1:
+        return observation
+
+    # Expand images: [B, C, H, W] -> [B, N, C, H, W]
+    new_images = {}
+    for key, img in observation.images.items():
+        B = img.shape[0]
+        # Create dummy past frames (zeros)
+        dummy_frames = torch.zeros(B, num_frames - 1, *img.shape[1:], dtype=img.dtype, device=img.device)
+        # Current frame at last position
+        current_frame = img.unsqueeze(1)  # [B, 1, C, H, W]
+        # Concatenate: [dummy_past_frames | current_frame]
+        new_images[key] = torch.cat([dummy_frames, current_frame], dim=1)  # [B, N, C, H, W]
+
+    # Expand image masks: [B] -> [B, N]
+    new_masks = {}
+    for key, mask in observation.image_masks.items():
+        B = mask.shape[0]
+        # Dummy past frames are masked out (False), current frame keeps original mask
+        dummy_masks = torch.zeros(B, num_frames - 1, dtype=torch.bool, device=mask.device)
+        current_mask = mask.unsqueeze(1)  # [B, 1]
+        new_masks[key] = torch.cat([dummy_masks, current_mask], dim=1)  # [B, N]
+
+    observation.images = new_images
+    observation.image_masks = new_masks
+    return observation
+
+
 def init_logging():
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
 
@@ -400,6 +442,9 @@ def train_loop(config: _config.TrainConfig):
             paligemma_variant=getattr(config.model, "paligemma_variant", "gemma_2b"),
             action_expert_variant=getattr(config.model, "action_expert_variant", "gemma_300m"),
             pi05=getattr(config.model, "pi05", False),
+            mem_num_frames=getattr(config.model, "mem_num_frames", 1),
+            mem_frame_interval=getattr(config.model, "mem_frame_interval", 0.5),
+            mem_temporal_attention_every_n_layers=getattr(config.model, "mem_temporal_attention_every_n_layers", 4),
         )
     else:
         model_cfg = config.model
@@ -520,6 +565,10 @@ def train_loop(config: _config.TrainConfig):
             observation = jax.tree.map(lambda x: x.to(device), observation)  # noqa: PLW2901
             actions = actions.to(torch.float32)  # noqa: PLW2901
             actions = actions.to(device)  # noqa: PLW2901
+
+            # MEM: Expand single-frame observation to multi-frame with dummy past frames
+            if model_cfg.mem_num_frames > 1:
+                observation = expand_observation_with_dummy_frames(observation, model_cfg.mem_num_frames)  # noqa: PLW2901
 
             # Update LR
             for pg in optim.param_groups:

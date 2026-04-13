@@ -9,6 +9,7 @@ import torch.nn.functional as F  # noqa: N812
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+from openpi.models_pytorch.temporal_attention import TemporalAttentionLayer
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -108,6 +109,36 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_in = nn.Linear(2 * action_expert_config.width, action_expert_config.width)
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
+        # MEM temporal attention setup
+        self.mem_num_frames = config.mem_num_frames
+        self.mem_frame_interval = config.mem_frame_interval
+        self.mem_temporal_attention_every_n_layers = config.mem_temporal_attention_every_n_layers
+        # 3 cameras * 256 patches each = 768 image tokens per frame
+        self.num_image_tokens_per_frame = 3 * 256
+
+        if self.mem_num_frames > 1:
+            paligemma_width = paligemma_config.width
+            paligemma_num_heads = paligemma_config.num_heads
+            paligemma_head_dim = paligemma_config.head_dim
+            num_layers = paligemma_config.depth
+
+            self.temporal_attention_layers = nn.ModuleDict()
+            for layer_idx in range(num_layers):
+                # Insert temporal attention at layers 3, 7, 11, 15, ... (every 4th layer, 0-indexed)
+                if (layer_idx + 1) % self.mem_temporal_attention_every_n_layers == 0:
+                    self.temporal_attention_layers[str(layer_idx)] = TemporalAttentionLayer(
+                        d_model=paligemma_width,
+                        num_heads=paligemma_num_heads,
+                        head_dim=paligemma_head_dim,
+                    )
+            logging.info(
+                f"MEM: Created {len(self.temporal_attention_layers)} temporal attention layers "
+                f"at layers {sorted(int(k) for k in self.temporal_attention_layers.keys())} "
+                f"for {self.mem_num_frames} frames"
+            )
+        else:
+            self.temporal_attention_layers = None
+
         torch.set_float32_matmul_precision("high")
         if config.pytorch_compile_mode is not None:
             self.sample_actions = torch.compile(self.sample_actions, mode=config.pytorch_compile_mode)
@@ -189,26 +220,48 @@ class PI0Pytorch(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
+
+        For MEM multi-frame mode, images have shape [B, N, ...] and are arranged in
+        frame-major order: [frame0_cam0, frame0_cam1, frame0_cam2, frame1_cam0, ...].
         """
         embs = []
         pad_masks = []
         att_masks = []
 
-        # Process images
-        for img, img_mask in zip(images, img_masks, strict=True):
+        is_multiframe = self.mem_num_frames > 1 and images[0].ndim == 5
 
-            def image_embed_func(img):
-                return self.paligemma_with_expert.embed_image(img)
+        if is_multiframe:
+            # Multi-frame: images are [B, N, H, W, C] or [B, N, C, H, W]
+            N = self.mem_num_frames
+            # Process frame-by-frame, all cameras per frame, to get frame-major token ordering
+            for frame_idx in range(N):
+                for img, img_mask in zip(images, img_masks, strict=True):
+                    frame_img = img[:, frame_idx]  # [B, H, W, C] or [B, C, H, W]
+                    # img_mask is [B, N] for multi-frame; extract per-frame mask
+                    frame_mask = img_mask[:, frame_idx] if img_mask.ndim == 2 else img_mask  # [B]
 
-            img_emb = self._apply_checkpoint(image_embed_func, img)
+                    def image_embed_func(frame_img):
+                        return self.paligemma_with_expert.embed_image(frame_img)
 
-            bsize, num_img_embs = img_emb.shape[:2]
+                    img_emb = self._apply_checkpoint(image_embed_func, frame_img)
+                    bsize, num_img_embs = img_emb.shape[:2]
 
-            embs.append(img_emb)
-            pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
+                    embs.append(img_emb)
+                    pad_masks.append(frame_mask[:, None].expand(bsize, num_img_embs))
+                    att_masks += [0] * num_img_embs
+        else:
+            # Single-frame: original path
+            for img, img_mask in zip(images, img_masks, strict=True):
 
-            # Create attention masks so that image tokens attend to each other
-            att_masks += [0] * num_img_embs
+                def image_embed_func(img):
+                    return self.paligemma_with_expert.embed_image(img)
+
+                img_emb = self._apply_checkpoint(image_embed_func, img)
+                bsize, num_img_embs = img_emb.shape[:2]
+
+                embs.append(img_emb)
+                pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
+                att_masks += [0] * num_img_embs
 
         # Process language tokens
         def lang_embed_func(lang_tokens):
@@ -355,6 +408,11 @@ class PI0Pytorch(nn.Module):
                 inputs_embeds=[prefix_embs, suffix_embs],
                 use_cache=False,
                 adarms_cond=[None, adarms_cond],
+                temporal_attention_layers=self.temporal_attention_layers,
+                num_image_tokens_per_frame=self.num_image_tokens_per_frame,
+                mem_num_frames=self.mem_num_frames,
+                mem_frame_interval=self.mem_frame_interval,
+                mem_temporal_attention_every_n_layers=self.mem_temporal_attention_every_n_layers,
             )
             return suffix_out
 
@@ -397,6 +455,11 @@ class PI0Pytorch(nn.Module):
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
+            temporal_attention_layers=self.temporal_attention_layers,
+            num_image_tokens_per_frame=self.num_image_tokens_per_frame,
+            mem_num_frames=self.mem_num_frames,
+            mem_frame_interval=self.mem_frame_interval,
+            mem_temporal_attention_every_n_layers=self.mem_temporal_attention_every_n_layers,
         )
 
         dt = -1.0 / num_steps

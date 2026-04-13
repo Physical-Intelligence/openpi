@@ -34,6 +34,11 @@ class Pi0Config(_model.BaseModelConfig):
 
     pytorch_compile_mode: str | None = "max-autotune"
 
+    # MEM (Multi-Scale Embodied Memory) temporal attention config
+    mem_num_frames: int = 1  # Total number of frames (current + past). 1 = disabled. Valid: [4, 16] when > 1.
+    mem_frame_interval: float = 0.5  # Time interval between frames in seconds.
+    mem_temporal_attention_every_n_layers: int = 4  # Insert temporal attention every N layers.
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
@@ -46,6 +51,8 @@ class Pi0Config(_model.BaseModelConfig):
                 "max-autotune",
                 "max-autotune-no-cudagraphs",
             ]
+        if self.mem_num_frames > 1:
+            assert 4 <= self.mem_num_frames <= 16, "mem_num_frames must be in [4, 16] when > 1"
 
     @property
     @override
