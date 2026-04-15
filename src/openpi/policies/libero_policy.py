@@ -73,6 +73,8 @@ class LiberoInputs(transforms.DataTransformFn):
         # Actions are only available during training.
         if "actions" in data:
             inputs["actions"] = data["actions"]
+        if "actions_is_pad" in data:
+            inputs["actions_is_pad"] = data["actions_is_pad"]
 
         # Pass the prompt (aka language instruction) to the model.
         # Keep this for your own dataset (but modify the key if the instruction is not
