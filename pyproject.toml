@@ -33,6 +33,7 @@ dependencies = [
     "wandb>=0.19.1",
     "filelock>=3.16.1",
     "beartype==0.19.0",
+    "chex==0.1.90",
     "treescope>=0.1.7",
     "transformers==4.53.2",
     "rich>=14.0.0",
