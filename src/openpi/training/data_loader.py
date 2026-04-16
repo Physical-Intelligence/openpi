@@ -7,7 +7,10 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+try:
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset  # type: ignore
+except ModuleNotFoundError:
+    import lerobot.common.datasets.lerobot_dataset as lerobot_dataset  # type: ignore
 import numpy as np
 import torch
 
@@ -138,12 +141,24 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
+    delta_timestamps = {
+        key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+    }
+
+    dataset_kwargs: dict[str, typing.Any] = {"delta_timestamps": delta_timestamps}
+    try:
+        import torchcodec  # noqa: F401
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "'torchcodec' is not available; falling back to 'pyav' video backend for LeRobotDataset"
+        )
+        dataset_kwargs["video_backend"] = "pyav"
+
+    try:
+        dataset = lerobot_dataset.LeRobotDataset(data_config.repo_id, **dataset_kwargs)
+    except TypeError:
+        dataset_kwargs.pop("video_backend", None)
+        dataset = lerobot_dataset.LeRobotDataset(data_config.repo_id, **dataset_kwargs)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
