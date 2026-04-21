@@ -18,9 +18,11 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.a10_policy as a10_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
+import openpi.shared.nnx_utils as nnx_utils
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -450,6 +452,61 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotA10DataConfig(DataConfigFactory):
+    """Data config for a custom A10 LeRobot dataset."""
+    # If True, derive action targets from future robot states instead of dataset "action".
+    # This is useful when recorded actions are missing/noisy but state trajectories are reliable.
+    use_state_as_action_targets: bool = True
+    # If True, convert first 6 dims (joints) to deltas and keep final gripper dim absolute.
+    use_delta_joint_actions: bool = True
+    # Default action sequence keys when use_state_as_action_targets is False.
+    action_sequence_keys: Sequence[str] = ("action",)
+    default_prompt: str | None = "Reach the yellow lemon"
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        if self.use_state_as_action_targets:
+            action_key = "observation.state"
+            action_sequence_keys = ("observation.state",)
+        else:
+            action_key = "action"
+            action_sequence_keys = self.action_sequence_keys
+
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        # RepackTransform maps new keys -> source keys.
+                        "observation/state": "observation.state",
+                        "observation/images/right": "observation.images.right",
+                        "actions": action_key,
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[a10_policy.A10Inputs(model_type=model_config.model_type)],
+            outputs=[a10_policy.A10Outputs()],
+        )
+        if self.use_delta_joint_actions:
+            # A10 is [joint_1..joint_6, gripper], so only joints become deltas.
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=action_sequence_keys,
         )
 
 
@@ -906,6 +963,34 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
         num_train_steps=20_000,
         batch_size=32,
+    ),
+    TrainConfig(
+        # A10 fine-tuning template using a LeRobot dataset.
+        name="pi05_a10_finetune",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32,  # pi05 is trained with 32-dim actions
+            action_horizon=10,
+            max_token_len=128,
+        ),
+        data=LeRobotA10DataConfig(
+            # Replace with your A10 LeRobot dataset repo id.
+            repo_id="dataset/Dataset_A10",
+            # Your current dataset does not include text tasks/prompts, so keep this disabled.
+            base_config=DataConfig(prompt_from_task=True),
+            # Use A10 dataset-specific normalization stats (do not reuse DROID stats).
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        # Freeze everything except action-expert LoRA parameters.
+        # Trainable paths are those matching: .*llm.*_1.*lora.*
+        freeze_filter=nnx.Not(nnx_utils.PathRegex(".*llm.*_1.*lora.*")),
+        ema_decay=None,
+        num_train_steps=30_000,
+        save_interval=2_500,
+        keep_period=5_000,
+        batch_size=1,
     ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.

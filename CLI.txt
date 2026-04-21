@@ -1,0 +1,23 @@
+--------启动server----------
+ cd /home/ircl/Allen/openpi
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.5 \
+ HF_LEROBOT_HOME=/home/ircl/Allen/openpi HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1 \
+ uv run scripts/serve_policy.py policy:checkpoint \
+  --policy.config=pi05_a10_finetune \
+  --policy.dir=checkpoints/pi05_a10_finetune/Reach_4_13_1/5000
+
+
+--------计算norm----------
+ HF_LEROBOT_HOME=/home/ircl/Allen/openpi uv run scripts/compute_norm_stats.py --config-name pi05_a10_finetune --max-frames 64
+
+--------启动训练----------
+ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+ HF_LEROBOT_HOME=/home/ircl/Allen/openpi uv run scripts/train.py pi05_a10_finetune \
+  --exp-name Reach_4_21_1
+  --resume
+
+--------tmux----------
+  进入会话：tmux attach -t reach_4_13_1
+  临时离开（不停止训练）：按 Ctrl+b 然后 d
+  查看会话列表：tmux ls
+  停止训练并关闭会话：tmux kill-session -t reach_4_13_1

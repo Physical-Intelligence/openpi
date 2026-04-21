@@ -143,6 +143,9 @@ def create_torch_dataset(
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
+        # torchcodec can be selected automatically but is unstable in some environments.
+        # Force pyav backend for robust local video decoding.
+        video_backend="pyav",
     )
 
     if data_config.prompt_from_task:
