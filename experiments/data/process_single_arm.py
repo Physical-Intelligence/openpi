@@ -164,10 +164,10 @@ def compute_stats(dst_dir: Path):
         }
 
     # Copy image stats from source (unchanged by slicing)
-    src_stats_file = dst_dir.parent / "raw" / dst_dir.name.replace("-right", "") / "meta" / "stats.json"
-    if not src_stats_file.exists():
-        # Try to find the original stats from the source dataset
-        for raw_link in (dst_dir.parent / "raw").iterdir():
+    raw_dir = dst_dir.parent.parent / "raw"  # experiments/data/raw (sibling of processed/)
+    src_stats_file = raw_dir / dst_dir.name.replace("-right", "") / "meta" / "stats.json"
+    if not src_stats_file.exists() and raw_dir.exists():
+        for raw_link in raw_dir.iterdir():
             candidate = raw_link / "meta" / "stats.json"
             if candidate.exists():
                 src_stats_file = candidate
