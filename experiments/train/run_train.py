@@ -1,5 +1,5 @@
-# run_train.py: Entrypoint for training pi0.5 on single-arm lipbalm dataset.
-# Usage: python experiments/run_train.py --config experiments/configs/lipbalm.yaml [--exp_name NAME] [--resume]
+# run_train.py: Entrypoint for training pi0.5 on single-arm datasets.
+# Usage: python experiments/train/run_train.py --config experiments/configs/<task>.yaml [--exp_name NAME] [--resume]
 
 import argparse
 import logging
@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 
 # Ensure experiments/ and project root are on the path for local imports
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = _EXPERIMENTS_DIR.parent
+sys.path.insert(0, str(_EXPERIMENTS_DIR))
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 # Patch LeRobot to skip Hub version check for local datasets.
 # LeRobot always calls get_safe_version() which hits HuggingFace Hub,
@@ -34,7 +36,7 @@ from config import build_config_from_yaml, build_train_config
 import importlib.util
 
 def _load_trainer(name, filename):
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).parent.parent / "scripts" / filename)
+    spec = importlib.util.spec_from_file_location(name, _PROJECT_ROOT / "scripts" / filename)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

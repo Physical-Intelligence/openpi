@@ -1,4 +1,4 @@
-# run_eval.py: Evaluate a trained pi0.5 single-arm lipbalm checkpoint against dataset episodes.
+# run_eval.py: Evaluate a trained pi0.5 single-arm checkpoint against dataset episodes.
 # Runs inference on dataset frames and reports action prediction errors.
 
 import argparse
@@ -9,8 +9,10 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = _EXPERIMENTS_DIR.parent
+sys.path.insert(0, str(_EXPERIMENTS_DIR))
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 # Patch LeRobot Hub check (same as run_train.py)
 import lerobot.common.datasets.utils as _lerobot_utils
@@ -104,7 +106,8 @@ def evaluate_on_dataset(policy, repo_id, num_episodes=5, frames_per_episode=10):
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate pi0.5 single-arm lipbalm checkpoint")
-    parser.add_argument("--config", type=str, default="experiments/configs/lipbalm.yaml")
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to YAML experiment config")
     parser.add_argument("--checkpoint_step", type=int, default=None,
                         help="Checkpoint step (default: latest)")
     parser.add_argument("--num_episodes", type=int, default=10,

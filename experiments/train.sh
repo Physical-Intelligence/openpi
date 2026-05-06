@@ -75,8 +75,8 @@ rsync -az --delete \
     --exclude 'checkpoints/' \
     --exclude 'experiments/data/raw' \
     --exclude 'experiments/data/processed' \
-    --exclude 'experiments/train/' \
-    --exclude 'experiments/eval/' \
+    --exclude 'experiments/train/*.log' \
+    --exclude 'experiments/eval/*.log' \
     --exclude '.venv' \
     --exclude 'wandb/' \
     "$PROJECT_DIR/" "$SERVER:$REMOTE_DIR/"
@@ -99,7 +99,7 @@ else
     TRAIN_CMD="$TRAIN_CMD python3"
 fi
 
-TRAIN_CMD="$TRAIN_CMD experiments/run_train.py --config experiments/configs/lipbalm.yaml --exp_name $EXP_NAME"
+TRAIN_CMD="$TRAIN_CMD experiments/train/run_train.py --config $CONFIG --exp_name $EXP_NAME"
 
 echo "  Command: $TRAIN_CMD"
 echo ""

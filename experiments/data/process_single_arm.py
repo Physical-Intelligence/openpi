@@ -295,8 +295,8 @@ def main():
     parser.add_argument(
         "--datasets",
         nargs="+",
-        default=["mobileai-lipbalm", "mobileai-lipbalm1", "mobileai-lipbalm2"],
-        help="Dataset names to process",
+        required=True,
+        help="Dataset names to process (e.g. marker_pick marker_pick1 marker_pick2)",
     )
     parser.add_argument(
         "--merge",
@@ -306,8 +306,8 @@ def main():
     parser.add_argument(
         "--merge-name",
         type=str,
-        default="mobileai-lipbalm-all-right",
-        help="Name of the merged dataset",
+        default=None,
+        help="Name of the merged dataset (default: first_dataset-all-right)",
     )
     args = parser.parse_args()
 
@@ -322,7 +322,8 @@ def main():
         processed_dirs.append(dst)
 
     if args.merge and len(processed_dirs) > 1:
-        merged_dir = args.out_dir / args.merge_name
+        merge_name = args.merge_name or f"{args.datasets[0]}-all-right"
+        merged_dir = args.out_dir / merge_name
         merge_datasets(processed_dirs, merged_dir)
 
     print(f"\nAll datasets processed. Output: {args.out_dir}")

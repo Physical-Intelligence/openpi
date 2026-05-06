@@ -64,8 +64,8 @@ rsync -az --delete \
     --exclude '*.pyc' \
     --exclude 'experiments/data/raw' \
     --exclude 'experiments/data/processed' \
-    --exclude 'experiments/train/' \
-    --exclude 'experiments/eval/' \
+    --exclude 'experiments/train/*.log' \
+    --exclude 'experiments/eval/*.log' \
     --exclude '.venv' \
     --exclude 'wandb/' \
     "$PROJECT_DIR/" "$SERVER:$REMOTE_DIR/"
@@ -81,8 +81,8 @@ echo "  Data synced."
 # --- Launch eval on remote ---
 echo "[4/4] Launching eval on $SERVER..."
 
-EVAL_CMD="cd $REMOTE_DIR && HF_LEROBOT_HOME=$REMOTE_DATA_DIR python3 experiments/run_eval.py"
-EVAL_CMD="$EVAL_CMD --config experiments/configs/lipbalm.yaml"
+EVAL_CMD="cd $REMOTE_DIR && HF_LEROBOT_HOME=$REMOTE_DATA_DIR python3 experiments/eval/run_eval.py"
+EVAL_CMD="$EVAL_CMD --config $CONFIG"
 EVAL_CMD="$EVAL_CMD --port $EVAL_PORT"
 
 if [[ -n "$CHECKPOINT_STEP" ]] && [[ "$CHECKPOINT_STEP" != "null" ]]; then
