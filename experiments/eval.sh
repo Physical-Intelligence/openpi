@@ -81,7 +81,7 @@ echo "  Data synced."
 # --- Launch eval on remote ---
 echo "[4/4] Launching eval on $SERVER..."
 
-EVAL_CMD="cd $REMOTE_DIR && LEROBOT_HOME=$REMOTE_DATA_DIR python3 experiments/run_eval.py"
+EVAL_CMD="cd $REMOTE_DIR && HF_LEROBOT_HOME=$REMOTE_DATA_DIR python3 experiments/run_eval.py"
 EVAL_CMD="$EVAL_CMD --config experiments/configs/lipbalm.yaml"
 EVAL_CMD="$EVAL_CMD --port $EVAL_PORT"
 

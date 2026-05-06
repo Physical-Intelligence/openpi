@@ -91,7 +91,7 @@ echo "  Data synced."
 # --- Launch training on remote ---
 echo "[5/5] Launching training on $SERVER..."
 
-TRAIN_CMD="cd $REMOTE_DIR && LEROBOT_HOME=$REMOTE_DATA_DIR"
+TRAIN_CMD="cd $REMOTE_DIR && HF_LEROBOT_HOME=$REMOTE_DATA_DIR"
 
 if [[ "$GPU_COUNT" -gt 1 ]]; then
     TRAIN_CMD="$TRAIN_CMD torchrun --standalone --nnodes=1 --nproc_per_node=$GPU_COUNT"

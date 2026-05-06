@@ -2,7 +2,7 @@
 # Used by train.sh and eval.sh to configure remote training/eval jobs.
 
 experiment:
-  name: lipbalm_pi05
+  name: lipbalm_pi05_lora
   project_name: openpi-lipbalm
 
 data:
@@ -23,8 +23,9 @@ model:
   pytorch_weight_path: null
 
 training:
-  num_train_steps: 20000
-  batch_size: 64
+  num_train_steps: 10000
+  batch_size: 16
+  use_lora: true
   peak_lr: 5.0e-5
   warmup_steps: 1000
   save_interval: 2000
@@ -38,7 +39,7 @@ eval:
 
 # Remote server config — set server.name to an entry from ~/.ssh/config
 server:
-  name: aws-L40S-48gb
+  name: aws-L40S-server1
   remote_dir: ~/openpi
   remote_data_dir: ~/data/lipbalm
   gpu_count: 1

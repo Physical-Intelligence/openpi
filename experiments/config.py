@@ -19,8 +19,8 @@ from transforms import AlohaSingleArmInputs, AlohaSingleArmOutputs
 
 def build_train_config(
     repo_id: str = "mobileai-lipbalm-all-right",
-    exp_name: str = "lipbalm_pi05",
-    num_train_steps: int = 20_000,
+    exp_name: str = "lipbalm_pi05_lora",
+    num_train_steps: int = 10_000,
     batch_size: int = 64,
     base_checkpoint: str = "gs://openpi-assets/checkpoints/pi05_base/params",
     asset_id: str = "trossen",
@@ -33,8 +33,9 @@ def build_train_config(
     project_name: str = "openpi-lipbalm",
     checkpoint_base_dir: str = "./checkpoints",
     pytorch_weight_path: str | None = None,
+    use_lora: bool = True,
 ) -> _config.TrainConfig:
-    """Build a TrainConfig for single right-arm pi0.5 fine-tuning."""
+    """Build a TrainConfig for single right-arm pi0.5 LoRA fine-tuning."""
     repack = _transforms.Group(
         inputs=[
             _transforms.RepackTransform(
@@ -50,11 +51,24 @@ def build_train_config(
         ]
     )
 
+    if use_lora:
+        model_config = pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        )
+        freeze_filter = model_config.get_freeze_filter()
+        ema_decay = None
+    else:
+        model_config = pi0_config.Pi0Config(pi05=True)
+        freeze_filter = _config.nnx.Nothing
+        ema_decay = 0.99
+
     return _config.TrainConfig(
         name="pi05_aloha_lipbalm",
         project_name=project_name,
         exp_name=exp_name,
-        model=pi0_config.Pi0Config(pi05=True),
+        model=model_config,
         data=_config.SimpleDataConfig(
             repo_id=repo_id,
             assets=_config.AssetsConfig(
@@ -75,6 +89,8 @@ def build_train_config(
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(base_checkpoint),
+        freeze_filter=freeze_filter,
+        ema_decay=ema_decay,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=warmup_steps,
             peak_lr=peak_lr,
@@ -103,8 +119,8 @@ def build_config_from_yaml(yaml_path: str) -> _config.TrainConfig:
 
     return build_train_config(
         repo_id=data.get("merged_name", "mobileai-lipbalm-all-right"),
-        exp_name=experiment.get("name", "lipbalm_pi05"),
-        num_train_steps=training.get("num_train_steps", 20_000),
+        exp_name=experiment.get("name", "lipbalm_pi05_lora"),
+        num_train_steps=training.get("num_train_steps", 10_000),
         batch_size=training.get("batch_size", 64),
         base_checkpoint=model.get("base_checkpoint", "gs://openpi-assets/checkpoints/pi05_base/params"),
         asset_id=model.get("asset_id", "trossen"),
@@ -117,4 +133,5 @@ def build_config_from_yaml(yaml_path: str) -> _config.TrainConfig:
         project_name=experiment.get("project_name", "openpi-lipbalm"),
         checkpoint_base_dir=training.get("checkpoint_base_dir", "./checkpoints"),
         pytorch_weight_path=model.get("pytorch_weight_path"),
+        use_lora=training.get("use_lora", True),
     )
