@@ -294,11 +294,16 @@ class Pi0RL(_pi0.Pi0):
         observation: _model.Observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
     ) -> tuple[_model.Actions, at.Float[at.Array, "b emb"]]:
         """Sample actions AND extract the RL token in a single VLA forward pass.
 
         Used during online RL (Stages 4+) where we need both the reference
         action chunk and the RL token for the actor-critic.
+
+        Args:
+            noise: If provided, use this fixed noise instead of sampling from rng.
+                   Shape must be [batch_size, action_horizon, action_dim].
         """
         observation = _model.preprocess_observation(None, observation, train=False)
         dt = -1.0 / num_steps
@@ -316,7 +321,8 @@ class Pi0RL(_pi0.Pi0):
         rl_token = self.rl_encoder(prefix_out, mask=prefix_mask)
 
         # Denoise actions using the cached prefix (same as Pi0.sample_actions)
-        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
         def step(carry):
             x_t, time = carry
