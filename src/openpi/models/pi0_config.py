@@ -32,6 +32,14 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # Optional pi0.5 two-stage inference support. Disabled by default to preserve released checkpoint behavior.
+    train_subtask_prediction: bool = False
+    sample_subtask_prediction: bool = False
+    subtask_loss_weight: float = 1.0
+    max_subtask_len: int = 64
+    subtask_temperature: float = 0.0
+    subtask_eos_token: int = 1
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -46,6 +54,18 @@ class Pi0Config(_model.BaseModelConfig):
                 "max-autotune",
                 "max-autotune-no-cudagraphs",
             ]
+        if (self.train_subtask_prediction or self.sample_subtask_prediction) and not self.pi05:
+            raise ValueError("Subtask prediction is only supported for pi0.5 models.")
+        if self.train_subtask_prediction and self.subtask_loss_weight <= 0:
+            raise ValueError("subtask_loss_weight must be positive when train_subtask_prediction is enabled.")
+        if self.max_subtask_len <= 0:
+            raise ValueError("max_subtask_len must be positive.")
+        if (
+            self.train_subtask_prediction or self.sample_subtask_prediction
+        ) and self.max_subtask_len >= self.max_token_len:
+            raise ValueError("max_subtask_len must be smaller than max_token_len.")
+        if self.subtask_temperature < 0:
+            raise ValueError("subtask_temperature must be non-negative.")
 
     @property
     @override
@@ -56,7 +76,7 @@ class Pi0Config(_model.BaseModelConfig):
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
-        from openpi.models.pi0 import Pi0
+        from openpi.models.pi0 import Pi0  # noqa: PLC0415
 
         return Pi0(self, rngs=nnx.Rngs(rng))
 
@@ -65,21 +85,35 @@ class Pi0Config(_model.BaseModelConfig):
         image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
         image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
 
+        observation_kwargs = {
+            "images": {
+                "base_0_rgb": image_spec,
+                "left_wrist_0_rgb": image_spec,
+                "right_wrist_0_rgb": image_spec,
+            },
+            "image_masks": {
+                "base_0_rgb": image_mask_spec,
+                "left_wrist_0_rgb": image_mask_spec,
+                "right_wrist_0_rgb": image_mask_spec,
+            },
+            "state": jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+            "tokenized_prompt": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+            "tokenized_prompt_mask": jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+        }
+        if self.train_subtask_prediction or self.sample_subtask_prediction:
+            observation_kwargs |= {
+                "token_ar_mask": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                "token_loss_mask": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.bool_),
+            }
+        if self.sample_subtask_prediction:
+            observation_kwargs |= {
+                "tokenized_action_suffix": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                "tokenized_action_suffix_mask": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.bool_),
+            }
+
         with at.disable_typechecking():
             observation_spec = _model.Observation(
-                images={
-                    "base_0_rgb": image_spec,
-                    "left_wrist_0_rgb": image_spec,
-                    "right_wrist_0_rgb": image_spec,
-                },
-                image_masks={
-                    "base_0_rgb": image_mask_spec,
-                    "left_wrist_0_rgb": image_mask_spec,
-                    "right_wrist_0_rgb": image_mask_spec,
-                },
-                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
-                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
-                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                **observation_kwargs,
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 

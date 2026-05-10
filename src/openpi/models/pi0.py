@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 
 import einops
@@ -44,6 +45,28 @@ def make_attn_mask(input_mask, mask_ar):
     return jnp.logical_and(attn_mask, valid_mask)
 
 
+def _last_valid_indices(mask: at.Bool[at.Array, "b s"]) -> at.Int[at.Array, " b"]:
+    token_indices = jnp.arange(mask.shape[1])[None, :]
+    return jnp.max(jnp.where(mask, token_indices, -1), axis=-1)
+
+
+def _scatter_sequence(
+    base: at.Array,
+    positions: at.Int[at.Array, "b s"],
+    values: at.Array,
+    mask: at.Bool[at.Array, "b s"],
+) -> at.Array:
+    """Writes a masked token block into a padded batch sequence."""
+    max_len = base.shape[-1]
+    valid = mask & (positions >= 0) & (positions < max_len)
+    clipped_positions = jnp.clip(positions, 0, max_len - 1)
+    one_hot = jax.nn.one_hot(clipped_positions, max_len, dtype=jnp.int32)
+    put_mask = jnp.einsum("bs,bsn->bn", valid.astype(jnp.int32), one_hot).astype(jnp.bool_)
+    put_values = jnp.einsum("bs,bsn->bn", values.astype(jnp.int32) * valid.astype(jnp.int32), one_hot)
+    put_values = put_values.astype(jnp.bool_) if base.dtype == jnp.bool_ else put_values.astype(base.dtype)
+    return jnp.where(put_mask, put_values, base)
+
+
 @at.typecheck
 def posemb_sincos(
     pos: at.Real[at.Array, " b"], embedding_dim: int, min_period: float, max_period: float
@@ -67,6 +90,12 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.train_subtask_prediction = config.train_subtask_prediction
+        self.sample_subtask_prediction = config.sample_subtask_prediction
+        self.subtask_loss_weight = config.subtask_loss_weight
+        self.max_subtask_len = config.max_subtask_len
+        self.subtask_temperature = config.subtask_temperature
+        self.subtask_eos_token = config.subtask_eos_token
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -105,7 +134,7 @@ class Pi0(_model.BaseModel):
     @at.typecheck
     def embed_prefix(
         self, obs: _model.Observation
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, "b s"]]:
         input_mask = []
         ar_mask = []
         tokens = []
@@ -122,18 +151,22 @@ class Pi0(_model.BaseModel):
                 )
             )
             # image tokens attend to each other
-            ar_mask += [False] * image_tokens.shape[1]
+            ar_mask.append(jnp.zeros(image_tokens.shape[:2], dtype=jnp.bool_))
 
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
+            assert obs.tokenized_prompt_mask is not None, "Tokenized prompt mask is required"
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
-            # full attention between image and language inputs
-            ar_mask += [False] * tokenized_inputs.shape[1]
+            if obs.token_ar_mask is None:
+                token_ar_mask = jnp.zeros_like(obs.tokenized_prompt_mask)
+            else:
+                token_ar_mask = obs.token_ar_mask.astype(jnp.bool_)
+            ar_mask.append(token_ar_mask)
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
-        ar_mask = jnp.array(ar_mask)
+        ar_mask = jnp.concatenate(ar_mask, axis=1)
         return tokens, input_mask, ar_mask
 
     @at.typecheck
@@ -142,19 +175,20 @@ class Pi0(_model.BaseModel):
     ) -> tuple[
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
-        at.Bool[at.Array, " s"],
+        at.Bool[at.Array, "b s"],
         at.Float[at.Array, "b emb"] | None,
     ]:
         input_mask = []
         ar_mask = []
         tokens = []
+        batch_size = obs.state.shape[0]
         if not self.pi05:
             # add a single state token
             state_token = self.state_proj(obs.state)[:, None, :]
             tokens.append(state_token)
             input_mask.append(jnp.ones((obs.state.shape[0], 1), dtype=jnp.bool_))
             # image/language inputs do not attend to state or actions
-            ar_mask += [True]
+            ar_mask.append(jnp.ones((batch_size, 1), dtype=jnp.bool_))
 
         action_tokens = self.action_in_proj(noisy_actions)
         # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
@@ -179,10 +213,14 @@ class Pi0(_model.BaseModel):
         tokens.append(action_expert_tokens)
         input_mask.append(jnp.ones(action_expert_tokens.shape[:2], dtype=jnp.bool_))
         # image/language/state inputs do not attend to action tokens
-        ar_mask += [True] + ([False] * (self.action_horizon - 1))
+        action_ar_mask = jnp.broadcast_to(
+            jnp.asarray([True] + ([False] * (self.action_horizon - 1))),
+            action_expert_tokens.shape[:2],
+        )
+        ar_mask.append(action_ar_mask)
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
-        ar_mask = jnp.array(ar_mask)
+        ar_mask = jnp.concatenate(ar_mask, axis=1)
         return tokens, input_mask, ar_mask, adarms_cond
 
     @override
@@ -203,7 +241,7 @@ class Pi0(_model.BaseModel):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
         input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
@@ -211,7 +249,26 @@ class Pi0(_model.BaseModel):
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        action_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        if not self.train_subtask_prediction:
+            return action_loss
+        subtask_loss = self._compute_subtask_loss(prefix_out, observation)
+        return action_loss + self.subtask_loss_weight * subtask_loss[:, None]
+
+    def _compute_subtask_loss(
+        self, prefix_out: at.Float[at.Array, "b s emb"], observation: _model.Observation
+    ) -> at.Float[at.Array, " b"]:
+        assert observation.tokenized_prompt is not None, "Tokenized prompt is required for subtask prediction"
+        assert observation.token_loss_mask is not None, "Token loss mask is required for subtask prediction"
+
+        text_len = observation.tokenized_prompt.shape[1]
+        text_hidden = prefix_out[:, -text_len:-1]
+        logits = self.PaliGemma.llm(text_hidden, method="deembed")
+        logp = jax.nn.log_softmax(logits, axis=-1)
+        targets = observation.tokenized_prompt[:, 1:]
+        target_logp = jnp.take_along_axis(logp, targets[..., None], axis=-1).squeeze(-1)
+        loss_mask = observation.token_loss_mask[:, 1:]
+        return -jnp.sum(target_logp * loss_mask, axis=-1) / jnp.clip(jnp.sum(loss_mask, axis=-1), 1)
 
     @override
     def sample_actions(
@@ -223,6 +280,61 @@ class Pi0(_model.BaseModel):
         noise: at.Float[at.Array, "b ah ad"] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        return self._sample_actions_from_prefix(
+            rng,
+            observation,
+            prefix_tokens,
+            prefix_mask,
+            prefix_ar_mask,
+            num_steps=num_steps,
+            noise=noise,
+        )
+
+    def sample_actions_with_subtask(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> dict[str, at.Array]:
+        if not self.sample_subtask_prediction:
+            return {"actions": self.sample_actions(rng, observation, num_steps=num_steps, noise=noise)}
+        if not self.pi05:
+            raise ValueError("Subtask prediction is only supported for pi0.5 models.")
+
+        subtask_rng, action_rng = jax.random.split(rng)
+        observation = _model.preprocess_observation(None, observation, train=False)
+        subtask_tokens, subtask_token_mask = self._sample_subtask_tokens(subtask_rng, observation)
+        action_observation = self._with_generated_subtask_prompt(observation, subtask_tokens, subtask_token_mask)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(action_observation)
+        actions = self._sample_actions_from_prefix(
+            action_rng,
+            action_observation,
+            prefix_tokens,
+            prefix_mask,
+            prefix_ar_mask,
+            num_steps=num_steps,
+            noise=noise,
+        )
+        return {
+            "actions": actions,
+            "subtask_tokens": subtask_tokens,
+            "subtask_token_mask": subtask_token_mask,
+        }
+
+    def _sample_actions_from_prefix(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_mask: at.Bool[at.Array, "b s"],
+        prefix_ar_mask: at.Bool[at.Array, "b s"],
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> _model.Actions:
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         dt = -1.0 / num_steps
@@ -231,7 +343,6 @@ class Pi0(_model.BaseModel):
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
         # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
@@ -271,9 +382,120 @@ class Pi0(_model.BaseModel):
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
+            _, time = carry
             # robust to floating-point error
             return time >= -dt / 2
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def _sample_subtask_tokens(
+        self, rng: at.KeyArrayLike, observation: _model.Observation
+    ) -> tuple[at.Int[at.Array, "b l"], at.Bool[at.Array, "b l"]]:
+        assert observation.tokenized_prompt is not None, "Tokenized prompt is required for subtask prediction"
+        assert observation.tokenized_prompt_mask is not None, "Tokenized prompt mask is required for subtask prediction"
+        batch_size = observation.state.shape[0]
+        output_tokens = jnp.zeros((batch_size, self.max_subtask_len), dtype=jnp.int32)
+        output_mask = jnp.zeros((batch_size, self.max_subtask_len), dtype=jnp.bool_)
+        done = jnp.zeros((batch_size,), dtype=jnp.bool_)
+
+        def step(index, carry):
+            step_rng, tokens, token_mask, is_done = carry
+            step_rng, sample_rng = jax.random.split(step_rng)
+            prompt_observation = self._with_generated_subtask_prompt(
+                observation, tokens, token_mask, include_action_suffix=False
+            )
+            prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(prompt_observation)
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            positions = jnp.cumsum(prefix_mask, axis=1) - 1
+            (prefix_out, _), _ = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+            last_indices = _last_valid_indices(prefix_mask)
+            last_hidden = prefix_out[jnp.arange(prefix_out.shape[0]), last_indices][:, None, :]
+            logits = self.PaliGemma.llm(last_hidden, method="deembed")[:, 0]
+            if self.subtask_temperature > 0.0:
+                next_token = jax.random.categorical(sample_rng, logits / self.subtask_temperature, axis=-1)
+            else:
+                next_token = jnp.argmax(logits, axis=-1)
+            next_token = jnp.where(is_done, 0, next_token).astype(jnp.int32)
+            # Keep EOS in the conditioned prompt to match supervised training; output detokenization strips it.
+            next_is_valid = ~is_done
+            positions = jnp.broadcast_to(index, (batch_size, 1))
+            tokens = _scatter_sequence(tokens, positions, next_token[:, None], ~is_done[:, None])
+            token_mask = _scatter_sequence(token_mask, positions, next_is_valid[:, None], ~is_done[:, None])
+            is_done = is_done | (next_token == self.subtask_eos_token)
+            return step_rng, tokens, token_mask, is_done
+
+        _, output_tokens, output_mask, _ = jax.lax.fori_loop(
+            0, self.max_subtask_len, step, (rng, output_tokens, output_mask, done)
+        )
+        return output_tokens, output_mask
+
+    def _with_generated_subtask_prompt(
+        self,
+        observation: _model.Observation,
+        subtask_tokens: at.Int[at.Array, "b l"],
+        subtask_token_mask: at.Bool[at.Array, "b l"],
+        *,
+        include_action_suffix: bool = True,
+    ) -> _model.Observation:
+        assert observation.tokenized_prompt is not None, "Tokenized prompt is required for subtask prediction"
+        assert observation.tokenized_prompt_mask is not None, "Tokenized prompt mask is required for subtask prediction"
+        prompt_tokens = observation.tokenized_prompt
+        prompt_mask = observation.tokenized_prompt_mask
+        if observation.token_ar_mask is None:
+            prompt_ar_mask = jnp.zeros_like(prompt_mask)
+        else:
+            prompt_ar_mask = observation.token_ar_mask.astype(jnp.bool_)
+
+        prompt_len = jnp.sum(prompt_mask, axis=-1)
+        subtask_positions = prompt_len[:, None] + jnp.arange(subtask_tokens.shape[1])[None, :]
+        tokens = _scatter_sequence(prompt_tokens, subtask_positions, subtask_tokens, subtask_token_mask)
+        token_mask = _scatter_sequence(prompt_mask, subtask_positions, subtask_token_mask, subtask_token_mask)
+        token_ar_mask = _scatter_sequence(
+            prompt_ar_mask,
+            subtask_positions,
+            jnp.ones_like(subtask_token_mask),
+            subtask_token_mask,
+        )
+
+        if include_action_suffix:
+            assert observation.tokenized_action_suffix is not None, (
+                "Tokenized action suffix is required for subtask prediction"
+            )
+            assert observation.tokenized_action_suffix_mask is not None, (
+                "Tokenized action suffix mask is required for subtask prediction"
+            )
+            subtask_len = jnp.sum(subtask_token_mask, axis=-1)
+            suffix_positions = (
+                prompt_len[:, None]
+                + subtask_len[:, None]
+                + jnp.arange(observation.tokenized_action_suffix.shape[1])[None, :]
+            )
+            tokens = _scatter_sequence(
+                tokens,
+                suffix_positions,
+                observation.tokenized_action_suffix,
+                observation.tokenized_action_suffix_mask,
+            )
+            token_mask = _scatter_sequence(
+                token_mask,
+                suffix_positions,
+                observation.tokenized_action_suffix_mask,
+                observation.tokenized_action_suffix_mask,
+            )
+            token_ar_mask = _scatter_sequence(
+                token_ar_mask,
+                suffix_positions,
+                jnp.ones_like(observation.tokenized_action_suffix_mask),
+                observation.tokenized_action_suffix_mask,
+            )
+
+        return dataclasses.replace(
+            observation,
+            tokenized_prompt=tokens,
+            tokenized_prompt_mask=token_mask,
+            token_ar_mask=token_ar_mask.astype(jnp.int32),
+            token_loss_mask=None,
+            tokenized_action_suffix=None,
+            tokenized_action_suffix_mask=None,
+        )
