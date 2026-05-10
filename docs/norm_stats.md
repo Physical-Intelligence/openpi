@@ -30,7 +30,7 @@ For an example of a full training config that reloads normalization statistics, 
 
 ## Provided Pre-training Normalization Statistics
 
-Below is a list of all the pre-training normalization statistics we provide. We provide them for both, the `pi0_base` and `pi0_fast_base` models. For `pi0_base`, set the `assets_dir` to `gs://openpi-assets/checkpoints/pi0_base/assets` and for `pi0_fast_base`, set the `assets_dir` to `gs://openpi-assets/checkpoints/pi0_fast_base/assets`.
+Below is a list of all the pre-training normalization statistics we provide. We provide them for both, the `pi0_base` and `pi0_fast_base` models. For `pi0_base`, set the `assets_dir` to `gs://openpi-assets/checkpoints/pi0_base/assets` and for `pi0_fast_base`, set the `assets_dir` to `gs://openpi-assets/checkpoints/pi0_fast_base/assets`. Some `pi05_base` fine-tuning configs also load compatible stats from `gs://openpi-assets/checkpoints/pi05_base/assets`; see the config examples for the supported robot asset IDs.
 | Robot | Description | Asset ID |
 |-------|-------------|----------|
 | ALOHA | 6-DoF dual arm robot with parallel grippers | trossen |
@@ -44,20 +44,32 @@ Below is a list of all the pre-training normalization statistics we provide. We 
 | Fibocom mobile | Fibocom mobile robot with 2x ARX-5 arms | fibocom_mobile |
 
 
-## Pi0 Model Action Space Definitions
+## Base Model Action Space Definitions
 
-Out of the box, both the `pi0_base` and `pi0_fast_base` use the following action space definitions (left and right are defined looking from behind the robot towards the workspace):
-```
-    "dim_0:dim_5": "left arm joint angles",
-    "dim_6": "left arm gripper position",
-    "dim_7:dim_12": "right arm joint angles (for bi-manual only)",
-    "dim_13": "right arm gripper position (for bi-manual only)",
+Out of the box, the released base models use a fixed action interface for checkpoint compatibility. The provided robot conventions use the leading dimensions needed by each robot, and dimensions that a robot does not use are reserved padding. Left and right are defined looking from behind the robot towards the workspace. The common 6-DoF arm layout is:
 
-    # For mobile robots:
-    "dim_14:dim_15": "x-y base velocity (for mobile robots only)",
-```
+| Dimensions | Meaning in the provided convention | Notes |
+|------------|------------------------------------|-------|
+| `dim_0:dim_5` | Left arm joint angles | First six joints |
+| `dim_6` | Left arm gripper position | Parallel gripper position in 6-DoF layouts |
+| `dim_7:dim_12` | Right arm joint angles | Bi-manual 6-DoF layouts only |
+| `dim_13` | Right arm gripper position | Bi-manual 6-DoF layouts only |
+| `dim_14:dim_15` | x-y base velocity | Mobile robots only |
+| `dim_16:dim_31` | Reserved padding | No physical meaning in the provided adapters unless a custom adapter and matching normalization statistics define these dimensions |
 
-The proprioceptive state uses the same definitions as the action space, except for the base x-y position (the last two dimensions) for mobile robots, which we don't include in the proprioceptive state.
+The 32D action width is a model interface width. Most provided robot adapters use only a leading subset of these dimensions. During training and inference, shorter state/action vectors are padded to the model action dimension before entering the model, and policy-specific output transforms return only the dimensions needed by the target robot. Do not send dimensions that your robot adapter does not define to the robot controller.
+
+The proprioceptive state follows the same leading-dimension convention for arm joints and grippers. For mobile robots, base velocity action dimensions are action-only controls and are not included in the proprioceptive state unless a custom adapter explicitly provides corresponding state fields.
+
+Some examples from the provided adapters:
+
+| Robot/config family | Used action dimensions | What happens to the rest |
+|---------------------|------------------------|--------------------------|
+| ALOHA / Trossen | `dim_0:dim_13` | The output adapter returns the first 14 dimensions |
+| Mobile bi-manual robots | `dim_0:dim_15` | `dim_16:dim_31` remain reserved padding |
+| DROID / Franka adapters | `dim_0:dim_7` | The output adapter returns the first 8 dimensions |
+| LIBERO example | `dim_0:dim_6` | The output adapter returns the first 7 dimensions |
+| Custom robots | Adapter-defined | Keep dataset transforms, output transforms, and normalization statistics consistent |
 
 For 7-DoF robots (e.g. Franka), we use the first 7 dimensions of the action space for the joint actions, and the 8th dimension for the gripper action.
 
