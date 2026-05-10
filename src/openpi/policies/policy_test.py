@@ -1,9 +1,60 @@
 from openpi_client import action_chunk_broker
 import pytest
 
+from openpi.models import pi0_config
 from openpi.policies import aloha_policy
 from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
+
+
+def test_create_trained_policy_uses_configured_pytorch_precision(monkeypatch, tmp_path):
+    precision_calls = []
+    load_calls = []
+
+    class DummyPaliGemmaWithExpert:
+        def to_bfloat16_for_selected_params(self, precision):
+            precision_calls.append(precision)
+
+    class DummyPytorchModel:
+        def __init__(self):
+            self.paligemma_with_expert = DummyPaliGemmaWithExpert()
+            self.device = None
+            self.eval_called = False
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            self.eval_called = True
+
+        def sample_actions(self, *args, **kwargs):
+            raise AssertionError("sample_actions should not be called when constructing the policy")
+
+    dummy_model = DummyPytorchModel()
+
+    def fake_load_pytorch(self, train_config, weight_path):
+        load_calls.append((self, train_config, weight_path))
+        return dummy_model
+
+    monkeypatch.setattr(pi0_config.Pi0Config, "load_pytorch", fake_load_pytorch)
+
+    checkpoint_dir = tmp_path / "checkpoint"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "model.safetensors").touch()
+    train_config = _config.TrainConfig(
+        name="test_config",
+        exp_name="test_run",
+        model=pi0_config.Pi0Config(),
+        pytorch_training_precision="float32",
+    )
+
+    _policy_config.create_trained_policy(train_config, checkpoint_dir, norm_stats={}, pytorch_device="cpu")
+
+    assert load_calls == [(train_config.model, train_config, str(checkpoint_dir / "model.safetensors"))]
+    assert precision_calls == ["float32"]
+    assert dummy_model.device == "cpu"
+    assert dummy_model.eval_called
 
 
 @pytest.mark.manual
