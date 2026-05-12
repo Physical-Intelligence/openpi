@@ -404,10 +404,17 @@ uv run scripts/train.py pi05_rm75_wipe \
 ### 8.1 Start the policy server
 
 ```bash
-uv run scripts/serve_policy.py policy:checkpoint \
-    --policy.config=pi05_rm75_wipe \
-    --policy.dir=checkpoints/pi05_rm75_wipe/wipe_solar_v1/10000
+CUDA_VISIBLE_DEVICES=0 uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config=pi05_rm75_pick_place_illum \
+    --policy.dir=/home/bingqi/data/admins/bingqi/Projects/openpi-lunarbot/checkpoints/pi05_rm75_pick_place_illum/FT_plus_illum/29999/
 ```
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config=pi05_rm75_pick_place \
+    --policy.dir=/home/bingqi/data/admins/bingqi/Projects/openpi-lunarbot/checkpoints/pi05_rm75_pick_place/rm75_pick_place_lora_bs48_b_side/16000/
+```
+
 
 Replace `10000` with the checkpoint step you want to serve. This starts a WebSocket server on port 8000.
 

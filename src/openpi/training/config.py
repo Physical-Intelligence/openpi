@@ -581,7 +581,7 @@ def _get_rm75_pick_place_configs():
 
     rm75_repo_id = os.environ.get(
         "RM75_DATA_REPO_ID",
-        "bingqi/rm75_pick_place_2_converters_a_side",
+        "bingqi/rm_75_pick_place_2_converters_b_side",
     )
 
     _lora_freeze = pi0_config.Pi0Config(

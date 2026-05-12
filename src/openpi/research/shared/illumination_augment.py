@@ -60,12 +60,40 @@ class RM75IlluminationAugmentation(transforms.DataTransformFn):
             return data
 
         image_mask = data.get('image_mask', {})
-        data['image'] = {
-            key: self._augment_image(np.asarray(image), rng)
-            if bool(np.asarray(image_mask.get(key, True)))
-            else image
-            for key, image in data['image'].items()
-        }
+        new_images = {}
+        for key, image in data['image'].items():
+            if bool(np.asarray(image_mask.get(key, True))):
+                augmented = self._augment_image(np.asarray(image), rng)
+                new_images[key] = augmented
+                
+                # --- PAPER FIGURE SAVING LOGIC ---
+                import os
+                save_dir = os.environ.get("SAVE_AUG_IMAGES_DIR")
+                if save_dir:
+                    os.makedirs(save_dir, exist_ok=True)
+                    # Limit to saving ~100 images per worker using a global variable to avoid FrozenInstanceError
+                    global _AUG_IMAGES_SAVE_COUNT
+                    if '_AUG_IMAGES_SAVE_COUNT' not in globals():
+                        _AUG_IMAGES_SAVE_COUNT = 0
+                    
+                    if _AUG_IMAGES_SAVE_COUNT < 100:
+                        import time
+                        from PIL import Image
+                        timestamp = int(time.time() * 1000)
+                        
+                        # Save Original
+                        orig_pil = Image.fromarray(np.asarray(image).astype(np.uint8))
+                        orig_pil.save(os.path.join(save_dir, f"{timestamp}_{key}_orig.png"))
+                        
+                        # Save Augmented
+                        aug_pil = Image.fromarray(augmented.astype(np.uint8))
+                        aug_pil.save(os.path.join(save_dir, f"{timestamp}_{key}_aug.png"))
+                        
+                        _AUG_IMAGES_SAVE_COUNT += 1
+            else:
+                new_images[key] = image
+                
+        data['image'] = new_images
         return data
 
     def _augment_image(self, image: np.ndarray, rng: np.random.Generator) -> np.ndarray:

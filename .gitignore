@@ -170,3 +170,5 @@ cython_debug/
 
 # Oh My OpenCode local configuration
 .opencode/
+
+LunarPressure/
