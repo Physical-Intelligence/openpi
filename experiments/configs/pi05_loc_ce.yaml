@@ -1,0 +1,64 @@
+# pi05_loc_ce.yaml — bbox: joint α·CE(loc tokens) + β·MSE(flow-matching)
+# fine-tuning of pi05_base on the bimanual-sliced "pick box" task.
+#
+# Prereqs (run once before training):
+#   1. experiments/data/annotate_bboxes.py     — produces per-dataset bbox parquets
+#   2. experiments/data/finalize_bbox_schema.py — adds target_loc_tokens etc.
+#   3. experiments/data/merge_bbox_sidecars.py — re-keys for the merged dataset
+#   4. experiments/data/process_single_arm.py  — slices bimanual → right arm + merges
+#
+# Verified with experiments/diagnose/smoke_loc_loader.py (data pipeline) and
+# experiments/diagnose/test_pi05_loc_math.py (loss math).
+
+experiment:
+  name: box_pick_pi05_loc_ce
+  project_name: openpi-box-pick-loc-ce
+
+data:
+  # LeRobot repo id of the merged single-arm-sliced dataset (output of
+  # process_single_arm.py with --merge). Adjust to match whatever name your
+  # merge step produced.
+  merged_name: box-pick-bimanual-all-right
+  default_prompt: "pick the box"
+  # Merged bbox sidecar (output of merge_bbox_sidecars.py). The training loader's
+  # LocTargetsBuilder joins this onto each sample by (episode_index, frame_index).
+  bbox_sidecar_parquet: /home/nullbyte/Desktop/ai_policy_robotics/vlm_experiment/external_repo/openpi/experiments/data/merged_bbox_sidecar/cam_high__detect_box__merged.parquet
+  bbox_query: box
+
+model:
+  base_checkpoint: gs://openpi-assets/checkpoints/pi05_base/params
+  assets_dir: gs://openpi-assets/checkpoints/pi05_base/assets
+  asset_id: trossen
+  pytorch_weight_path: null
+
+training:
+  # bbox dispatch flags (omit or set to defaults to fall back to vanilla LoRA training).
+  model_variant: pi05_loc_ce      # → Pi0WithLocCEConfig
+  freeze_mode: vlm_only           # → vlm_only_freeze_filter (freezes action expert + SigLIP + heads)
+  use_lora: true                  # gemma_2b_lora on PaliGemma; action expert stays non-LoRA + frozen
+
+  # Loss weights — defaults from PI05_DIAGNOSE_AND_FINETUNE.md §5. With our
+  # broadcast-CE-over-horizon convention, the trainer's jnp.mean reduction
+  # produces  α·mean_B(ce) + β·mean_B(mean_H(mse))  after summing.
+  loc_loss_weight: 5.0            # α
+  mse_loss_weight: 10.0           # β
+
+  # Optimizer / schedule — lower peak LR than the colleague's default since
+  # we're training only a small LoRA slice of PaliGemma.
+  num_train_steps: 3000
+  batch_size: 16
+  peak_lr: 1.0e-5
+  warmup_steps: 200
+  save_interval: 500
+  log_interval: 25
+
+  resume: false
+  wandb_enabled: true
+  checkpoint_base_dir: ./checkpoints
+
+# Remote-training config kept for parity with marker_pick.yaml / lipbalm.yaml.
+server:
+  name: aws-L40S-server1
+  remote_dir: ~/openpi
+  remote_data_dir: ~/data/box_pick
+  gpu_count: 1
