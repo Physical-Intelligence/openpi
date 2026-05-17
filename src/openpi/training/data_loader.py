@@ -153,6 +153,14 @@ def create_torch_dataset(
         from openpi.policies.libero_trace_dataset import LiberoTraceDataset
         return LiberoTraceDataset(data_config, action_horizon)
 
+    if isinstance(data_config, _config.LiberoTargetDataConfig):
+        # Trace-free counterpart of LiberoTraceDataConfig. Used by the
+        # ``train_target_vla_actionmoe.py`` training script (which imports the
+        # dataset directly) and by ``compute_norm_stats.py``, which needs this
+        # branch so the norm-stat computation can iterate the same dataset.
+        from openpi.policies.libero_target_dataset import LiberoTargetDataset
+        return LiberoTargetDataset(data_config, action_horizon)
+
     if isinstance(data_config, _config.AtomicCalvinDataConfig):
         from openpi.policies.calvin_dataset import AtomicCalvinDataset
         return AtomicCalvinDataset(data_config, action_horizon)

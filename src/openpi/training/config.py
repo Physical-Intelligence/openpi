@@ -169,6 +169,30 @@ class LiberoTraceDataConfig(DataConfig):
     overlay_endpoint_radius: float = 2.5
 
 
+@dataclasses.dataclass(frozen=True)
+class LiberoTargetDataConfig(DataConfig):
+    """Extended DataConfig for the TargetVLA family on LIBERO (trace-free).
+
+    Carries paths to the same two annotation files as :class:`LiberoTraceDataConfig`
+    (the trace-annotations file is the source of the per-segment ``semantic_target``
+    point that this family conditions on; we ignore its end-effector trace polylines)
+    but **omits** every trace-/overlay-specific hyperparameter:
+
+      - no ``trace_horizon`` / ``trace_resample_method`` (no trace target)
+      - no ``h_train_max`` (no anchor-age augmentation)
+      - no ``scene_dropout_rate`` / ``overlay_dropout_rate`` /
+        ``trace_perturb_*`` (no trace-related augmentations)
+      - no ``overlay_*`` rendering options (no overlay image)
+    """
+
+    seed: int = 42
+    skill_annotations_path: str = ""
+    trace_annotations_path: str = ""
+    use_wrist_image: bool = True
+    is_computing_norm_stats: bool = False
+    action_down_sample_steps: int = 1
+
+
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
         """Create a group."""
@@ -736,6 +760,61 @@ class LeRobotTraceVLAMoeDataConfig(DataConfigFactory):
             inputs=[
                 libero_trace_policy.TraceResizeImages(224, 224),
                 libero_trace_policy.TraceTokenizePrompt(
+                    _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                    discrete_state_input=False,
+                ),
+                _transforms.PadStatesAndActions(model_config.action_dim),
+            ],
+        )
+
+        base = self.create_base_config(assets_dirs, model_config)
+        return dataclasses.replace(
+            base,
+            repack_transforms=_transforms.Group(),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotTargetVLAActionMoeDataConfig(DataConfigFactory):
+    """Data factory for the trace-free TargetVLA-ActionMoe variant on LIBERO.
+
+    Same dataset (LIBERO + skill annotations) as the trace family, but:
+
+      - wires the trace-free transforms from
+        :mod:`openpi.policies.libero_target_policy` (no overlay-image resize,
+        no trace fields in the input pack), and
+      - type-checks against
+        :class:`openpi.models.pi0_target_vla_actionmoe_config.Pi0TargetVLAActionMoeConfig`.
+
+    The produced :class:`LiberoTargetDataConfig` is the slimmed-down sibling of
+    :class:`LiberoTraceDataConfig`: only the fields needed for skill + target +
+    completion annotation join remain (no trace-related hyperparameters).
+    """
+
+    base_config: tyro.conf.Suppress[LiberoTargetDataConfig | None] = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        import openpi.policies.libero_target_policy as libero_target_policy  # noqa: PLC0415
+        from openpi.models import pi0_target_vla_actionmoe_config as pi0_target_vla_actionmoe_config  # noqa: PLC0415
+
+        if not isinstance(model_config, pi0_target_vla_actionmoe_config.Pi0TargetVLAActionMoeConfig):
+            raise TypeError(
+                f"LeRobotTargetVLAActionMoeDataConfig expects a Pi0TargetVLAActionMoeConfig "
+                f"model_config, got {type(model_config).__name__}"
+            )
+
+        data_transforms = _transforms.Group(
+            inputs=[libero_target_policy.LiberoTargetInputs(model_type=model_config.model_type)],
+            outputs=[libero_target_policy.LiberoTargetOutputs()],
+        )
+
+        model_transforms = _transforms.Group(
+            inputs=[
+                libero_target_policy.TargetResizeImages(224, 224),
+                libero_target_policy.TargetTokenizePrompt(
                     _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                     discrete_state_input=False,
                 ),
@@ -2219,15 +2298,15 @@ _CONFIGS = [
         assets_base_dir=str(REPO_ROOT / "assets"),
         batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
+            warmup_steps=10_000,
             peak_lr=5e-5,
-            decay_steps=200_000,
-            decay_lr=5e-6,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=100_000,
+        num_train_steps=120_000,
         save_interval=5_000,
         keep_period=10_000,
         log_interval=100,
@@ -2275,6 +2354,112 @@ _CONFIGS = [
             trace_horizon=20,
             num_action_experts=5,
             num_trace_experts=5,
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2e-4,
+            decay_steps=30_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40_000,
+        save_interval=5_000,
+        keep_period=10_000,
+        log_interval=100,
+        wandb_enabled=True,
+    ),
+    # ============================================================
+    # TargetVLA-ActionMoe (Pi0TargetVLAActionMoe) - full FT and LoRA.
+    # ============================================================
+    # Trace-free ablation of the TraceVLA family. Architecture: 2-stream Gemma
+    # trunk (paligemma + action MoE) — no trace stream, no trace generation,
+    # no image overlay, no trace-related data augmentation. The semantic-target
+    # point (the same conditioning input the trace family used) is injected
+    # into the **action MoE's AdaRMS** via the same Fourier(2-D, 8 freqs) +
+    # 2-layer MLP encoder used by the trace family. Loss = action FM + per-skill
+    # completion regression (masked by has_skill). Skill plan + step number +
+    # parameterized skill expression all flow into the VLM prompt the same way
+    # as the trace_vla variants.
+    TrainConfig(
+        name="target_vla_actionmoe",
+        model=__import__(
+            "openpi.models.pi0_target_vla_actionmoe_config", fromlist=["Pi0TargetVLAActionMoeConfig"]
+        ).Pi0TargetVLAActionMoeConfig(
+            paligemma_variant="gemma_2b",
+            action_expert_variant="trace_moe_gemma_300m",   # 5-expert MoE for actions
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            max_token_len=200,
+            num_action_experts=5,
+        ),
+        data=LeRobotTargetVLAActionMoeDataConfig(
+            repo_id="yilin-wu/libero-100",
+            base_config=LiberoTargetDataConfig(
+                repo_path=str(REPO_ROOT / "data/libero-100"),
+                prompt_from_task=True,
+                skill_annotations_path=str(REPO_ROOT / "data/libero-100/skill_annotations.json"),
+                trace_annotations_path=str(REPO_ROOT / "data/libero-100/skill_target_traces.json"),
+                use_wrist_image=True,
+                is_computing_norm_stats=False,
+            ),
+        ),
+        assets_base_dir=str(REPO_ROOT / "assets"),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=200_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=100_000,
+        save_interval=5_000,
+        keep_period=10_000,
+        log_interval=100,
+        wandb_enabled=True,
+    ),
+    TrainConfig(
+        name="target_vla_actionmoe_lora",
+        # LoRA on paligemma 2B only. Action MoE + completion head are full FT.
+        model=__import__(
+            "openpi.models.pi0_target_vla_actionmoe_config", fromlist=["Pi0TargetVLAActionMoeConfig"]
+        ).Pi0TargetVLAActionMoeConfig(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="trace_moe_gemma_300m",
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            max_token_len=200,
+            num_action_experts=5,
+        ),
+        data=LeRobotTargetVLAActionMoeDataConfig(
+            repo_id="yilin-wu/libero-100",
+            base_config=LiberoTargetDataConfig(
+                repo_path=str(REPO_ROOT / "data/libero-100"),
+                prompt_from_task=True,
+                skill_annotations_path=str(REPO_ROOT / "data/libero-100/skill_annotations.json"),
+                trace_annotations_path=str(REPO_ROOT / "data/libero-100/skill_target_traces.json"),
+                use_wrist_image=True,
+                is_computing_norm_stats=False,
+            ),
+        ),
+        assets_base_dir=str(REPO_ROOT / "assets"),
+        freeze_filter=__import__(
+            "openpi.models.pi0_target_vla_actionmoe_config", fromlist=["Pi0TargetVLAActionMoeConfig"]
+        ).Pi0TargetVLAActionMoeConfig(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="trace_moe_gemma_300m",
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            max_token_len=200,
+            num_action_experts=5,
         ).get_freeze_filter(),
         ema_decay=None,
         batch_size=64,
