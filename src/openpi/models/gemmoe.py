@@ -71,6 +71,7 @@ Variant = Literal[
     "gemma_2b_lora",
     "gemma_300m_lora",
     "moe_gemma",
+    "moe_gemma_2",
     "moe_gemma_8",
 ]
 
@@ -144,6 +145,19 @@ def get_config(variant: Variant) -> Config:
             num_local_experts=5,         # enable MoE
             num_experts_per_tok=1,       # top-2
             router_aux_loss_coef=1e-3,   # used in trainer when adding aux loss
+        )
+    if variant == "moe_gemma_2":
+        # Table-tasks annotations use two atomic skill groups (PICKUP_FROM, PLACE_*).
+        return Config(
+            width=1024,
+            depth=18,
+            mlp_dim=4096,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            num_local_experts=2,
+            num_experts_per_tok=1,
+            router_aux_loss_coef=1e-3,
         )
     if variant == "moe_gemma_8":
         # Calvin annotations use eight atomic skill groups.

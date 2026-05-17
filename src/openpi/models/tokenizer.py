@@ -85,19 +85,19 @@ def normalize_atomic_skill_name(text: str) -> str:
     return match.group(1).upper()
 
 
-# Embedding for AtomicVLA on Libero
-def embed_sigma(x: str) -> float:
-    """Maps canonical skill names onto the five AtomicVLA experts."""
-    sigma_map = {
-        "PICKUP_FROM": 0.0,
-        "PLACE_ON": 1.0,
-        "PLACE_IN": 1.0,
-        "OPEN": 2.0,
-        "CLOSE": 3.0,
-        "TURN_ON": 4.0,
-        "TURN_OFF": 4.0,
-    }
-    return sigma_map.get(normalize_atomic_skill_name(x), 0.0)
+# # Embedding for AtomicVLA on Libero
+# def embed_sigma(x: str) -> float:
+#     """Maps canonical skill names onto the five AtomicVLA experts."""
+#     sigma_map = {
+#         "PICKUP_FROM": 0.0,
+#         "PLACE_ON": 1.0,
+#         "PLACE_IN": 1.0,
+#         "OPEN": 2.0,
+#         "CLOSE": 3.0,
+#         "TURN_ON": 4.0,
+#         "TURN_OFF": 4.0,
+#     }
+#     return sigma_map.get(normalize_atomic_skill_name(x), 0.0)
 
 
 # def embed_sigma(x: str) -> float:
@@ -116,6 +116,17 @@ def embed_sigma(x: str) -> float:
 #         "TURN_OBJECT": 7.0,
 #     }
 #     return sigma_map.get(normalize_atomic_skill_name(x), 0.0)
+
+
+# Embedding for Physical robot Table Tasks
+def embed_sigma(x: str) -> float:
+    """Maps canonical skill names onto the two table-task experts."""
+    sigma_map = {
+        "PICKUP_FROM": 0.0,
+        "PLACE_ON": 1.0,
+        "PLACE_IN": 1.0,
+    }
+    return sigma_map.get(normalize_atomic_skill_name(x), 0.0)
 
 
 class AtomicPaligemmaTokenizer:

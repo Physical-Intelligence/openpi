@@ -2008,6 +2008,40 @@ _CONFIGS = [
         num_train_steps=130_000,
         keep_period=10_000,
     ),
+    # AtomicVLA on the physical-robot table-tasks dataset (n5zhong/table_tasks).
+    # Three skills (PICKUP_FROM, PLACE_ON, PLACE_IN) routed onto 2 atomic-skill
+    # experts + 1 shared expert (see embed_sigma() in models/tokenizer.py).
+    TrainConfig(
+        name="atomic_table_tasks",
+        model=pi0_config.Pi0AtomicConfig(
+            pi05=True,
+            action_expert_variant="moe_gemma_2",
+            action_horizon=10,
+            discrete_state_input=False,
+        ),
+        data=LeRobotAtomicDataConfig(
+            repo_id="n5zhong/table_tasks",
+            base_config=AtomicDataConfig(
+                prompt_from_task=False,
+                repo_path="~/.cache/huggingface/hub/datasets--n5zhong--table_tasks",
+                use_reasoning=True,
+                reasoning_json_path=REPO_ROOT / "data/table-tasks/tabletask_skill_annotations.json",
+            ),
+        ),
+        assets_base_dir=str(REPO_ROOT / "assets"),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-4,
+            decay_steps=40_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
+        keep_period=2_000,
+    ),
     TrainConfig(
         name="pi05_calvin",
         model=pi0_fuse.Pi0FuseConfig(
