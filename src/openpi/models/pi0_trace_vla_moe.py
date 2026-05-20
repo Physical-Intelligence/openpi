@@ -535,8 +535,17 @@ class Pi0TraceVLAMoe(_model.BaseModel):
         train: bool = False,
     ) -> tuple[at.Float[at.Array, " b"], dict[str, at.Array]]:
         preprocess_rng, plan_rng, exec_rng = jax.random.split(rng, 3)
+        # ``image_source_hw`` keeps train-time geometric augmentation of the image-space
+        # trace/keypoint targets aligned with the letterboxed model image for non-square
+        # cameras (e.g. table-tasks 480x640). It is None for square sources (LIBERO), in
+        # which case preprocessing is unchanged. Only the train=True path uses it; the
+        # inference (sample_*) paths do not augment keypoints, so they need not pass it.
         observation = _trace_obs.preprocess_trace_observation(
-            preprocess_rng, observation, train=train, image_keys=list(observation.images.keys())
+            preprocess_rng,
+            observation,
+            train=train,
+            image_keys=list(observation.images.keys()),
+            image_source_hw=self.config.image_source_hw,
         )
 
         # Trace planning (trace MoE stream).

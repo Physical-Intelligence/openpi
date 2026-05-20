@@ -106,6 +106,7 @@ def preprocess_trace_observation(
     train: bool = False,
     image_keys=_model.IMAGE_KEYS,
     image_resolution: tuple[int, int] = _model.IMAGE_RESOLUTION,
+    image_source_hw: tuple[int, int] | None = None,
 ) -> TraceObservation:
     """Resize and augment images for the TraceVLA model.
 
@@ -128,6 +129,21 @@ def preprocess_trace_observation(
     point past the boundary) are clamped back into the unit square. With 5%
     crop margin and ±5° rotation this is rare for LIBERO-style data because the
     workspace points sit well inside the camera frame.
+
+    ``image_source_hw`` is the (height, width) of the original camera frame *before*
+    ``resize_with_pad`` letterboxes it into ``image_resolution``. It only affects how
+    the image-space keypoints (``semantic_target_xy``, ``current_ee_xy``,
+    ``future_trace_xy``) are placed into pixel space for the geometric augmentation.
+    When ``None`` (the default — used by square-image datasets such as LIBERO), the
+    keypoints map linearly to ``[0, W-1] x [0, H-1]`` exactly as before. For a
+    non-square source (e.g. the 480x640 table-tasks camera), ``resize_with_pad``
+    confines the visible content to a letterboxed sub-rectangle of the square model
+    image; we place the keypoints into that *same* rectangle so the random
+    crop/resize/rotate moves them in lockstep with the visible content
+    (label-preserving augmentation), then invert with the same fixed rectangle. The
+    normalized coordinate convention is therefore unchanged: keypoints stay in the
+    source camera frame's ``[0, 1]^2`` both in and out, so overlay rendering, the
+    trace supervision target, and inference are all unaffected.
 
     When ``train=False`` we only resize images to the target resolution; no augmax
     is applied. Overlay images and trace keypoints pass through unchanged.
@@ -173,7 +189,26 @@ def preprocess_trace_observation(
         B = raw_images[_BASE_IMAGE_KEY].shape[0]
         sub_rngs = jax.random.split(rng, B)
 
-        scale = jnp.asarray([W - 1, H - 1], dtype=jnp.float32)
+        # Keypoint <-> pixel mapping used to place the image-space keypoints into the
+        # 224x224 model frame for the geometric augmentation (and to invert afterward).
+        #   px = xy * kp_scale + kp_offset ;  xy = (px - kp_offset) / kp_scale
+        # For a square source (``image_source_hw is None``) this is the original linear
+        # map onto [0, W-1] x [0, H-1] (kp_offset = 0). For a non-square source we mirror
+        # ``resize_with_pad``'s letterbox so keypoints land on the visible content
+        # rectangle and track it under crop/resize/rotate; the inverse uses the same
+        # fixed rectangle, preserving the source-frame [0, 1]^2 coordinate convention.
+        if image_source_hw is None:
+            kp_scale = jnp.asarray([W - 1, H - 1], dtype=jnp.float32)
+            kp_offset = jnp.asarray([0.0, 0.0], dtype=jnp.float32)
+        else:
+            H_src, W_src = int(image_source_hw[0]), int(image_source_hw[1])
+            ratio = max(W_src / W, H_src / H)
+            content_w = int(round(W_src / ratio))
+            content_h = int(round(H_src / ratio))
+            pad_x = (W - content_w) // 2
+            pad_y = (H - content_h) // 2
+            kp_scale = jnp.asarray([content_w - 1, content_h - 1], dtype=jnp.float32)
+            kp_offset = jnp.asarray([float(pad_x), float(pad_y)], dtype=jnp.float32)
 
         # ---- 2a. Geometric + color chain on base + overlay + keypoints ----
         has_keypoints = (
@@ -195,10 +230,11 @@ def preprocess_trace_observation(
                 input_types=geom_input_types,
             )
 
-            # Convert keypoints to pixel coordinates in [0, W-1] x [0, H-1].
-            sem_px = (sem_xy * scale)[:, None, :]              # (B, 1, 2)
-            ee_px = (cur_ee_xy * scale)[:, None, :]            # (B, 1, 2)
-            ft_px = future_trace_xy * scale                    # (B, N, 2)
+            # Convert keypoints to pixel coordinates on the (possibly letterboxed)
+            # content rectangle of the 224x224 model frame.
+            sem_px = (sem_xy * kp_scale + kp_offset)[:, None, :]   # (B, 1, 2)
+            ee_px = (cur_ee_xy * kp_scale + kp_offset)[:, None, :] # (B, 1, 2)
+            ft_px = future_trace_xy * kp_scale + kp_offset         # (B, N, 2)
 
             inputs = [raw_images[_BASE_IMAGE_KEY]]
             if has_overlay_base:
@@ -218,10 +254,10 @@ def preprocess_trace_observation(
             ee_aug = outs[idx]; idx += 1
             ft_aug = outs[idx]
 
-            # Back to normalized [0, 1], clamped to image bounds.
-            sem_xy = jnp.clip(sem_aug[:, 0, :] / scale, 0.0, 1.0)
-            cur_ee_xy = jnp.clip(ee_aug[:, 0, :] / scale, 0.0, 1.0)
-            future_trace_xy = jnp.clip(ft_aug / scale, 0.0, 1.0)
+            # Back to normalized [0, 1] (source camera frame), clamped to bounds.
+            sem_xy = jnp.clip((sem_aug[:, 0, :] - kp_offset) / kp_scale, 0.0, 1.0)
+            cur_ee_xy = jnp.clip((ee_aug[:, 0, :] - kp_offset) / kp_scale, 0.0, 1.0)
+            future_trace_xy = jnp.clip((ft_aug - kp_offset) / kp_scale, 0.0, 1.0)
         else:
             # No keypoints provided — fall back to a plain image-only geom chain.
             base_chain = augmax.Chain(

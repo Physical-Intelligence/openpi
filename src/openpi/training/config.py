@@ -2406,6 +2406,72 @@ _CONFIGS = [
         wandb_enabled=True,
     ),
     # ============================================================
+    # TraceVLA combined-MoE on the physical-robot table-tasks dataset (full FT).
+    # ============================================================
+    # Mirror of ``trace_vla_moe`` (full FT, both action + trace streams are hard-routed
+    # MoE), retargeted from LIBERO to the physical-robot ``n5zhong/table_tasks`` dataset.
+    # Only the dataset-driven essentials change vs ``trace_vla_moe``:
+    #   - K=2 skill experts instead of 5 (the 3 table-task skills PICKUP_FROM / PLACE_ON /
+    #     PLACE_IN route onto 2 experts per ``embed_sigma`` / ``trace_utils.skill_to_expert_id``:
+    #     PICKUP_FROM -> 0, PLACE_ON/PLACE_IN -> 1). Both MoE streams use the new 2-expert
+    #     variants (``trace_moe_gemma_300m_2e`` / ``trace_moe_small_2e``).
+    #   - dataset = ``n5zhong/table_tasks`` + the table-task skill/trace annotations.
+    # The table_tasks images are stored as MP4 ``video`` features (vs LIBERO's in-parquet
+    # ``image`` features); ``LiberoTraceDataset`` decodes them transparently (guarded by
+    # ``self.meta.video_keys``). Trace coords live in the per-episode 640x480 space recorded
+    # in the trace annotations, and are normalized to [0, 1] before overlay/supervision —
+    # so the 480x640 camera resolution needs no special handling. All conditioning, training
+    # tricks (anchor-age augmentation, scene/overlay dropout, trace perturbation, image
+    # augmentation), completion head, and losses are identical to ``trace_vla_moe``.
+    TrainConfig(
+        name="trace_vla_moe_table_tasks",
+        model=__import__(
+            "openpi.models.pi0_trace_vla_moe_config", fromlist=["Pi0TraceVLAMoeConfig"]
+        ).Pi0TraceVLAMoeConfig(
+            paligemma_variant="gemma_2b",
+            action_expert_variant="trace_moe_gemma_300m_2e",   # 2-expert MoE for actions (full size)
+            trace_expert_variant="trace_moe_small_2e",         # 2-expert MoE for traces (shrunk)
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            max_token_len=200,
+            trace_horizon=20,
+            num_action_experts=2,
+            num_trace_experts=2,
+            # table-tasks camera frames are 480x640 (H x W); resize_with_pad letterboxes
+            # them into 224x224. This keeps train-time geometric augmentation of the
+            # trace/keypoint targets aligned with the letterboxed image content.
+            image_source_hw=(480, 640),
+        ),
+        data=LeRobotTraceVLAMoeDataConfig(
+            repo_id="n5zhong/table_tasks",
+            base_config=LiberoTraceDataConfig(
+                repo_path=str(REPO_ROOT / "data/table-tasks"),
+                prompt_from_task=True,
+                skill_annotations_path=str(REPO_ROOT / "data/table-tasks/tabletask_skill_annotations.json"),
+                trace_annotations_path=str(REPO_ROOT / "data/table-tasks/tabletask_skill_target_traces.json"),
+                use_wrist_image=True,
+                is_computing_norm_stats=False,
+            ),
+        ),
+        assets_base_dir=str(REPO_ROOT / "assets"),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=100_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
+        save_interval=5_000,
+        keep_period=5_000,
+        log_interval=100,
+        wandb_enabled=True,
+    ),
+    # ============================================================
     # TargetVLA-ActionMoe (Pi0TargetVLAActionMoe) - full FT and LoRA.
     # ============================================================
     # Trace-free ablation of the TraceVLA family. Architecture: 2-stream Gemma

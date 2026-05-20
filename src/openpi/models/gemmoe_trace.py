@@ -70,7 +70,9 @@ Variant = Literal[
     "trace_moe_dummy",
     "trace_moe_gemma_300m",  # full FT trace expert (1024 width, 18 layers, 5 experts)
     "trace_moe_gemma_300m_lora",  # LoRA variant (LoRA on attn+ffn)
+    "trace_moe_gemma_300m_2e",  # full FT action expert, 2 experts (table-tasks: PICKUP_FROM vs PLACE_*)
     "trace_moe_small",  # shrunk MoE for combined-MoE variant: 512 width, 2048 mlp, 5 experts
+    "trace_moe_small_2e",  # shrunk trace MoE, 2 experts (table-tasks: PICKUP_FROM vs PLACE_*)
     "trace_moe_small_dummy",  # tiny version of trace_moe_small for sandbox tests
 ]
 
@@ -117,6 +119,23 @@ def get_trace_config(variant: Variant) -> Config:
                 "ffn": lora.LoRAConfig(rank=32, alpha=32.0),
             },
         )
+    if variant == "trace_moe_gemma_300m_2e":
+        # Same shape as ``trace_moe_gemma_300m`` (full-size action MoE) but with only
+        # 2 skill experts, for the physical-robot table-tasks dataset whose 3 skills
+        # (PICKUP_FROM, PLACE_ON, PLACE_IN) route onto 2 experts per the skill mapping
+        # in ``embed_sigma()`` / ``trace_utils.skill_to_expert_id`` (PICKUP_FROM -> 0,
+        # PLACE_ON/PLACE_IN -> 1). Width/depth/head-shape are locked by the joint-
+        # attention asserts against ``gemma_2b``.
+        return Config(
+            width=1024,
+            depth=18,
+            mlp_dim=4096,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            num_local_experts=2,
+            num_experts_per_tok=1,
+        )
     if variant == "trace_moe_small":
         # Recipe C from traceVLA_moe_design.md: half-width, half-mlp_dim trace MoE
         # used in the combined-MoE variant (Pi0TraceVLAMoe). Both width and mlp_dim
@@ -131,6 +150,21 @@ def get_trace_config(variant: Variant) -> Config:
             num_kv_heads=1,
             head_dim=256,
             num_local_experts=5,
+            num_experts_per_tok=1,
+        )
+    if variant == "trace_moe_small_2e":
+        # 2-expert sibling of ``trace_moe_small`` (shrunk trace MoE) for the table-tasks
+        # combined-MoE variant. Same width=512/mlp_dim=2048/depth=18 as ``trace_moe_small``;
+        # only ``num_local_experts`` differs (2 instead of 5). Randomly initialized at
+        # train start (shape mismatch vs pi05_base, identical to ``trace_moe_small``).
+        return Config(
+            width=512,
+            depth=18,
+            mlp_dim=2048,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            num_local_experts=2,
             num_experts_per_tok=1,
         )
     if variant == "trace_moe_small_dummy":

@@ -173,6 +173,20 @@ class LiberoTraceDataset(LeRobotDataset):
         idx = self.indices[idx]
         item = self.hf_dataset[idx]
         ep_idx = int(item["episode_index"].item())
+        # Video-backed datasets (e.g. the physical-robot ``table_tasks`` set) store the
+        # camera streams as MP4 ``video`` features rather than in-parquet ``image``
+        # features, so the per-frame ``hf_dataset`` row carries no decoded image — we must
+        # decode the requested timestamp from the episode's videos. Mirrors
+        # ``LeRobotDataset.__getitem__`` / ``Atomic_Dataset``. We pass no delta_timestamps
+        # to ``super().__init__`` (``self.delta_indices`` is None), so a single current-ts
+        # query per video key is correct. For image-backed datasets (e.g. LIBERO)
+        # ``self.meta.video_keys`` is empty, so this block is a no-op and ``item["image"]``
+        # / ``item["wrist_image"]`` come straight from the parquet row as before.
+        if len(self.meta.video_keys) > 0:
+            current_ts = item["timestamp"].item()
+            query_timestamps = self._get_query_timestamps(current_ts, query_indices=None)
+            video_frames = self._query_videos(query_timestamps, ep_idx)
+            item = {**video_frames, **item}
         start_idx = int(self.episode_starts[ep_idx])
         end_idx = int(self.episode_ends[ep_idx])
         episode_step = idx - start_idx
