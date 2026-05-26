@@ -45,6 +45,7 @@ import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
+import openpi.training.optimizer as _optimizer
 
 
 def init_logging():
@@ -144,6 +145,34 @@ def get_model_parameters(model):
         if isinstance(model, torch.nn.parallel.DistributedDataParallel)
         else model.parameters()
     )
+
+
+def create_torch_adamw(
+    parameters,
+    *,
+    lr: float,
+    b1: float,
+    b2: float,
+    eps: float,
+    weight_decay: float,
+    use_fused: bool = True,
+) -> torch.optim.AdamW:
+    """Create AdamW; use fused CUDA kernel when supported (falls back on ROCm/CPU)."""
+    kwargs = {
+        "params": parameters,
+        "lr": lr,
+        "betas": (b1, b2),
+        "eps": eps,
+        "weight_decay": weight_decay,
+    }
+    if use_fused and torch.cuda.is_available():
+        try:
+            optim = torch.optim.AdamW(**kwargs, fused=True)
+            logging.info("Using fused AdamW optimizer")
+            return optim
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logging.warning("fused AdamW not available (%s), using unfused AdamW", exc)
+    return torch.optim.AdamW(**kwargs)
 
 
 def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
@@ -455,12 +484,14 @@ def train_loop(config: _config.TrainConfig):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
-    optim = torch.optim.AdamW(
-        model.parameters(),
+    optim = create_torch_adamw(
+        get_model_parameters(model),
         lr=peak_lr,
-        betas=(config.optimizer.b1, config.optimizer.b2),
+        b1=config.optimizer.b1,
+        b2=config.optimizer.b2,
         eps=config.optimizer.eps,
         weight_decay=config.optimizer.weight_decay,
+        use_fused=config.optimizer.fused if isinstance(config.optimizer, _optimizer.AdamW) else False,
     )
 
     # Load checkpoint if resuming
@@ -494,7 +525,9 @@ def train_loop(config: _config.TrainConfig):
             f"LR schedule: warmup={warmup_steps}, peak_lr={peak_lr:.2e}, decay_steps={decay_steps}, end_lr={end_lr:.2e}"
         )
         logging.info(
-            f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, clip_norm={config.optimizer.clip_gradient_norm}"
+            f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, "
+            f"clip_norm={config.optimizer.clip_gradient_norm}, "
+            f"fused_adamw={config.optimizer.fused if isinstance(config.optimizer, _optimizer.AdamW) else False}"
         )
         logging.info("EMA is not supported for PyTorch training")
         logging.info(f"Training precision: {model_cfg.dtype}")

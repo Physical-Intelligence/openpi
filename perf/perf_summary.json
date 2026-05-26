@@ -1,0 +1,134 @@
+{
+  "exp_name": "my_libero_finetune",
+  "global_step": 9,
+  "perf": {
+    "enabled": true,
+    "warmup_steps": 5,
+    "profile_steps": 5,
+    "start_step": 0,
+    "trace_output_dir": "./perf_traces"
+  },
+  "trace_file": "perf_traces/my_libero_finetune/trace_step000009.json",
+  "top_operators": [
+    {
+      "name": "aten::mm",
+      "device_time_ms": 27821.647,
+      "cpu_time_ms": 1803.634,
+      "count": 11190
+    },
+    {
+      "name": "aten::linear",
+      "device_time_ms": 23463.856,
+      "cpu_time_ms": 1011.556,
+      "count": 8720
+    },
+    {
+      "name": "autograd::engine::evaluate_function: MmBackward0",
+      "device_time_ms": 21285.735,
+      "cpu_time_ms": 12903.771,
+      "count": 1240
+    },
+    {
+      "name": "MmBackward0",
+      "device_time_ms": 21285.735,
+      "cpu_time_ms": 12889.638,
+      "count": 1240
+    },
+    {
+      "name": "aten::matmul",
+      "device_time_ms": 19267.575,
+      "cpu_time_ms": 4246.151,
+      "count": 4590
+    },
+    {
+      "name": "autograd::engine::evaluate_function: MulBackward0",
+      "device_time_ms": 15685.619,
+      "cpu_time_ms": 23558.46,
+      "count": 1350
+    },
+    {
+      "name": "MulBackward0",
+      "device_time_ms": 15145.777,
+      "cpu_time_ms": 11004.35,
+      "count": 1350
+    },
+    {
+      "name": "Cijk_Alik_Bljk_BBH_MT256x256x16_SE_AMAS3_BW_DTL0_BL1_DRB16_ALT_KME0_ETSP_EPS1_FL0_GRVW8_GSU1_ISA936_IU1_KME_GRCMn1_K1_KLA_LDL1_LRVW8_MAC_MMAC_BW1_MMAC_KM0_MMAC_KME1_NLCA1_NLCB1_OLDSR0_PGR1_PLR1_RK1_SU0_SUM0_SUS256_SVW4_TT16_8_TLM0_ULDSWM0_USFGRO0_USSB0_VAW1_VSn1_VW8_WG16_32_1_WGM8",
+      "device_time_ms": 9764.424,
+      "cpu_time_ms": 0.0,
+      "count": 900
+    },
+    {
+      "name": "aten::mul",
+      "device_time_ms": 9347.6,
+      "cpu_time_ms": 306.091,
+      "count": 8607
+    },
+    {
+      "name": "aten::copy_",
+      "device_time_ms": 8875.151,
+      "cpu_time_ms": 15611.661,
+      "count": 19168
+    },
+    {
+      "name": "autograd::engine::evaluate_function: AddmmBackward0",
+      "device_time_ms": 8790.689,
+      "cpu_time_ms": 19112.975,
+      "count": 2470
+    },
+    {
+      "name": "AddmmBackward0",
+      "device_time_ms": 8491.156,
+      "cpu_time_ms": 4283.145,
+      "count": 2470
+    },
+    {
+      "name": "aten::addmm",
+      "device_time_ms": 7036.18,
+      "cpu_time_ms": 480.586,
+      "count": 4940
+    },
+    {
+      "name": "Cijk_Alik_Bljk_BBH_MT256x256x16_SE_AMAS3_BW_DTL0_BL1_DRB16_ALT_KME0_ETSP_EPS1_FL0_GRVW8_GSU1_ISA936_IU1_KME_GRCMn1_K1_KLA_LDL1_LRVW8_MAC_MMAC_BW1_MMAC_KM0_MMAC_KME1_NLCA1_NLCB1_OLDSR0_PGR1_PLR1_RK1_SU0_SUM0_SUS256_SVW4_TT16_8_TLM0_ULDSWM0_USFGRO0_USSB0_VAW1_VSn1_VW8_WG16_32_1_WGM1",
+      "device_time_ms": 6326.565,
+      "cpu_time_ms": 0.0,
+      "count": 1620
+    },
+    {
+      "name": "Custom_Cijk_Alik_Bljk_BBS_BH_Bias_AS_SAV_MT64x64x64_MI16x16x1_SN_GSU1_K1_MIWT2_2",
+      "device_time_ms": 6070.4,
+      "cpu_time_ms": 0.0,
+      "count": 4050
+    },
+    {
+      "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1} const&)::{lambda(int)#1})",
+      "device_time_ms": 4970.101,
+      "cpu_time_ms": 0.0,
+      "count": 9870
+    },
+    {
+      "name": "aten::clone",
+      "device_time_ms": 4925.273,
+      "cpu_time_ms": 6074.848,
+      "count": 11540
+    },
+    {
+      "name": "Cijk_Ailk_Bljk_BBH_MT256x256x16_SE_AMAS3_BW_DTL0_BL1_DRB16_ALT_KME0_ETSP_EPS1_FL0_GRVW8_GSU1_ISA936_IU1_KME_GRCMn1_K1_KLA_LDL1_LRVW8_MAC_MMAC_BW1_MMAC_KM0_MMAC_KME1_NLCA1_NLCB1_OLDSR0_PGR1_PLR1_RK1_SU0_SUM0_SUS256_SVW4_TT16_8_TLM0_ULDSWM0_USFGRO0_USSB0_VAW2_VSn1_VW8_WG16_32_1_WGM5",
+      "device_time_ms": 4827.845,
+      "cpu_time_ms": 0.0,
+      "count": 270
+    },
+    {
+      "name": "aten::add",
+      "device_time_ms": 4164.557,
+      "cpu_time_ms": 3912.044,
+      "count": 8160
+    },
+    {
+      "name": "Cijk_Ailk_Bjlk_BBH_MT256x256x16_SE_AMAS3_BW_DTL0_BL1_DRB16_ALT_KME1_ETSP_EPS1_FL0_GRVW8_GSU1_ISA936_IU1_KME_GRCMn1_K1_KLA_LDL1_LRVW8_MAC_MMAC_BW1_MMAC_KM0_MMAC_KME1_NLCA1_NLCB1_OLDSR0_PGR1_PLR1_RK1_SU0_SUM0_SUS256_SVW4_TT16_8_TLM0_ULDSWM0_USFGRO0_USSB0_VAW1_VSn1_VW8_WG16_32_1_WGM8",
+      "device_time_ms": 3624.516,
+      "cpu_time_ms": 0.0,
+      "count": 700
+    }
+  ]
+}
