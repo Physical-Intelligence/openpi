@@ -82,10 +82,11 @@ def make_att_2d_masks(pad_masks, att_masks):
 
 
 class PI0Pytorch(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, *, use_joint_sdpa: bool = False):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.use_joint_sdpa = use_joint_sdpa
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -95,6 +96,7 @@ class PI0Pytorch(nn.Module):
             action_expert_config,
             use_adarms=[False, True] if self.pi05 else [False, False],
             precision=config.dtype,
+            use_joint_sdpa=use_joint_sdpa,
         )
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.width)

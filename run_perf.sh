@@ -11,3 +11,5 @@ python scripts/train_pytorch_perf.py pi0_libero \
   --batch-size 104 \
   --overwrite \
   --perf
+# Optional: fused joint attention (reduces aten::mm / aten::matmul)
+#   --pytorch-use-joint-sdpa

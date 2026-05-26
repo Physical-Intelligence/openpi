@@ -1,11 +1,53 @@
 from typing import Literal
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from transformers import GemmaForCausalLM
 from transformers import PaliGemmaForConditionalGeneration
 from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.gemma import modeling_gemma
+
+import openpi.models_pytorch.sdpa_utils as _sdpa_utils
+
+
+def joint_sdpa_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    scaling: float,
+    dropout: float = 0.0,
+) -> tuple[torch.Tensor, None]:
+    """Fused SDPA for Pi0 joint prefix+suffix attention (replaces eager matmul attention)."""
+    key_states = modeling_gemma.repeat_kv(key, module.num_key_value_groups)
+    value_states = modeling_gemma.repeat_kv(value, module.num_key_value_groups)
+
+    attn_mask = None
+    if attention_mask is not None:
+        attn_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+
+    dropout_p = dropout if module.training else 0.0
+    _sdpa_utils.maybe_log_runtime_joint_sdpa_probe(
+        query=query,
+        key=key_states,
+        value=value_states,
+        attn_mask=attn_mask,
+        scaling=scaling,
+        dropout=dropout_p,
+    )
+    attn_output = F.scaled_dot_product_attention(
+        query,
+        key_states,
+        value_states,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        scale=scaling,
+        is_causal=False,
+    )
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    return attn_output, None
 
 
 class PaliGemmaWithExpertModel(nn.Module):
@@ -15,6 +57,7 @@ class PaliGemmaWithExpertModel(nn.Module):
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
+        use_joint_sdpa: bool = False,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -57,6 +100,7 @@ class PaliGemmaWithExpertModel(nn.Module):
         self.gemma_expert = GemmaForCausalLM(config=action_expert_config_hf)
         self.gemma_expert.model.embed_tokens = None
 
+        self.use_joint_sdpa = use_joint_sdpa
         self.to_bfloat16_for_selected_params(precision)
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
@@ -194,16 +238,21 @@ class PaliGemmaWithExpertModel(nn.Module):
                 )
 
                 batch_size = query_states.shape[0]
-                scaling = self.paligemma.language_model.layers[layer_idx].self_attn.scaling
+                attn_module = self.paligemma.language_model.layers[layer_idx].self_attn
+                scaling = attn_module.scaling
+                dropout = 0.0 if not self.training else attn_module.attention_dropout
 
-                # Attention computation
-                att_output, _ = modeling_gemma.eager_attention_forward(
-                    self.paligemma.language_model.layers[layer_idx].self_attn,
+                attention_forward = (
+                    joint_sdpa_attention_forward if self.use_joint_sdpa else modeling_gemma.eager_attention_forward
+                )
+                att_output, _ = attention_forward(
+                    attn_module,
                     query_states,
                     key_states,
                     value_states,
                     attention_mask,
                     scaling,
+                    dropout=dropout,
                 )
                 # Get head_dim from the current layer, not from the model
                 head_dim = self.paligemma.language_model.layers[layer_idx].self_attn.head_dim

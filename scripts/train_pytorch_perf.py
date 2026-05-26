@@ -32,6 +32,10 @@ import time
 from typing import Any
 
 _scripts_dir = pathlib.Path(__file__).resolve().parent
+_repo_root = _scripts_dir.parent
+_src_dir = _repo_root / "src"
+if _src_dir.is_dir():
+    sys.path.insert(0, str(_src_dir))
 if str(_scripts_dir) not in sys.path:
     sys.path.insert(0, str(_scripts_dir))
 
@@ -47,6 +51,8 @@ import openpi.models_pytorch.pi0_pytorch
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
 import train_pytorch as _base
+
+_sdpa_utils = _base._load_sdpa_utils()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -268,7 +274,9 @@ def train_loop(config: _config.TrainConfig, perf: PerfConfig) -> None:
         model_cfg = config.model
         object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
-    model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
+    model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(
+        model_cfg, use_joint_sdpa=config.pytorch_use_joint_sdpa
+    ).to(device)
 
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
@@ -331,6 +339,12 @@ def train_loop(config: _config.TrainConfig, perf: PerfConfig) -> None:
     )
     logging.info("EMA is not supported for PyTorch training")
     logging.info(f"Training precision: {model_cfg.dtype}")
+    _sdpa_utils.log_joint_sdpa_backend_info(
+        use_joint_sdpa=config.pytorch_use_joint_sdpa,
+        device=device,
+        model=model,
+        batch_size=min(config.batch_size, 4),
+    )
 
     pbar = tqdm.tqdm(total=config.num_train_steps, initial=global_step, desc="Training")
 

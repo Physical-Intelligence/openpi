@@ -485,6 +485,9 @@ class TrainConfig:
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
 
+    # Use fused SDPA for Pi0 joint prefix+suffix attention (scripts/train_pytorch.py only).
+    pytorch_use_joint_sdpa: bool = False
+
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
