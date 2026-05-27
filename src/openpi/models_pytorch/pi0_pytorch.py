@@ -9,6 +9,7 @@ import torch.nn.functional as F  # noqa: N812
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+import openpi.models_pytorch.sdpa_utils as _sdpa_utils
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -82,11 +83,20 @@ def make_att_2d_masks(pad_masks, att_masks):
 
 
 class PI0Pytorch(nn.Module):
-    def __init__(self, config, *, use_joint_sdpa: bool = False):
+    def __init__(
+        self,
+        config,
+        *,
+        joint_attention: _sdpa_utils.JointAttentionMode = "auto",
+        submodule_attn: _sdpa_utils.SubmoduleAttentionMode = "sdpa",
+        use_joint_sdpa: bool | None = None,
+    ):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
-        self.use_joint_sdpa = use_joint_sdpa
+        if use_joint_sdpa is not None:
+            joint_attention = "sdpa" if use_joint_sdpa else "auto"
+        self.joint_attention_mode = joint_attention
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -96,7 +106,8 @@ class PI0Pytorch(nn.Module):
             action_expert_config,
             use_adarms=[False, True] if self.pi05 else [False, False],
             precision=config.dtype,
-            use_joint_sdpa=use_joint_sdpa,
+            joint_attention=joint_attention,
+            submodule_attn=submodule_attn,
         )
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.width)

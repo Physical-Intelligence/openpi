@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Literal
 
 import torch
+
+JointAttentionMode = Literal["eager", "sdpa", "auto"]
+SubmoduleAttentionMode = Literal["eager", "sdpa"]
+
+_FLASH_SDPA_BACKEND_NAMES = frozenset({"flash_attention", "flash"})
+
+_LAST_FUSED_SDP_CHOICE_ERROR: str | None = None
 
 # Matches aten::SDPBackend ordering used by torch.ops.aten._fused_sdp_choice.
 _FUSED_SDP_CHOICE_NAMES: dict[int, str] = {
@@ -56,18 +63,23 @@ def probe_fused_sdp_choice_from_tensors(
     dropout: float = 0.0,
 ) -> tuple[int, str] | None:
     """Run torch.ops.aten._fused_sdp_choice on the exact Q/K/V/mask passed to SDPA."""
+    global _LAST_FUSED_SDP_CHOICE_ERROR  # noqa: PLW0603
+
     if query.device.type not in ("cuda", "hip"):
+        _LAST_FUSED_SDP_CHOICE_ERROR = f"unsupported device type {query.device.type!r}"
         return None
 
     op = getattr(torch.ops.aten, "_fused_sdp_choice", None)
     if op is None:
+        _LAST_FUSED_SDP_CHOICE_ERROR = "torch.ops.aten._fused_sdp_choice not available"
         return None
 
+    # SigLIP etc. use attn_mask=None; probing with a synthetic 4D mask often yields math, not flash.
     mask = attn_mask
+    fallback_mask = None
     if mask is None:
-        # _fused_sdp_choice expects a tensor; use a zero mask when SDPA has no mask.
         seq_len = key.shape[-2]
-        mask = torch.zeros(
+        fallback_mask = torch.zeros(
             query.shape[0],
             1,
             query.shape[-2],
@@ -76,22 +88,40 @@ def probe_fused_sdp_choice_from_tensors(
             dtype=query.dtype,
         )
 
-    try:
-        with torch.no_grad():
-            choice = int(op(query, key, value, mask, dropout, False, scaling, False))
-    except TypeError:
-        try:
-            with torch.no_grad():
-                choice = int(op(query, key, value, mask, dropout, False, scaling))
-        except TypeError:
+    mask_candidates: list[torch.Tensor | None] = [None, fallback_mask] if mask is None else [mask]
+    call_variants: list = []
+    for mask_arg in mask_candidates:
+        call_variants.extend(
+            [
+                lambda ma=mask_arg: op(
+                    query, key, value, ma, dropout, False, scale=scaling, enable_gqa=False
+                ),
+                lambda ma=mask_arg: op(query, key, value, ma, dropout, False, scale=scaling),
+                lambda ma=mask_arg: op(query, key, value, ma, dropout, False),
+            ]
+        )
+        if mask_arg is not None:
+            call_variants.extend(
+                [
+                    lambda ma=mask_arg: op(query, key, value, ma, dropout, False, scaling, False),
+                    lambda ma=mask_arg: op(query, key, value, ma, dropout, False, scaling),
+                ]
+            )
+    choice: int | None = None
+    last_exc: Exception | None = None
+    with torch.no_grad():
+        for call in call_variants:
             try:
-                with torch.no_grad():
-                    choice = int(op(query, key, value, mask, dropout, False))
-            except Exception:
-                return None
-    except Exception:
+                choice = int(call())
+                break
+            except Exception as exc:
+                last_exc = exc
+                continue
+    if choice is None:
+        _LAST_FUSED_SDP_CHOICE_ERROR = repr(last_exc) if last_exc else "all call variants failed"
         return None
 
+    _LAST_FUSED_SDP_CHOICE_ERROR = None
     return choice, _sdp_backend_name_from_choice(choice)
 
 
@@ -106,187 +136,180 @@ def probe_fused_sdp_choice(
     scaling: float,
     dropout: float = 0.0,
 ) -> tuple[int, str] | None:
-    """Run torch.ops.aten._fused_sdp_choice with joint-attention-like tensors."""
+    """Run _fused_sdp_choice with joint-attention-like tensors (4D additive mask)."""
     if device.type not in ("cuda", "hip"):
         return None
 
     q = torch.zeros(batch_size, num_heads, seq_len, head_dim, device=device, dtype=dtype)
     k = torch.zeros_like(q)
     v = torch.zeros_like(q)
-    # Additive mask matching pi0_pytorch._prepare_attention_masks_4d.
     attn_mask = torch.zeros(batch_size, 1, seq_len, seq_len, device=device, dtype=dtype)
-
     return probe_fused_sdp_choice_from_tensors(
         q, k, v, attn_mask, scaling=scaling, dropout=dropout
     )
 
 
-def _tensor_probe_meta(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_mask: torch.Tensor | None,
-) -> dict[str, Any]:
-    def _shape_str(t: torch.Tensor) -> str:
-        return "x".join(str(d) for d in t.shape)
-
-    meta: dict[str, Any] = {
-        "q": _shape_str(query),
-        "k": _shape_str(key),
-        "v": _shape_str(value),
-        "dtype": str(query.dtype).removeprefix("torch."),
-    }
-    if attn_mask is not None:
-        meta["mask"] = _shape_str(attn_mask)
-    return meta
-
-
-_RUNTIME_JOINT_SDPA_PROBE_LOGGED = False
-
-
-def maybe_log_runtime_joint_sdpa_probe(
-    *,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_mask: torch.Tensor | None,
-    scaling: float,
-    dropout: float = 0.0,
-) -> None:
-    """Log SDPA backend selection once on the first real joint-attention forward."""
-    global _RUNTIME_JOINT_SDPA_PROBE_LOGGED  # noqa: PLW0603
-    if _RUNTIME_JOINT_SDPA_PROBE_LOGGED:
-        return
-    _RUNTIME_JOINT_SDPA_PROBE_LOGGED = True
-
-    enabled = get_sdpa_enabled_backends()
-    probe_meta = _tensor_probe_meta(query, key, value, attn_mask)
-    probe: tuple[int, str] | None = None
-    try:
-        probe = probe_fused_sdp_choice_from_tensors(
-            query, key, value, attn_mask, scaling=scaling, dropout=dropout
-        )
-    except Exception as exc:
-        logging.warning("SDPA runtime kernel probe failed: %s", exc)
-
-    lines = ["SDPA runtime probe (first joint forward, actual 4D mask):"]
-    if enabled:
-        parts = [f"{k}={v}" for k, v in enabled.items()]
-        lines.append(f"  backends enabled: {', '.join(parts)}")
-    meta_str = ", ".join(f"{k}={v}" for k, v in probe_meta.items())
-    lines.append(f"  tensors: {meta_str}")
+def _format_probe_selected(probe: tuple[int, str] | None) -> str:
     if probe is None:
-        lines.append("  selected: unavailable (_fused_sdp_choice failed)")
-    else:
-        choice, name = probe
-        lines.append(f"  selected: {name} (choice={choice})")
-    lines.append(
-        "  note: _fused_sdp_choice predicts the SDPA dispatch; "
-        "use torch profiler to confirm if kernels differ."
+        if _LAST_FUSED_SDP_CHOICE_ERROR:
+            return f"unavailable ({_LAST_FUSED_SDP_CHOICE_ERROR})"
+        return "unavailable"
+    name, choice = probe[1], probe[0]
+    return f"{name} (choice={choice})"
+
+
+def resolve_pytorch_joint_attention(
+    *,
+    joint_attention: JointAttentionMode,
+    use_joint_sdpa_legacy: bool,
+) -> JointAttentionMode:
+    """Apply legacy ``pytorch_use_joint_sdpa`` override."""
+    if use_joint_sdpa_legacy:
+        return "sdpa"
+    return joint_attention
+
+
+def configure_submodule_attention(
+    paligemma_with_expert: Any, implementation: SubmoduleAttentionMode
+) -> None:
+    """Set HF ``_attn_implementation`` for vision / language / expert (non-joint paths)."""
+    pg = paligemma_with_expert.paligemma
+    for cfg in (
+        pg.config.vision_config,
+        pg.config.text_config,
+        paligemma_with_expert.gemma_expert.model.config,
+    ):
+        cfg._attn_implementation = implementation  # noqa: SLF001
+
+
+_AUTO_JOINT_RESOLVED: str | None = None
+
+
+def resolve_joint_use_sdpa(
+    mode: JointAttentionMode,
+    *,
+    module: torch.nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    scaling: float,
+    dropout: float,
+) -> tuple[bool, str]:
+    """Whether joint attention should call SDPA (True) or eager matmul (False)."""
+    global _AUTO_JOINT_RESOLVED  # noqa: PLW0603
+
+    if mode == "eager":
+        return False, "eager"
+    if mode == "sdpa":
+        return True, "sdpa"
+
+    if _AUTO_JOINT_RESOLVED is not None:
+        return _AUTO_JOINT_RESOLVED == "sdpa", _AUTO_JOINT_RESOLVED
+
+    from transformers.models.gemma import modeling_gemma
+
+    key_states = modeling_gemma.repeat_kv(key, module.num_key_value_groups)
+    value_states = modeling_gemma.repeat_kv(value, module.num_key_value_groups)
+    attn_mask = None
+    if attention_mask is not None:
+        attn_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+    dropout_p = dropout if module.training else 0.0
+
+    probe = probe_fused_sdp_choice_from_tensors(
+        query, key_states, value_states, attn_mask, scaling=scaling, dropout=dropout_p
     )
-    for line in lines:
-        logging.info(line)
+    if probe is not None and probe[1] in _FLASH_SDPA_BACKEND_NAMES:
+        _AUTO_JOINT_RESOLVED = "sdpa"
+    elif attn_mask is not None:
+        _AUTO_JOINT_RESOLVED = "eager"
+    else:
+        _AUTO_JOINT_RESOLVED = "sdpa"
+
+    return _AUTO_JOINT_RESOLVED == "sdpa", _AUTO_JOINT_RESOLVED
 
 
-def probe_shapes_from_pi0_model(model: Any) -> dict[str, Any]:
-    """Infer probe tensor shapes from a PI0Pytorch model."""
+def _paligemma_from_probe_model(model: Any) -> Any:
+    if hasattr(model, "paligemma_with_expert"):
+        return model.paligemma_with_expert.paligemma
+    return model.paligemma
+
+
+def _probe_siglip_sdpa(
+    model: Any, device: torch.device, batch_size: int
+) -> tuple[int, str] | None:
+    paligemma = _paligemma_from_probe_model(model)
+    vision = paligemma.vision_tower
+    vision_model = vision.vision_model if hasattr(vision, "vision_model") else vision
+    attn = vision_model.encoder.layers[0].self_attn
+    cfg = attn.config
+    image_size = getattr(cfg, "image_size", 224)
+    if isinstance(image_size, (list, tuple)):
+        image_size = int(image_size[0])
+    patch_size = int(getattr(cfg, "patch_size", 16))
+    seq_len = (int(image_size) // patch_size) ** 2
+    dtype = next(attn.q_proj.parameters()).dtype
+    q = torch.zeros(batch_size, attn.num_heads, seq_len, attn.head_dim, device=device, dtype=dtype)
+    k = torch.zeros_like(q)
+    v = torch.zeros_like(q)
+    return probe_fused_sdp_choice_from_tensors(q, k, v, None, scaling=float(attn.scale))
+
+
+def _probe_joint_sdpa(
+    model: Any, device: torch.device, batch_size: int, seq_len: int
+) -> tuple[int, str] | None:
     attn = model.paligemma_with_expert.paligemma.language_model.layers[0].self_attn
     cfg = attn.config
-    num_heads = cfg.num_attention_heads
-    head_dim = attn.head_dim
-    scaling = attn.scaling
-    param = next(attn.q_proj.parameters())
-    dtype = param.dtype
-    return {
-        "num_heads": num_heads,
-        "head_dim": head_dim,
-        "scaling": scaling,
-        "dtype": dtype,
-    }
-
-
-def format_joint_sdpa_log_lines(
-    *,
-    use_joint_sdpa: bool,
-    device: torch.device,
-    enabled_backends: dict[str, bool],
-    probe: tuple[int, str] | None,
-    probe_meta: dict[str, Any] | None = None,
-) -> list[str]:
-    lines = [f"Joint attention SDPA: enabled={use_joint_sdpa}"]
-    if enabled_backends:
-        parts = [f"{k}={v}" for k, v in enabled_backends.items()]
-        lines.append(f"SDPA backends enabled (torch.backends.cuda): {', '.join(parts)}")
-
-    rocm_backend = os.environ.get("PYTORCH_ROCM_SDPA_BACKEND")
-    on_rocm = device.type == "hip" or getattr(torch.version, "hip", None) is not None
-    if rocm_backend is not None:
-        lines.append(f"PYTORCH_ROCM_SDPA_BACKEND={rocm_backend}")
-    elif on_rocm:
-        lines.append("PYTORCH_ROCM_SDPA_BACKEND=(not set)")
-
-    if not use_joint_sdpa:
-        lines.append("SDPA kernel probe: skipped (joint SDPA disabled)")
-        return lines
-
-    if probe is None:
-        lines.append("SDPA startup probe: unavailable (_fused_sdp_choice failed or unsupported device)")
-        lines.append(
-            "SDPA runtime probe: will log on first joint forward with real batch/seq/mask (if joint SDPA enabled)"
-        )
-        return lines
-
-    choice, name = probe
-    meta = probe_meta or {}
-    meta_str = ", ".join(f"{k}={v}" for k, v in meta.items())
-    lines.append(f"SDPA startup probe (synthetic zero tensors, {meta_str}): selected={name} (choice={choice})")
-    lines.append(
-        "SDPA runtime probe: will log on first joint forward with real batch/seq/mask (if joint SDPA enabled)"
+    dtype = next(attn.q_proj.parameters()).dtype
+    return probe_fused_sdp_choice(
+        device=device,
+        dtype=dtype,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        num_heads=cfg.num_attention_heads,
+        head_dim=attn.head_dim,
+        scaling=attn.scaling,
     )
-    return lines
 
 
 def log_joint_sdpa_backend_info(
     *,
-    use_joint_sdpa: bool,
+    joint_attention: JointAttentionMode,
+    submodule_attn: SubmoduleAttentionMode,
     device: torch.device,
     model: Any | None = None,
     batch_size: int = 2,
     seq_len: int = 512,
 ) -> None:
-    """Log joint SDPA switch, enabled backends, env overrides, and probe result."""
+    """Log attention modes, enabled SDPA backends, and one-line probe summary."""
     enabled = get_sdpa_enabled_backends()
+    enabled_str = ", ".join(f"{k}={v}" for k, v in enabled.items()) if enabled else "(none)"
 
-    probe: tuple[int, str] | None = None
-    probe_meta: dict[str, Any] | None = None
+    on_gpu = model is not None and device.type in ("cuda", "hip")
 
-    if use_joint_sdpa and model is not None and device.type in ("cuda", "hip"):
-        try:
-            shapes = probe_shapes_from_pi0_model(model)
-            probe_meta = {
-                "batch": batch_size,
-                "seq": seq_len,
-                "heads": shapes["num_heads"],
-                "head_dim": shapes["head_dim"],
-                "dtype": str(shapes["dtype"]).removeprefix("torch."),
-            }
-            probe = probe_fused_sdp_choice(
-                device=device,
-                dtype=shapes["dtype"],
-                batch_size=batch_size,
-                seq_len=seq_len,
-                num_heads=shapes["num_heads"],
-                head_dim=shapes["head_dim"],
-                scaling=shapes["scaling"],
-            )
-        except Exception as exc:
-            logging.warning("SDPA kernel probe failed: %s", exc)
+    if submodule_attn == "sdpa" and on_gpu:
+        siglip_sel = _format_probe_selected(_probe_siglip_sdpa(model, device, batch_size))
+    elif submodule_attn == "sdpa":
+        siglip_sel = "unavailable (no GPU)"
+    else:
+        siglip_sel = "eager (HF, not SDPA)"
 
-    for line in format_joint_sdpa_log_lines(
-        use_joint_sdpa=use_joint_sdpa,
-        device=device,
-        enabled_backends=enabled,
-        probe=probe,
-        probe_meta=probe_meta,
-    ):
-        logging.info(line)
+    if joint_attention == "auto":
+        joint_sel = "eager matmul (auto; Pi0 training uses 4D mask, not joint SDPA)"
+    elif joint_attention == "eager":
+        joint_sel = "eager matmul"
+    elif on_gpu:
+        joint_sel = _format_probe_selected(_probe_joint_sdpa(model, device, batch_size, seq_len))
+    else:
+        joint_sel = "unavailable (no GPU)"
+
+    logging.info(f"Attention: joint={joint_attention}, submodules(HF)={submodule_attn}")
+    logging.info(f"SDPA backends enabled (torch.backends.cuda): {enabled_str}")
+    logging.info(f"SDPA probe selected: SigLIP={siglip_sel}; joint={joint_sel}")
+
+    rocm_backend = os.environ.get("PYTORCH_ROCM_SDPA_BACKEND")
+    on_rocm = device.type == "hip" or getattr(torch.version, "hip", None) is not None
+    if rocm_backend is not None:
+        logging.info(f"PYTORCH_ROCM_SDPA_BACKEND={rocm_backend}")
+    elif on_rocm:
+        logging.info("PYTORCH_ROCM_SDPA_BACKEND=(not set)")

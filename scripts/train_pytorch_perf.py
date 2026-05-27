@@ -274,8 +274,14 @@ def train_loop(config: _config.TrainConfig, perf: PerfConfig) -> None:
         model_cfg = config.model
         object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
+    joint_attention = _sdpa_utils.resolve_pytorch_joint_attention(
+        joint_attention=config.pytorch_joint_attention,
+        use_joint_sdpa_legacy=config.pytorch_use_joint_sdpa,
+    )
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(
-        model_cfg, use_joint_sdpa=config.pytorch_use_joint_sdpa
+        model_cfg,
+        joint_attention=joint_attention,
+        submodule_attn=config.pytorch_submodule_attn,
     ).to(device)
 
     if hasattr(model, "gradient_checkpointing_enable"):
@@ -340,7 +346,8 @@ def train_loop(config: _config.TrainConfig, perf: PerfConfig) -> None:
     logging.info("EMA is not supported for PyTorch training")
     logging.info(f"Training precision: {model_cfg.dtype}")
     _sdpa_utils.log_joint_sdpa_backend_info(
-        use_joint_sdpa=config.pytorch_use_joint_sdpa,
+        joint_attention=joint_attention,
+        submodule_attn=config.pytorch_submodule_attn,
         device=device,
         model=model,
         batch_size=min(config.batch_size, 4),

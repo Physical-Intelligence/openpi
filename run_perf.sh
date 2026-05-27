@@ -11,5 +11,7 @@ python scripts/train_pytorch_perf.py pi0_libero \
   --batch-size 104 \
   --overwrite \
   --perf
-# Optional: fused joint attention (reduces aten::mm / aten::matmul)
+# Default hybrid: joint auto (eager w/ 4D mask) + SigLIP sdpa. Legacy all-joint SDPA:
 #   --pytorch-use-joint-sdpa
+# Explicit modes:
+#   --pytorch-joint-attention auto|eager|sdpa  --pytorch-submodule-attn sdpa|eager

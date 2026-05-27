@@ -1,6 +1,7 @@
 from typing import Literal
 
 import torch
+from typing_extensions import TypeAlias
 import torch.nn.functional as F
 from torch import nn
 from transformers import GemmaForCausalLM
@@ -9,6 +10,9 @@ from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.gemma import modeling_gemma
 
 import openpi.models_pytorch.sdpa_utils as _sdpa_utils
+
+JointAttentionMode: TypeAlias = _sdpa_utils.JointAttentionMode
+SubmoduleAttentionMode: TypeAlias = _sdpa_utils.SubmoduleAttentionMode
 
 
 def joint_sdpa_attention_forward(
@@ -29,14 +33,6 @@ def joint_sdpa_attention_forward(
         attn_mask = attention_mask[:, :, :, : key_states.shape[-2]]
 
     dropout_p = dropout if module.training else 0.0
-    _sdpa_utils.maybe_log_runtime_joint_sdpa_probe(
-        query=query,
-        key=key_states,
-        value=value_states,
-        attn_mask=attn_mask,
-        scaling=scaling,
-        dropout=dropout_p,
-    )
     attn_output = F.scaled_dot_product_attention(
         query,
         key_states,
@@ -50,6 +46,38 @@ def joint_sdpa_attention_forward(
     return attn_output, None
 
 
+def joint_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    scaling: float,
+    dropout: float = 0.0,
+    *,
+    mode: JointAttentionMode = "auto",
+) -> tuple[torch.Tensor, None]:
+    """Joint attention: SDPA when supported, else eager matmul (see ``mode``)."""
+    use_sdpa, _ = _sdpa_utils.resolve_joint_use_sdpa(
+        mode,
+        module=module,
+        query=query,
+        key=key,
+        value=value,
+        attention_mask=attention_mask,
+        scaling=scaling,
+        dropout=dropout,
+    )
+    if use_sdpa:
+        return joint_sdpa_attention_forward(
+            module, query, key, value, attention_mask, scaling, dropout=dropout
+        )
+    att_output, _ = modeling_gemma.eager_attention_forward(
+        module, query, key, value, attention_mask, scaling, dropout=dropout
+    )
+    return att_output, None
+
+
 class PaliGemmaWithExpertModel(nn.Module):
     def __init__(
         self,
@@ -57,7 +85,9 @@ class PaliGemmaWithExpertModel(nn.Module):
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
-        use_joint_sdpa: bool = False,
+        joint_attention: JointAttentionMode = "auto",
+        submodule_attn: SubmoduleAttentionMode = "sdpa",
+        use_joint_sdpa: bool | None = None,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -100,7 +130,10 @@ class PaliGemmaWithExpertModel(nn.Module):
         self.gemma_expert = GemmaForCausalLM(config=action_expert_config_hf)
         self.gemma_expert.model.embed_tokens = None
 
-        self.use_joint_sdpa = use_joint_sdpa
+        if use_joint_sdpa is not None:
+            joint_attention = "sdpa" if use_joint_sdpa else "auto"
+        self.joint_attention_mode = joint_attention
+        _sdpa_utils.configure_submodule_attention(self, submodule_attn)
         self.to_bfloat16_for_selected_params(precision)
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
@@ -242,10 +275,7 @@ class PaliGemmaWithExpertModel(nn.Module):
                 scaling = attn_module.scaling
                 dropout = 0.0 if not self.training else attn_module.attention_dropout
 
-                attention_forward = (
-                    joint_sdpa_attention_forward if self.use_joint_sdpa else modeling_gemma.eager_attention_forward
-                )
-                att_output, _ = attention_forward(
+                att_output, _ = joint_attention_forward(
                     attn_module,
                     query_states,
                     key_states,
@@ -253,6 +283,7 @@ class PaliGemmaWithExpertModel(nn.Module):
                     attention_mask,
                     scaling,
                     dropout=dropout,
+                    mode=self.joint_attention_mode,
                 )
                 # Get head_dim from the current layer, not from the model
                 head_dim = self.paligemma.language_model.layers[layer_idx].self_attn.head_dim
