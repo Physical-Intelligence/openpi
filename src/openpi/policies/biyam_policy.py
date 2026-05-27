@@ -73,8 +73,8 @@ class YAMInputs(transforms.DataTransformFn):
         # Pad actions to the model action dimension. Keep this for your own dataset.
 
         # Actions are only available during training.
-        if "actions" in data:
-            inputs["actions"] = transforms.pad_to_dim(data["actions"], target_dim=32)
+        if "action" in data:
+            inputs["actions"] = transforms.pad_to_dim(data["actions"], dim=32)
         # Pass the prompt (aka language instruction) to the model.
         # Keep this for your own dataset (but modify the key if the instruction is not
         # stored in "prompt"; the output dict always needs to have the key "prompt").
