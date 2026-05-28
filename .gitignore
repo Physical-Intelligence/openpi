@@ -4,6 +4,9 @@ checkpoints/
 data/
 wandb/
 
+COMMANDS.md
+RUNBOOK.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

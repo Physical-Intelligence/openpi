@@ -18,6 +18,7 @@ Writes:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import cv2
@@ -43,13 +44,27 @@ def main():
     for cam in ("top", "left", "right"):
         (args.out_dir / cam).mkdir(exist_ok=True)
 
-    dataset = LeRobotDataset(args.src_repo_id, episodes=[args.episode_index])
+    try:
+        dataset = LeRobotDataset(args.src_repo_id, episodes=[args.episode_index], tolerance_s=1e-3)
+    except ValueError as exc:
+        if "no data" in str(exc).lower():
+            print(f"[warn] episode {args.episode_index} has no data, skipping", file=sys.stderr)
+            (args.out_dir / "length.txt").write_text("0")
+            return
+        raise
 
     states, actions = [], []
     task_str = None
 
+    skipped = 0
+    write_idx = 0
     for i in range(len(dataset)):
-        frame = dataset[i]
+        try:
+            frame = dataset[i]
+        except (RuntimeError, Exception) as exc:
+            print(f"[warn] skipping frame {i}: {exc}", file=sys.stderr)
+            skipped += 1
+            continue
         states.append(frame["observation.state"].numpy())
         actions.append(frame["action"].numpy())
         if task_str is None:
@@ -63,15 +78,16 @@ def main():
             img = chw_float_to_hwc_uint8(frame[key])
             bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             cv2.imwrite(
-                str(args.out_dir / cam / f"{i:06d}.jpg"),
+                str(args.out_dir / cam / f"{write_idx:06d}.jpg"),
                 bgr,
                 [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
             )
+        write_idx += 1
 
     np.save(args.out_dir / "state.npy", np.stack(states).astype(np.float32))
     np.save(args.out_dir / "action.npy", np.stack(actions).astype(np.float32))
     (args.out_dir / "task.txt").write_text(task_str or "")
-    (args.out_dir / "length.txt").write_text(str(len(dataset)))
+    (args.out_dir / "length.txt").write_text(str(write_idx))
 
 
 if __name__ == "__main__":

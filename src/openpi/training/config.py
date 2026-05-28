@@ -746,7 +746,7 @@ _CONFIGS = [
         # dataset. For your own dataset, you can change the repo_id to point to your dataset.
         # Also modify the DataConfig to use the new config you made for your dataset above.
         data=LeRobotBiYAMDataConfig(
-            repo_id="leokswang/YAM_lerobot_format",
+            repo_id="leokswang/18122025-foldclo-01_lerobot_format",
             base_config=DataConfig(
                 # This flag determines whether we load the prompt (i.e. the task instruction) from the
                 # ``task`` field in the LeRobot dataset. If set to True, the prompt will show up in
@@ -757,12 +757,46 @@ _CONFIGS = [
         ),
         # Here you define which pre-trained checkpoint you want to load to initialize the model.
         # This should match the model config you chose above -- i.e. in this case we use the pi0 base model.
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets-preview/checkpoints/pi05_droid"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
         # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
     ),
-    
+
+    # Fold-cloth fine-tune intended to run on the CMU Babel cluster across 4 GPUs.
+    # Same data/model as pi05_BiYAMMolmoAct2, but: (1) task prompts ARE included in
+    # training (prompt_from_task=True), (2) global batch size 64, and (3) the model is
+    # sharded across 4 GPUs with FSDP (fsdp_devices=4). See examples/babel/README.md.
+    TrainConfig(
+        name="pi05_foldclo_babel",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotBiYAMDataConfig(
+            repo_id="leokswang/18122025-foldclo-01_lerobot_format",
+            base_config=DataConfig(
+                # This time we DO feed the per-episode task instruction (the "task" field
+                # in the LeRobot dataset) to the model as the language prompt.
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        # ~9 epochs over this 37k-frame / 10-episode dataset at batch 64 (5000*64/37278).
+        # The dataset is tiny, so we keep this low and pick the best checkpoint experimentally
+        # rather than training to a fixed large step count. Revisit based on robot eval.
+        num_train_steps=5_000,
+        # 64 must be divisible by the number of GPUs (4) -> 16 samples per GPU before sharding.
+        batch_size=64,
+        # Shard one copy of the model across all 4 GPUs (model/"fully-sharded data" parallelism).
+        # This cuts per-GPU memory so full fine-tuning of pi05 fits on smaller cards.
+        fsdp_devices=4,
+        # Save every 1000 steps AND keep every one of them (keep_period == save_interval).
+        # The trainer keeps only the latest checkpoint unless step % keep_period == 0, so
+        # without this the intermediate checkpoints would be pruned and we couldn't compare
+        # them. There is no metric-based "best" checkpoint; selection is manual via eval.
+        save_interval=1_000,
+        keep_period=1_000,
+    ),
+
     TrainConfig(
         # Change the name to reflect your model and dataset.
         name="pi0_libero",

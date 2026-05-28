@@ -175,6 +175,10 @@ def main(
             dump_episode(src_repo_id, ep, ep_dir)
 
             length = int((ep_dir / "length.txt").read_text())
+            if length == 0:
+                print(f"[ep {ep}] skipping empty episode", flush=True)
+                shutil.rmtree(ep_dir)
+                continue
             state = np.load(ep_dir / "state.npy")
             action = np.load(ep_dir / "action.npy")
             task = (ep_dir / "task.txt").read_text()

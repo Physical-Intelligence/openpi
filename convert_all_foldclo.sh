@@ -23,13 +23,17 @@ LIST="${LIST:-foldclo_datasets.txt}"
 LOG_DIR="${LOG_DIR:-logs}"
 STATE_DIR="${STATE_DIR:-state}"
 PUSH="${PUSH:-1}"  # set PUSH=0 to convert without pushing
+MAX_DATASETS="${MAX_DATASETS:-1}"  # set to 0 for no limit
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
 push_flag=()
 [[ "$PUSH" == "1" ]] && push_flag=(--push_to_hub)
 
+_count=0
 while IFS= read -r src; do
     [[ -z "$src" ]] && continue
+    [[ "$MAX_DATASETS" -gt 0 && "$_count" -ge "$MAX_DATASETS" ]] && break
+    ((_count++))
     base="${src##*/}"
     dst="leokswang/${base}_lerobot_format"
     state_file="$STATE_DIR/$base.state"
@@ -39,7 +43,6 @@ while IFS= read -r src; do
         echo "[skip] $src already done"
         continue
     fi
-
     echo "[run ] $src -> $dst (log: $log_file)"
     if uv run convert_to_lerobot.py \
         --src_repo_id "$src" \
