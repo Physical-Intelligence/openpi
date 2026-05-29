@@ -108,11 +108,16 @@ Babel gives every user two important folders:
 
 | Path | Size | Where it's visible | Use it for |
 |---|---|---|---|
-| `/home/<your_andrew_id>` | 100 GB | every node | code, small files |
-| `/data/user_data/<your_andrew_id>` | 500 GB | compute nodes (during a job) | datasets, model checkpoints, caches |
+| `/home/<your_andrew_id>` | 100 GB | every node (incl. login) | code, the uv venv, small files |
+| `/data/user_data/<your_andrew_id>` | 500 GB | **compute nodes only, during a job** | datasets, model checkpoints, caches |
 
-Because checkpoints and the cached base model are large, the submit script puts all
-the big stuff under `/data/user_data/<your_andrew_id>`. Your code can live in `/home`.
+> **Important — `/data` does not exist on the login node.** It is an "on-demand"
+> (AutoFS) mount that only appears on a compute node *while your job is running*. If
+> you `ls /data` on the login node you'll get "No such file or directory" — that is
+> normal, not a bug. So: do all the **setup** below in `/home`, and let the **job
+> script** (which runs on a compute node) handle everything under `/data/user_data`.
+> The submit script stats the full path to trigger the mount and writes all big files
+> (datasets, base-model cache, checkpoints) there automatically.
 
 Clone the repo (with submodules) into your home directory:
 
@@ -128,22 +133,60 @@ If you already have it but forgot `--recurse-submodules`:
 git submodule update --init --recursive
 ```
 
-> **Note on AutoFS:** `/data/user_data/<you>` is mounted "on demand." If you `ls
-> /data/user_data` and don't see your folder, type the *full* path
-> (`ls /data/user_data/<your_andrew_id>`) to trigger the mount.
+> **Note on AutoFS:** `/data/user_data/<you>` is mounted "on demand" **and only on
+> compute nodes**. On the login node it isn't there at all. Even on a compute node you
+> may need to type the *full* path (`ls -ld /data/user_data/<your_andrew_id>`) to
+> trigger the mount. See the verification step below.
+
+### Verify your `/data` access on a compute node (recommended, ~1 min)
+
+Before submitting the long job, confirm your `user_data` is provisioned. Grab a short
+interactive shell on the `debug` partition (the only partition that allows interactive
+sessions):
+
+```bash
+srun --partition=debug --time=00:05:00 --pty bash
+# now you're on a compute node:
+ls -ld /data/user_data/$USER    # full path triggers the AutoFS mount
+exit
+```
+
+If that prints a directory, you're good. If it still says "No such file or directory"
+*on the compute node*, your space isn't provisioned yet — ask in the `#babel-babble`
+Slack channel (tag `@help-babel`).
 
 ---
 
 ## Step 1 — Set up the Python environment (uv)
 
-This repo uses [`uv`](https://docs.astral.sh/uv/) to manage Python packages. Do this
-**on the login node** (it has internet; compute nodes may be restricted):
+This repo uses [`uv`](https://docs.astral.sh/uv/) to manage Python packages. Babel
+does not ship `uv` by default. Check for a module first:
 
 ```bash
-# point uv's cache at your big disk so it doesn't fill up /home
-export UV_CACHE_DIR=/data/user_data/$USER/uv_cache
+module avail uv 2>&1 | grep -i uv
+```
+
+If one exists, `module load uv` (and add that same `module load` line to the top of
+`train_foldclo.sbatch`, since compute nodes start with a clean module environment). If
+not, install uv into your home directory — it's a single static binary, no admin
+needed:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env     # this shell; new logins get it from ~/.bashrc
+uv --version
+```
+
+uv will fetch the correct Python (3.11) itself, so you don't need a Python module.
+
+Now set up the environment **on the login node** (it has internet). Keep everything in
+`/home` — remember `/data` isn't mounted here:
+
+```bash
+export UV_CACHE_DIR=$HOME/uv_cache
 mkdir -p "$UV_CACHE_DIR"
 
+cd ~/openpi
 GIT_LFS_SKIP_SMUDGE=1 uv sync
 GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 ```

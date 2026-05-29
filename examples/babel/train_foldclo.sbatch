@@ -16,11 +16,32 @@
 
 set -euo pipefail
 
+# --- Make sure `uv` is on PATH. The compute node starts with a clean environment, ---
+# so re-source uv's env (installed via the standalone installer into ~/.local/bin).
+# If you used `module load uv` instead, replace this line with that module load.
+[ -f "$HOME/.local/bin/env" ] && source "$HOME/.local/bin/env"
+command -v uv >/dev/null || { echo "ERROR: uv not found on PATH"; exit 1; }
+
 # --- Where big files live. /home is only 100GB; use your 500GB user_data. -----
+# NOTE: /data/user_data only exists ON A COMPUTE NODE during an active job (it is
+# an on-demand AutoFS mount). It is invisible on the login node -- that's normal.
+# We stat the full path first to trigger the mount before using it.
 export OPENPI_USER_DATA="/data/user_data/${USER}"
+ls -ld "$OPENPI_USER_DATA" >/dev/null 2>&1 || true   # trigger AutoFS mount
+if [ ! -d "$OPENPI_USER_DATA" ]; then
+    echo "ERROR: $OPENPI_USER_DATA not available on this compute node."
+    echo "Your user_data may not be provisioned -- ask in #babel-babble (@help-babel)."
+    exit 1
+fi
 export HF_HOME="${OPENPI_USER_DATA}/hf"               # HuggingFace dataset/model cache
 export OPENPI_DATA_HOME="${OPENPI_USER_DATA}/openpi_cache"   # base-checkpoint cache
-export UV_CACHE_DIR="${OPENPI_USER_DATA}/uv_cache"    # uv package cache
+# Babel compute nodes can reach huggingface.co but NOT the "Xet" CDN hosts
+# (transfer.xethub.hf.co / *.aws.cdn.hf.co) -> DNS failures. Force the plain
+# LFS download path instead, which resolves fine.
+export HF_HUB_DISABLE_XET=1
+# uv cache stays on /home so it's shared with the login-node `uv sync` (the .venv
+# already exists there); no need to put it on /data.
+export UV_CACHE_DIR="${HOME}/uv_cache"
 mkdir -p "$HF_HOME" "$OPENPI_DATA_HOME" "$UV_CACHE_DIR"
 
 # --- Secrets (set these in your shell before sbatch, or hard-code here) -------
