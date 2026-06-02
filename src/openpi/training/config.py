@@ -932,7 +932,7 @@ class LeRobotSO101DataConfig(DataConfigFactory):
                         "observation.images.front": "observation.images.front",
                         "observation.images.wrist": "observation.images.wrist",
                         "observation.state": "observation.state",
-                        "action": "actions",
+                        "actions": "action",
                     }
                 )
             ]
