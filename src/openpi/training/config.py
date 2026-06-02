@@ -27,6 +27,7 @@ import openpi.policies.bin_pack_policy as bin_pack_policy
 import openpi.policies.block_tower_policy as block_tower_policy
 import openpi.policies.arx_policy as arx_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.so101_policy as so101_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.policies.libero_subtask_policy as libero_subtask_policy
 import openpi.shared.download as _download
@@ -911,6 +912,66 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotSO101DataConfig(DataConfigFactory):
+    """Data config for SO101 single-arm robot (6D joint-space).
+
+    Supports optional delta action conversion (5 joints delta, gripper absolute).
+    """
+
+    default_prompt: str | None = "stack the rings"
+    use_delta_actions: bool = False
+
+    # Repack transforms: map LeRobot v3 keys to canonical internal keys.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation.images.front": "observation.images.front",
+                        "observation.images.wrist": "observation.images.wrist",
+                        "observation.state": "observation.state",
+                        "action": "actions",
+                    }
+                )
+            ]
+        )
+    )
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[so101_policy.SO101Inputs(default_prompt=self.default_prompt or "stack the rings")],
+            outputs=[so101_policy.SO101Outputs()],
+        )
+
+        if self.use_delta_actions:
+            # 5 joints as delta, gripper (dim 5) stays absolute.
+            delta_action_mask = _transforms.make_bool_mask(5, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        base_config = self.create_base_config(assets_dirs, model_config)
+
+        use_per_timestep_action_norm = base_config.use_per_timestep_action_norm
+        if self.use_delta_actions and use_per_timestep_action_norm is None:
+            use_per_timestep_action_norm = True
+
+        return dataclasses.replace(
+            base_config,
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            use_per_timestep_action_norm=use_per_timestep_action_norm,
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoSubtaskDataConfig(DataConfigFactory):
     """
@@ -1661,6 +1722,30 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # SO101 stacking rings config.
+    #
+    TrainConfig(
+        name="pi05_so101_stacking_rings",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
+        data=LeRobotSO101DataConfig(
+            repo_id="lorenzouttini/so101_stacking_rings",
+            default_prompt="stack the rings",
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2.5e-5,
+            decay_steps=100_000,
+            decay_lr=2.5e-6,
+        ),
+        num_train_steps=50_000,
+        save_interval=5000,
+        batch_size=32,
+        ema_decay=0.999,
+        wandb_enabled=True,
     ),
     #
     # ARX5 multi-task foundation model configs.
