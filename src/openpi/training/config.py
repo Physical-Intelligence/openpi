@@ -1728,6 +1728,7 @@ _CONFIGS = [
     #
     TrainConfig(
         name="pi05_so101_stacking_rings",
+        project_name="so101_stacking_rings",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
         data=LeRobotSO101DataConfig(
             repo_id="lorenzouttini/so101_stacking_rings",
