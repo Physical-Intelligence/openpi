@@ -48,14 +48,10 @@ CONFIG_NAME="pi05_so101_stacking_rings"
 EXP_NAME="so101_stacking_rings"
 
 CHECKPOINT_DIR="${data_dir}/checkpoints/${CONFIG_NAME}/${EXP_NAME}"
-ASSETS_DIR="${CHECKPOINT_DIR}/assets"
+ASSETS_DIR="${data_dir}/assets/${CONFIG_NAME}/${EXP_NAME}"
 
 if [ -z "${ASSETS_DIR}" ]; then
     echo "ERROR: ASSETS_DIR is empty; refusing to run."
-    exit 1
-fi
-if [[ "${ASSETS_DIR}" != */assets ]]; then
-    echo "ERROR: ASSETS_DIR must end with /assets (got: ${ASSETS_DIR})"
     exit 1
 fi
 if [ ! -f "${container}" ]; then
@@ -106,6 +102,8 @@ EXPORT_VARS="${EXPORT_VARS} && export UV_PROJECT_ENVIRONMENT=${data_dir}/.venv"
 EXPORT_VARS="${EXPORT_VARS} && export HF_TOKEN=\$(tr -d '\n' < ${HF_TOKEN_FILE})"
 EXPORT_VARS="${EXPORT_VARS} && export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95"
 
+VALID_INDICES_PATH="${ASSETS_DIR}/valid_indices.txt"
+
 PRECOMPUTE_CMD=""
 if [ -f "${NORM_STATS_PATH}" ] && [ -f "${PER_TIMESTEP_STATS_PATH}" ]; then
     echo "Skipping normalization precompute (found stats files)."
@@ -114,6 +112,21 @@ else
     echo "Command: ${COMPUTE_NORM_STATS_CMD}"
     echo ""
     PRECOMPUTE_CMD="${PRECOMPUTE_CMD}${COMPUTE_NORM_STATS_CMD} && "
+fi
+
+if [ ! -f "${VALID_INDICES_PATH}" ]; then
+    echo "Generating valid_indices.txt (all frames valid for this dataset)..."
+    PRECOMPUTE_CMD="${PRECOMPUTE_CMD}python -c \"
+from openpi.training import config as _config
+from openpi.training.data_loader import create_torch_dataset
+cfg = _config.get_config('${CONFIG_NAME}')
+data_config = cfg.data.create(cfg.assets_dirs, cfg.model)
+ds = create_torch_dataset(data_config, cfg.model.action_horizon, cfg.model)
+n = len(ds)
+with open('${VALID_INDICES_PATH}', 'w') as f:
+    f.write(','.join(str(i) for i in range(n)))
+print(f'Wrote {n} valid indices to ${VALID_INDICES_PATH}')
+\" && "
 fi
 
 echo "Running training command..."
