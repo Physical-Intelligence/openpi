@@ -26,6 +26,7 @@ Example:
     python examples/convert_jax_model_to_pytorch.py --checkpoint_dir /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch
 """
 
+import dataclasses
 import json
 import logging
 import math
@@ -52,8 +53,10 @@ logger = logging.getLogger(__name__)
 
 
 def _has_lora(model_config: openpi.models.pi0_config.Pi0Config) -> bool:
-    """Return True if either expert in the config uses a LoRA variant."""
-    return model_config.paligemma_variant.endswith("_lora") or model_config.action_expert_variant.endswith("_lora")
+    """Return True if either expert config declares LoRA adapters."""
+    paligemma_cfg = openpi.models.gemma.get_config(model_config.paligemma_variant)
+    action_expert_cfg = openpi.models.gemma.get_config(model_config.action_expert_variant)
+    return bool(getattr(paligemma_cfg, "lora_configs", None)) or bool(getattr(action_expert_cfg, "lora_configs", None))
 
 
 def _lora_scale(config) -> float:
@@ -532,7 +535,7 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
     llm_mlp_linear = state_dict.pop(f"llm/layers/mlp_{num_expert}/linear{suffix}")
 
     # Check if we have Dense layers (for pi05/adaptive normalization) or scale layers (for regular pi0)
-    if "pi05" in checkpoint_dir:
+    if pi05:
         # Pi05 with adaptive normalization
         llm_input_layernorm_bias = state_dict.pop(f"llm/layers/pre_attention_norm_{num_expert}/Dense_0/bias{suffix}")
         llm_post_attention_layernorm_bias = state_dict.pop(f"llm/layers/pre_ffw_norm_{num_expert}/Dense_0/bias{suffix}")
@@ -587,7 +590,7 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
             i
         ].transpose()
 
-        if "pi05" in checkpoint_dir:
+        if pi05:
             # Pi05 with adaptive normalization - use Dense layer parameters directly
             state_dict[f"paligemma_with_expert.gemma_expert.model.layers.{i}.input_layernorm.dense.bias"] = (
                 llm_input_layernorm_bias[i]
@@ -611,7 +614,7 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
             )
 
     # Handle final norm layer
-    if "pi05" in checkpoint_dir:
+    if pi05:
         # Pi05 with adaptive normalization - use Dense layer parameters directly
         final_norm_bias = state_dict.pop(f"llm/final_norm_{num_expert}/Dense_0/bias{suffix}")
         final_norm_kernel = state_dict.pop(f"llm/final_norm_{num_expert}/Dense_0/kernel{suffix}")
@@ -669,12 +672,15 @@ def convert_pi0_checkpoint(
 
     Args:
         checkpoint_dir: Path to the JAX checkpoint
-        precision: Model precision (float32, bfloat16, float16)
+        precision: Model precision (float32, bfloat16)
         output_path: Path to save the converted PyTorch model
         model_config: Model config
     """
     print(f"Converting PI0 checkpoint from {checkpoint_dir} to {output_path}")
     print(f"Model config: {model_config}")
+
+    if precision not in ("float32", "bfloat16"):
+        raise ValueError(f"Invalid precision: {precision}")
 
     # Break down orbax ckpts by restoring via JAX to respect dtype
     initial_params = slice_initial_orbax_checkpoint(checkpoint_dir=checkpoint_dir, restore_precision="float32")
@@ -684,7 +690,11 @@ def convert_pi0_checkpoint(
     # below would silently drop the adapter weights and the converted checkpoint
     # would diverge from the JAX runtime (see openpi issue #958).
     if _has_lora(model_config):
-        logger.info("LoRA detected in %s; merging adapters before conversion.", model_config.paligemma_variant)
+        logger.info(
+            "LoRA detected in %s / %s; merging adapters before conversion.",
+            model_config.paligemma_variant,
+            model_config.action_expert_variant,
+        )
         initial_params["paligemma_params"] = merge_lora_into_base(initial_params["paligemma_params"], model_config)
 
     # Process projection params
@@ -721,8 +731,9 @@ def convert_pi0_checkpoint(
         projection_params[pytorch_weight_key] = torch.from_numpy(np.array(weight)).T
         projection_params[pytorch_bias_key] = torch.from_numpy(np.array(bias))
 
-    # Create configs based on checkpoint path
-    # All models use the same PaliGemma config structure
+    # Create bridge configs from the selected model config.
+    paligemma_text_config = openpi.models.gemma.get_config(model_config.paligemma_variant)
+
     class PaliGemmaConfig:
         def __init__(self):
             self.vision_config = type(
@@ -741,16 +752,16 @@ def convert_pi0_checkpoint(
                 "obj",
                 (object,),
                 {
-                    "hidden_size": 2048,
-                    "num_hidden_layers": 18,
-                    "num_attention_heads": 8,
-                    "head_dim": 256,
-                    "intermediate_size": 16384,
+                    "hidden_size": paligemma_text_config.width,
+                    "num_hidden_layers": paligemma_text_config.depth,
+                    "num_attention_heads": paligemma_text_config.num_heads,
+                    "head_dim": paligemma_text_config.head_dim,
+                    "intermediate_size": paligemma_text_config.mlp_dim,
                 },
             )()
 
     paligemma_config = PaliGemmaConfig()
-    action_expert_config = openpi.models.gemma.get_config("gemma_300m")
+    action_expert_config = openpi.models.gemma.get_config(model_config.action_expert_variant)
 
     # Process PaliGemma weights
     paligemma_params, expert_params = slice_paligemma_state_dict(initial_params["paligemma_params"], paligemma_config)
@@ -760,8 +771,11 @@ def convert_pi0_checkpoint(
         expert_params, action_expert_config, num_expert=1, checkpoint_dir=checkpoint_dir, pi05=model_config.pi05
     )
 
-    # Instantiate model
-    pi0_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_config)
+    # Instantiate with the target dtype so load_state_dict does not quantize
+    # float32 source tensors into the config default before saving.
+    pi0_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(
+        dataclasses.replace(model_config, dtype=precision)
+    )
 
     # Combine all parameters (no prefix needed for our model structure)
     all_params = {**paligemma_params, **gemma_params, **projection_params}
@@ -782,8 +796,6 @@ def convert_pi0_checkpoint(
         pi0_model = pi0_model.to(torch.float32)
     elif precision == "bfloat16":
         pi0_model = pi0_model.to(torch.bfloat16)
-    else:
-        raise ValueError(f"Invalid precision: {precision}")
 
     # Save the converted model using safetensors
     os.makedirs(output_path, exist_ok=True)
@@ -818,7 +830,7 @@ def main(
     checkpoint_dir: str,
     config_name: str,
     output_path: str | None = None,
-    precision: Literal["float32", "bfloat16", "float16"] | None = None,
+    precision: Literal["float32", "bfloat16"] | None = None,
     *,
     inspect_only: bool = False,
 ):
