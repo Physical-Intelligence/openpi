@@ -48,7 +48,7 @@ CONFIG_NAME="pi05_so101_stacking_rings"
 EXP_NAME="so101_stacking_rings"
 
 CHECKPOINT_DIR="${data_dir}/checkpoints/${CONFIG_NAME}/${EXP_NAME}"
-ASSETS_DIR="${data_dir}/assets/${CONFIG_NAME}/${EXP_NAME}"
+ASSETS_DIR="${data_dir}/assets/${CONFIG_NAME}/${EXP_NAME}/assets"
 
 if [ -z "${ASSETS_DIR}" ]; then
     echo "ERROR: ASSETS_DIR is empty; refusing to run."
