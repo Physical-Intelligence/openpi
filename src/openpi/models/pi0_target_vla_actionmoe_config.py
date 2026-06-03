@@ -90,6 +90,15 @@ class Pi0TargetVLAActionMoeConfig(_model.BaseModelConfig):
     pi05: bool = True
     discrete_state_input: bool = False  # match AtomicVLA / TraceVLA on libero
 
+    # TODO: support flag in pi0_target_vla_actionmoe.py
+    # Original camera frame (height, width) before ``resize_with_pad`` letterboxes it
+    # to the 224x224 model input. Only used by the train-time geometric augmentation in
+    # ``preprocess_trace_observation`` to keep the image-space trace/keypoint targets
+    # aligned with the letterboxed content. ``None`` (default) = square source / no
+    # letterbox, i.e. the LIBERO behaviour. Set to e.g. ``(480, 640)`` for the
+    # physical-robot table-tasks camera.
+    image_source_hw: tuple[int, int] | None = None
+
     # Number of skill-specific experts in the action MoE (and the completion head).
     # Must match ``num_local_experts`` of ``action_expert_variant``. Pinned to 5
     # (LIBERO skill atoms).

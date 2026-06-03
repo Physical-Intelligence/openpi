@@ -44,6 +44,14 @@ class Pi0TraceVLAConfig(_model.BaseModelConfig):
     pi05: bool = True
     discrete_state_input: bool = False  # AtomicVLA uses False for libero; keep consistent.
 
+    # Original camera frame (height, width) before ``resize_with_pad`` letterboxes it
+    # to the 224x224 model input. Only used by the train-time geometric augmentation in
+    # ``preprocess_trace_observation`` to keep the image-space trace/keypoint targets
+    # aligned with the letterboxed content. ``None`` (default) = square source / no
+    # letterbox, i.e. the LIBERO behaviour. Set to e.g. ``(480, 640)`` for the
+    # physical-robot table-tasks camera.
+    image_source_hw: tuple[int, int] | None = None
+
     # Trace head shape: (N, 2). N is the number of waypoints.
     trace_horizon: int = 20
     trace_dim: int = 2

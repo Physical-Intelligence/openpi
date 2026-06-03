@@ -224,6 +224,8 @@ class Pi0TargetVLAActionMoe(TraceVLABase):
     ) -> tuple[at.Float[at.Array, " b"], dict[str, at.Array]]:
         """Action flow-matching loss + completion loss. No trace loss."""
         preprocess_rng, fwd_rng = jax.random.split(rng, 2)
+
+        # TODO: support image_source_hw for training on nonsquare images
         observation = _target_obs.preprocess_target_observation(
             preprocess_rng, observation, train=train, image_keys=list(observation.images.keys())
         )

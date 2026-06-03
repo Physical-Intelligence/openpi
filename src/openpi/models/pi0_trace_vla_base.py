@@ -203,6 +203,9 @@ class TraceVLABase(_model.BaseModel):
 
         self.deterministic = True
 
+    # -----------------------------------------------------------------------
+    # API to override, to define the architecture.
+    # -----------------------------------------------------------------------
     def _build_expert_configs(self, config):
         """Resolve the gemma stream configs and set ``self.num_skills``. Override per variant.
 
@@ -396,6 +399,8 @@ class TraceVLABase(_model.BaseModel):
         ``trace_seq_len``); row 0 (current-EE inpaint) and, when ``append_target_anchor``, the
         appended last row (semantic-target inpaint) are masked out of the loss.
         """
+        if obs.atomic_token is None:
+            raise ValueError("atomic_token is required for hard MoE routing.")
         noise_rng, time_rng = jax.random.split(rng, 2)
 
         future_trace = obs.future_trace_xy  # (B, N, 2)
@@ -443,8 +448,6 @@ class TraceVLABase(_model.BaseModel):
         # Real one-hot combine weights when the trace stream is a MoE, else a dummy placeholder.
         batch_size = prefix_mask.shape[0]
         if self.trace_is_moe:
-            if obs.atomic_token is None:
-                raise ValueError("atomic_token is required for hard MoE routing.")
             skill_id = obs.atomic_token.astype(jnp.int32)
             combine_weights = self._combine_weights(batch_size, skill_id, self.trace_seq_len)
         else:
@@ -492,6 +495,9 @@ class TraceVLABase(_model.BaseModel):
     ]:
         """Action execution forward (stream 1 active, trace stream None). Returns
         ``(action v_pred, action u_target, progress_pred)``."""
+        if obs.atomic_token is None:
+            raise ValueError("atomic_token is required for hard MoE routing of the action expert.")
+
         noise_rng, time_rng = jax.random.split(rng, 2)
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
@@ -516,12 +522,10 @@ class TraceVLABase(_model.BaseModel):
 
         # skill id: needed for the completion head always, and for action-stream MoE routing.
         batch_size = prefix_mask.shape[0]
-        if obs.atomic_token is None:
-            if self.action_is_moe:
-                raise ValueError("atomic_token is required for hard MoE routing of the action expert.")
-            skill_id = jnp.zeros((batch_size,), dtype=jnp.int32)
-        else:
+        if self.action_is_moe:
             skill_id = obs.atomic_token.astype(jnp.int32)
+        else:
+            skill_id = jnp.zeros((batch_size,), dtype=jnp.int32)
         # Real one-hot combine weights when the action stream is a MoE, else a dummy placeholder.
         if self.action_is_moe:
             combine_weights = self._combine_weights(batch_size, skill_id, self.action_horizon)
@@ -546,3 +550,64 @@ class TraceVLABase(_model.BaseModel):
         v_a_t = self.action_out_proj(action_out[:, -self.action_horizon :])
         progress_pred = self._completion_predict(prefix_out, prefix_mask, skill_id)
         return v_a_t, u_a_t, progress_pred
+
+
+    # -----------------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------------
+    def compute_loss(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _trace_obs.TraceObservation,
+        actions: _model.Actions,
+        *,
+        train: bool = False,
+    ) -> tuple[at.Float[at.Array, " b"], dict[str, at.Array]]:
+        preprocess_rng, plan_rng, exec_rng = jax.random.split(rng, 3)
+        # ``image_source_hw`` keeps train-time geometric augmentation of the image-space
+        # trace/keypoint targets aligned with the letterboxed model image for non-square
+        # cameras (e.g. table-tasks 480x640). It is None for square sources (LIBERO), in
+        # which case preprocessing is unchanged. Only the train=True path uses it; the
+        # inference (sample_*) paths do not augment keypoints, so they need not pass it.
+        observation = _trace_obs.preprocess_trace_observation(
+            preprocess_rng,
+            observation,
+            train=train,
+            image_keys=list(observation.images.keys()),
+            image_source_hw=self.config.image_source_hw,
+        )
+
+        # ---------------- Trace planning forward pass ----------------
+        v_t, u_t, trace_loss_mask = self._forward_planning(plan_rng, observation)
+        per_pt_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)  # (B, N)
+        # Ignore inpainted row 0; also mask by has_trace at the sample level.
+        has_trace = (observation.has_trace.astype(per_pt_loss.dtype)
+                     if observation.has_trace is not None
+                     else jnp.ones((per_pt_loss.shape[0],), dtype=per_pt_loss.dtype))
+        denom = jnp.maximum(jnp.sum(trace_loss_mask.astype(per_pt_loss.dtype), axis=-1), 1.0)
+        trace_loss_per_sample = jnp.sum(
+            per_pt_loss * trace_loss_mask.astype(per_pt_loss.dtype), axis=-1
+        ) / denom
+        trace_loss_per_sample = trace_loss_per_sample * has_trace
+
+        # ---------------- Action + completion forward pass ----------------
+        v_a, u_a, progress_pred = self._forward_execution(exec_rng, observation, actions)
+        action_loss_per_sample = jnp.mean(jnp.mean(jnp.square(v_a - u_a), axis=-1), axis=1)
+
+        progress_target = (observation.progress
+                           if observation.progress is not None
+                           else jnp.zeros_like(progress_pred))
+        completion_loss_per_sample = jnp.square(progress_pred - progress_target) * has_trace
+
+        total_loss = (
+            self.config.action_loss_coeff * action_loss_per_sample
+            + self.config.trace_loss_coeff * trace_loss_per_sample
+            + self.config.completion_loss_coeff * completion_loss_per_sample
+        )
+        info = {
+            "action_loss": action_loss_per_sample,
+            "trace_loss": trace_loss_per_sample,
+            "completion_loss": completion_loss_per_sample,
+            "progress_pred_mean": jnp.mean(progress_pred),
+        }
+        return total_loss, info

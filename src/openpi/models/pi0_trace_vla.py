@@ -60,55 +60,6 @@ class Pi0TraceVLA(TraceVLABase):
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
-    @override
-    def compute_loss(
-        self,
-        rng: at.KeyArrayLike,
-        observation: _trace_obs.TraceObservation,
-        actions: _model.Actions,
-        *,
-        train: bool = False,
-    ) -> tuple[at.Float[at.Array, " b"], dict[str, at.Array]]:
-        preprocess_rng, plan_rng, exec_rng = jax.random.split(rng, 3)
-        observation = _trace_obs.preprocess_trace_observation(
-            preprocess_rng, observation, train=train, image_keys=list(observation.images.keys())
-        )
-
-        # ---------------- Trace planning forward pass ----------------
-        v_t, u_t, trace_loss_mask = self._forward_planning(plan_rng, observation)
-        per_pt_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)  # (B, N)
-        # Ignore inpainted row 0; also mask by has_trace at the sample level.
-        has_trace = (observation.has_trace.astype(per_pt_loss.dtype)
-                     if observation.has_trace is not None
-                     else jnp.ones((per_pt_loss.shape[0],), dtype=per_pt_loss.dtype))
-        denom = jnp.maximum(jnp.sum(trace_loss_mask.astype(per_pt_loss.dtype), axis=-1), 1.0)
-        trace_loss_per_sample = jnp.sum(
-            per_pt_loss * trace_loss_mask.astype(per_pt_loss.dtype), axis=-1
-        ) / denom
-        trace_loss_per_sample = trace_loss_per_sample * has_trace
-
-        # ---------------- Action + completion forward pass ----------------
-        v_a, u_a, progress_pred = self._forward_execution(exec_rng, observation, actions)
-        action_loss_per_sample = jnp.mean(jnp.mean(jnp.square(v_a - u_a), axis=-1), axis=1)  # (B,)
-
-        progress_target = (observation.progress
-                           if observation.progress is not None
-                           else jnp.zeros_like(progress_pred))
-        completion_loss_per_sample = jnp.square(progress_pred - progress_target) * has_trace
-
-        # Combine.
-        total_loss = (
-            self.config.action_loss_coeff * action_loss_per_sample
-            + self.config.trace_loss_coeff * trace_loss_per_sample
-            + self.config.completion_loss_coeff * completion_loss_per_sample
-        )
-        info = {
-            "action_loss": action_loss_per_sample,
-            "trace_loss": trace_loss_per_sample,
-            "completion_loss": completion_loss_per_sample,
-            "progress_pred_mean": jnp.mean(progress_pred),
-        }
-        return total_loss, info
 
     @override
     def sample_actions(
