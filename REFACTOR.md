@@ -141,15 +141,22 @@ head, the hard-routing combine-weight helpers (`_combine_weights` / `_dummy_comb
 **and the `_forward_planning` / `_forward_execution` passes**. The 3 trace variants' forward passes
 were ~90% identical — they differed only in which stream carried the MoE — so the base now selects
 the real-vs-dummy combine-weights path from two flags derived from the expert configs in `__init__`:
-`self.trace_is_moe` (planning) and `self.action_is_moe` (execution). Each of the 4 variants now
-inherits all of that and keeps only a small `_build_expert_configs` hook (which streams are MoE /
-2-stream, via `has_trace_stream` + a single `self.num_skills`) plus its genuinely variant-specific
-`sample_*`/`compute_loss` (and `target`'s `_embed_action_suffix` + single-pass `_forward`, since it
-has no planning/execution split). Done in reviewed batches (commits `6230ec9`, `e635e72`, `db4f631`,
-`b6bfc7e`, `dfd8d2b`, `0effb0b`, + this forward-fold), each gated by a CPU param-path structural diff
-+ an exact-loss smoke. Every config reproduced its baseline exactly: trace_vla 2.4391,
-trace_vla_moe 3.7695, trace_vla_actionmoe 2.4816, target_vla_actionmoe 0.9990. (The per-variant
-`compute_loss`/`sample_*` remain as the legitimate override points; further dedup there is optional.)
+`self.trace_is_moe` (planning) and `self.action_is_moe` (execution). The 3 trace variants'
+`compute_loss` was also ~identical (preprocess → planning forward → action/completion forward →
+three-way weighted loss), so it too lives in the base now; `target` keeps its own (no trace stream
+/ no planning pass). The base `compute_loss` threads `config.image_source_hw` into
+`preprocess_trace_observation` (train-time geometric augmentation for non-square cameras; `None` =
+LIBERO square source, unchanged) — the field was added to every trace config; `target`'s config
+carries it plus a TODO since its own `compute_loss` doesn't wire it through yet. Each of the 4
+variants now inherits all of that and keeps only a small `_build_expert_configs` hook (which streams
+are MoE / 2-stream, via `has_trace_stream` + a single `self.num_skills`) plus its genuinely
+variant-specific `sample_*` (and `target`'s `_embed_action_suffix` + single-pass `_forward` +
+`compute_loss`, since it has no planning/execution split). Done in reviewed batches (commits
+`6230ec9`, `e635e72`, `db4f631`, `b6bfc7e`, `dfd8d2b`, `0effb0b`, the forward-fold, + the
+`compute_loss` fold `bd7f9bf`), each gated by a CPU param-path structural diff + an exact-loss smoke.
+Every config reproduced its baseline exactly: trace_vla 2.4391, trace_vla_moe 3.7695,
+trace_vla_actionmoe 2.4816, target_vla_actionmoe 0.9990. (The per-variant `sample_*` remain as the
+legitimate override points; further dedup there is optional.)
 
 ### (original analysis)
 
