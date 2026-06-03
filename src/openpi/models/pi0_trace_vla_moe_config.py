@@ -33,16 +33,14 @@ import dataclasses
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
-import jax
-import jax.numpy as jnp
 from typing_extensions import override
 
 from openpi.models import model as _model
+from openpi.models import pi0_config as _pi0_config
 from openpi.models import trace_observation as _trace_obs
 import openpi.models.gemmoe as _gemmoe
 import openpi.models.gemmoe_trace as _gemmoe_trace
 from openpi.shared import array_typing as at
-import openpi.shared.nnx_utils as nnx_utils
 
 if TYPE_CHECKING:
     from openpi.models.pi0_trace_vla_moe import Pi0TraceVLAMoe
@@ -123,46 +121,7 @@ class Pi0TraceVLAMoeConfig(_model.BaseModelConfig):
 
     @override
     def inputs_spec(self, *, batch_size: int = 1) -> tuple[_trace_obs.TraceObservation, _model.Actions]:
-        # Same TraceObservation schema as TraceVLA / TraceVLAActionMoe — same
-        # dataset and transforms, just a different architecture.
-        image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
-        image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
-        with at.disable_typechecking():
-            observation_spec = _trace_obs.TraceObservation(
-                images={
-                    "base_0_rgb": image_spec,
-                    "left_wrist_0_rgb": image_spec,
-                    "right_wrist_0_rgb": image_spec,
-                },
-                image_masks={
-                    "base_0_rgb": image_mask_spec,
-                    "left_wrist_0_rgb": image_mask_spec,
-                    "right_wrist_0_rgb": image_mask_spec,
-                },
-                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
-                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
-                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.bool_),
-                token_ar_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
-                token_loss_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.bool_),
-                atomic_token=jax.ShapeDtypeStruct([batch_size], jnp.float32),
-                semantic_target_xy=jax.ShapeDtypeStruct([batch_size, 2], jnp.float32),
-                current_ee_xy=jax.ShapeDtypeStruct([batch_size, 2], jnp.float32),
-                has_trace=jax.ShapeDtypeStruct([batch_size], jnp.bool_),
-                has_overlay=jax.ShapeDtypeStruct([batch_size], jnp.bool_),
-                progress=jax.ShapeDtypeStruct([batch_size], jnp.float32),
-                diffusion_loss_mask=jax.ShapeDtypeStruct([batch_size], jnp.bool_),
-                future_trace_xy=jax.ShapeDtypeStruct(
-                    [batch_size, self.trace_horizon, self.trace_dim], jnp.float32
-                ),
-                overlay_images={
-                    "base_0_rgb": image_spec,
-                },
-                overlay_image_masks={
-                    "base_0_rgb": image_mask_spec,
-                },
-            )
-        action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
-        return observation_spec, action_spec
+        return _trace_obs.trace_inputs_spec(self, batch_size=batch_size)
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Freeze filter for the combined-MoE variant.
@@ -178,24 +137,6 @@ class Pi0TraceVLAMoeConfig(_model.BaseModelConfig):
 
         For ``trace_vla_moe`` (full FT everywhere): no freeze.
         """
-        filters = []
-        has_lora = False
-
-        all_llm = nnx_utils.PathRegex(".*llm.*")
-        action_expert_subtree = nnx_utils.PathRegex(".*llm.*(_1).*")
-        trace_expert_subtree = nnx_utils.PathRegex(".*llm.*(_2).*")
-
-        if "lora" in self.paligemma_variant:
-            # Freeze stream 0 (paligemma) but leave both expert subtrees fully trainable.
-            filters.append(all_llm)
-            filters.append(nnx.Not(action_expert_subtree))
-            filters.append(nnx.Not(trace_expert_subtree))
-            has_lora = True
-
-        if has_lora:
-            # Keep LoRA adapters trainable inside the frozen subtree.
-            filters.append(nnx.Not(nnx_utils.PathRegex(".*lora.*")))
-
-        if not filters:
-            return nnx.Nothing
-        return nnx.All(*filters)
+        return _pi0_config.llm_freeze_filter(
+            self.paligemma_variant, self.action_expert_variant, expert_suffixes=("_1", "_2")
+        )

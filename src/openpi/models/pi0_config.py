@@ -17,6 +17,52 @@ if TYPE_CHECKING:
     from openpi.models.pi0_atomic import Pi0Atomic
 
 
+def llm_freeze_filter(
+    paligemma_variant: str,
+    action_expert_variant: str,
+    *,
+    expert_suffixes: tuple[str, ...] = ("_1",),
+) -> nnx.filterlib.Filter:
+    """Build the optimizer freeze filter for a gemma-stack VLA config.
+
+    The gemma streams are named by ``gemma._name``: paligemma at the bare path (stream 0), the
+    extra experts at ``*_1`` (action), ``*_2`` (trace), ... ``expert_suffixes`` lists the
+    non-paligemma expert streams the model has; the FIRST entry is the action expert (the only
+    expert that can itself be LoRA-fied), the rest are always full-FT.
+
+    A returned filter SELECTS the params the optimizer should freeze:
+      - paligemma LoRA      -> freeze the whole LLM subtree, but keep the action expert trainable
+        *unless it is also LoRA* (then only its base weights freeze), keep the other expert streams
+        trainable, and always keep LoRA adapters trainable.
+      - action-expert LoRA only -> freeze just the action-expert base weights.
+      - neither LoRA        -> freeze nothing.
+
+    Shared by the trace/target VLA configs. (Pi0Config / Pi0AtomicConfig below predate this helper
+    and still inline the 2-stream case; they can adopt it later.)
+    """
+    filters: list[nnx.filterlib.Filter] = []
+    has_lora = False
+    all_llm = nnx_utils.PathRegex(".*llm.*")
+    action_expert = nnx_utils.PathRegex(f".*llm.*{expert_suffixes[0]}.*")
+
+    if "lora" in paligemma_variant:
+        filters.append(all_llm)
+        if "lora" not in action_expert_variant:
+            filters.append(nnx.Not(action_expert))
+        for suffix in expert_suffixes[1:]:
+            filters.append(nnx.Not(nnx_utils.PathRegex(f".*llm.*{suffix}.*")))
+        has_lora = True
+    elif "lora" in action_expert_variant:
+        filters.append(action_expert)
+        has_lora = True
+
+    if has_lora:
+        filters.append(nnx.Not(nnx_utils.PathRegex(".*lora.*")))
+    if not filters:
+        return nnx.Nothing
+    return nnx.All(*filters)
+
+
 @dataclasses.dataclass(frozen=True)
 class Pi0AtomicConfig(_model.BaseModelConfig):
     dtype: str = "bfloat16"

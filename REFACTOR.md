@@ -117,7 +117,24 @@ multi-term loss). **Keep**; just add a docstring noting it isn't a plain `Pi0` s
 
 ---
 
-## 4. Config & observation dataclasses
+## 4. Config & observation dataclasses — ✅ DONE (via shared helpers, not a dataclass hierarchy)
+
+Chose shared helpers over frozen-dataclass inheritance (lower risk, same dedup of the actual code;
+field declarations left in place as declarative + readable). Net −111 LOC:
+- `trace_observation.trace_inputs_spec(config, *, batch_size)` — the identical TraceObservation
+  `inputs_spec` shared by Pi0TraceVLA / Pi0TraceVLAMoe / Pi0TraceVLAActionMoe configs.
+- `pi0_config.llm_freeze_filter(paligemma_variant, action_expert_variant, *, expert_suffixes)` —
+  the gemma-stream freeze logic, parameterized by which expert streams exist. Replaces the inline
+  copies in trace_vla / trace_vla_moe / trace_vla_actionmoe / target_vla_actionmoe (trace_vla's
+  redundant `Any(all_llm, action_subtree)` ≡ `all_llm`). Proven behaviorally identical to all
+  originals across every paligemma×action variant combo (incl. action-LoRA). Pi0Config /
+  Pi0AtomicConfig still inline their 2-stream copies — can adopt the helper later.
+
+Removed now-unused imports (`jax`/`jnp` from the 3 trace configs, `nnx_utils` from all 4).
+Validated: trace_vla 2.4391 (exact, inputs_spec), trace_vla_lora 2.4416/grad_norm 39.74 (exact vs
+§5-migrated, freeze helper).
+
+### (original analysis)
 
 Six `*_config.py` files duplicate field sets and a near-identical `get_freeze_filter()`:
 

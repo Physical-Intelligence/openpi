@@ -325,3 +325,49 @@ def preprocess_trace_observation(
         overlay_images=overlay_images,
         overlay_image_masks=overlay_image_masks,
     )
+
+
+def trace_inputs_spec(config, *, batch_size: int = 1) -> tuple["TraceObservation", _model.Actions]:
+    """Shared ``inputs_spec`` for the TraceVLA config family.
+
+    Pi0TraceVLAConfig / Pi0TraceVLAMoeConfig / Pi0TraceVLAActionMoeConfig all consume the identical
+    TraceObservation schema (same dataset + transforms), so they delegate here. ``config`` is
+    duck-typed: it only needs ``action_dim``, ``action_horizon``, ``max_token_len``,
+    ``trace_horizon`` and ``trace_dim``.
+    """
+    image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
+    image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+    with at.disable_typechecking():
+        observation_spec = TraceObservation(
+            images={
+                "base_0_rgb": image_spec,
+                "left_wrist_0_rgb": image_spec,
+                "right_wrist_0_rgb": image_spec,
+            },
+            image_masks={
+                "base_0_rgb": image_mask_spec,
+                "left_wrist_0_rgb": image_mask_spec,
+                "right_wrist_0_rgb": image_mask_spec,
+            },
+            state=jax.ShapeDtypeStruct([batch_size, config.action_dim], jnp.float32),
+            tokenized_prompt=jax.ShapeDtypeStruct([batch_size, config.max_token_len], jnp.int32),
+            tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, config.max_token_len], jnp.bool_),
+            token_ar_mask=jax.ShapeDtypeStruct([batch_size, config.max_token_len], jnp.int32),
+            token_loss_mask=jax.ShapeDtypeStruct([batch_size, config.max_token_len], jnp.bool_),
+            atomic_token=jax.ShapeDtypeStruct([batch_size], jnp.float32),
+            semantic_target_xy=jax.ShapeDtypeStruct([batch_size, 2], jnp.float32),
+            current_ee_xy=jax.ShapeDtypeStruct([batch_size, 2], jnp.float32),
+            has_trace=jax.ShapeDtypeStruct([batch_size], jnp.bool_),
+            has_overlay=jax.ShapeDtypeStruct([batch_size], jnp.bool_),
+            progress=jax.ShapeDtypeStruct([batch_size], jnp.float32),
+            diffusion_loss_mask=jax.ShapeDtypeStruct([batch_size], jnp.bool_),
+            future_trace_xy=jax.ShapeDtypeStruct([batch_size, config.trace_horizon, config.trace_dim], jnp.float32),
+            overlay_images={
+                "base_0_rgb": image_spec,
+            },
+            overlay_image_masks={
+                "base_0_rgb": image_mask_spec,
+            },
+        )
+    action_spec = jax.ShapeDtypeStruct([batch_size, config.action_horizon, config.action_dim], jnp.float32)
+    return observation_spec, action_spec

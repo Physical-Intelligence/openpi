@@ -51,11 +51,11 @@ import jax.numpy as jnp
 from typing_extensions import override
 
 from openpi.models import model as _model
+from openpi.models import pi0_config as _pi0_config
 from openpi.models import target_observation as _target_obs
 import openpi.models.gemmoe as _gemmoe
 import openpi.models.gemmoe_trace as _gemmoe_trace
 from openpi.shared import array_typing as at
-import openpi.shared.nnx_utils as nnx_utils
 
 if TYPE_CHECKING:
     from openpi.models.pi0_target_vla_actionmoe import Pi0TargetVLAActionMoe
@@ -166,23 +166,6 @@ class Pi0TargetVLAActionMoeConfig(_model.BaseModelConfig):
 
           - For ``target_vla_actionmoe`` (full FT everywhere): no freeze.
         """
-        filters = []
-        has_lora = False
-
-        all_llm = nnx_utils.PathRegex(".*llm.*")
-        action_expert_subtree = nnx_utils.PathRegex(".*llm.*(_1).*")
-
-        if "lora" in self.paligemma_variant:
-            # Freeze stream 0 (paligemma) but leave the action expert (stream 1)
-            # fully trainable.
-            filters.append(all_llm)
-            filters.append(nnx.Not(action_expert_subtree))
-            has_lora = True
-
-        if has_lora:
-            # Keep LoRA adapters trainable inside the frozen subtree.
-            filters.append(nnx.Not(nnx_utils.PathRegex(".*lora.*")))
-
-        if not filters:
-            return nnx.Nothing
-        return nnx.All(*filters)
+        return _pi0_config.llm_freeze_filter(
+            self.paligemma_variant, self.action_expert_variant, expert_suffixes=("_1",)
+        )
