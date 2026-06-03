@@ -5,9 +5,6 @@ Contains:
   - ``time_uniform_resample``     : same, but by time index (subsampling).
   - ``resample_trace``            : dispatcher that picks an algorithm.
   - ``draw_polyline_overlay``     : draw an antialiased polyline onto an HxWx3 image array.
-  - ``hard_route_one_hot``        : map an int batch of skill ids to a one-hot tensor
-                                   of shape (B, num_experts) for use as the MoE
-                                   ``hard_combine_weights`` argument.
   - ``SKILL_TO_EXPERT``           : the canonical mapping for our 5-expert MoE.
   - ``skill_to_expert_id``        : str(skill) -> int expert id.
 
@@ -35,7 +32,6 @@ SKILL_TO_EXPERT: dict[str, int] = {
     "TURN_ON": 4,
     "TURN_OFF": 4,
 }
-NUM_TRACE_EXPERTS: int = 5
 
 
 def skill_to_expert_id(skill: str | None) -> int:
@@ -46,17 +42,6 @@ def skill_to_expert_id(skill: str | None) -> int:
     if "(" in s:
         s = s.split("(", 1)[0].strip()
     return SKILL_TO_EXPERT.get(s, 0)
-
-
-def hard_route_one_hot(expert_ids: np.ndarray, num_experts: int = NUM_TRACE_EXPERTS) -> np.ndarray:
-    """Convert a (B,) int array of expert ids to a (B, num_experts) float one-hot.
-
-    NOTE: For per-token broadcast we expand to (B, T, K) outside this function.
-    """
-    expert_ids = np.asarray(expert_ids).astype(np.int64).reshape(-1)
-    out = np.zeros((expert_ids.shape[0], num_experts), dtype=np.float32)
-    out[np.arange(expert_ids.shape[0]), expert_ids] = 1.0
-    return out
 
 
 # ---------------------------------------------------------------------------

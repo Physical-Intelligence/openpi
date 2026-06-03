@@ -52,7 +52,6 @@ from openpi.models.gemmoe import (
     _apply_rope,
     _gated_residual,
     _name,
-    get_config as _get_gemmoe_config,
 )
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at

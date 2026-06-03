@@ -1952,13 +1952,13 @@ _CONFIGS = [
         keep_period=10_000,
     ),
     TrainConfig(
-        name="Atomic_libero",
+        name="atomic_libero",
         model=pi0_config.Pi0AtomicConfig(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotAtomicDataConfig(
             repo_id="yilin-wu/libero-100",
             base_config=AtomicDataConfig(
                 prompt_from_task=False,
-                repo_path="/work/nvme/bgtb/zhong2/.cache/huggingface/hub/datasets--yilin-wu--libero-100",
+                repo_path=str(REPO_ROOT / "data/libero-100"),
                 use_reasoning=True,
                 reasoning_json_path=REPO_ROOT / "data/libero-100/skill_annotations.json",
             ),
@@ -1973,7 +1973,7 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.AtomicWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=140_000,
         keep_period=10_000,
     ),
@@ -2102,7 +2102,7 @@ _CONFIGS = [
         data=LeRobotTraceVLADataConfig(
             repo_id="yilin-wu/libero-100",
             base_config=LiberoTraceDataConfig(
-                repo_path="/work/nvme/bgtb/zhong2/.cache/huggingface/hub/datasets--yilin-wu--libero-100/snapshots/1384872f07707d6aa361588292068eba7698facd",
+                repo_path=str(REPO_ROOT / "data/libero-100"),
                 prompt_from_task=True,
                 skill_annotations_path=str(REPO_ROOT / "data/libero-100/skill_annotations.json"),
                 trace_annotations_path=str(REPO_ROOT / "data/libero-100/skill_target_traces.json"),
@@ -2120,7 +2120,12 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            num_action_experts=5,    # = num_trace_experts: experts fanned into the trace MoE
+            moe_target="moe_2",      # plain trace_vla: action stream stays dense, trace stream is MoE
+            copy_stream2_attn=True,  # trace expert inherits the action expert's attn/norm
+        ),
         num_train_steps=110_000,
         save_interval=5_000,
         keep_period=10_000,
@@ -2146,7 +2151,7 @@ _CONFIGS = [
         data=LeRobotTraceVLADataConfig(
             repo_id="yilin-wu/libero-100",
             base_config=LiberoTraceDataConfig(
-                repo_path="/work/nvme/bgtb/zhong2/.cache/huggingface/hub/datasets--yilin-wu--libero-100/snapshots/1384872f07707d6aa361588292068eba7698facd",
+                repo_path=str(REPO_ROOT / "data/libero-100"),
                 prompt_from_task=True,
                 skill_annotations_path=str(REPO_ROOT / "data/libero-100/skill_annotations.json"),
                 trace_annotations_path=str(REPO_ROOT / "data/libero-100/skill_target_traces.json"),
@@ -2178,7 +2183,12 @@ _CONFIGS = [
             decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            num_action_experts=5,    # = num_trace_experts: experts fanned into the trace MoE
+            moe_target="moe_2",      # plain trace_vla: action stream stays dense, trace stream is MoE
+            copy_stream2_attn=True,  # trace expert inherits the action expert's attn/norm
+        ),
         num_train_steps=40_000,
         save_interval=5_000,
         keep_period=10_000,
@@ -2228,7 +2238,12 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            num_action_experts=5,
+            copy_stream2_attn=True,  # trace stream is a dense second expert: inherit pi05 attn/norm
+            copy_mlp2=True,          # and the dense action FFN
+        ),
         num_train_steps=100_000,
         save_interval=5_000,
         keep_period=10_000,
@@ -2339,7 +2354,9 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params", num_action_experts=5
+        ),
         num_train_steps=120_000,
         save_interval=5_000,
         keep_period=10_000,
@@ -2517,7 +2534,9 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params", num_action_experts=5
+        ),
         num_train_steps=100_000,
         save_interval=5_000,
         keep_period=10_000,

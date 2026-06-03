@@ -26,7 +26,7 @@ Differs from ``LiberoSkillReasonDataset`` in that:
   - Scene dropout (planning + execution) at low rate (default 0.15).
 
 NB: nothing in this module modifies the existing data pipeline; the dataset
-class is selected explicitly by ``train_trace_vla.py``.
+class is selected by ``create_torch_dataset`` for ``LiberoTraceDataConfig``.
 """
 from __future__ import annotations
 

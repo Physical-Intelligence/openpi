@@ -81,6 +81,19 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     )
 
 
+def _overlay_params(orig: dict, partial: dict) -> dict:
+    """Recursively overlay ``partial`` onto ``orig`` in place, leaving keys absent from
+    ``partial`` untouched. Used so a weight loader may return a subset of the params
+    (e.g. only the pi05_base-derived weights) while MoE experts / LoRA adapters / reasoning
+    and completion heads keep their random init."""
+    for k, v in partial.items():
+        if isinstance(v, dict):
+            orig[k] = _overlay_params(orig.get(k, {}), v)
+        else:
+            orig[k] = v
+    return orig
+
+
 @at.typecheck
 def init_train_state(
     config: _config.TrainConfig, init_rng: at.KeyArrayLike, mesh: jax.sharding.Mesh, *, resume: bool
@@ -95,8 +108,12 @@ def init_train_state(
         # Merge the partial params into the model.
         if partial_params is not None:
             graphdef, state = nnx.split(model)
-            # This will produce an error if the partial params are not a subset of the state.
-            state.replace_by_pure_dict(partial_params)
+            # Overlay the loaded params onto the model's init state, so keys absent from the
+            # checkpoint (MoE experts, LoRA adapters, reasoning/completion heads, ...) keep their
+            # random init rather than being dropped.
+            state_dict = state.to_pure_dict()
+            _overlay_params(state_dict, partial_params)
+            state.replace_by_pure_dict(state_dict)
             model = nnx.merge(graphdef, state)
 
         params = nnx.state(model)
@@ -147,15 +164,20 @@ def train_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        return jnp.mean(chunked_loss)
+        out = model.compute_loss(rng, observation, actions, train=True)
+        # Atomic / trace / target models return (per_sample_loss, info_dict); the base
+        # pi0 models return just the per-sample loss.
+        chunked_loss, aux = out if isinstance(out, tuple) else (out, {})
+        return jnp.mean(chunked_loss), aux
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    (loss, train_info), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
+        model, train_rng, observation, actions
+    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -188,6 +210,7 @@ def train_step(
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
     }
+    info.update(jax.tree.map(jnp.mean, train_info))
     return new_state, info
 
 

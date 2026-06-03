@@ -198,8 +198,7 @@ class Pi0Fuse(Pi0):
     ) -> at.Int[at.Array, "b _s"]:
         """Autoregressive reasoning token generation.
 
-        Uses the LLM's built-in _update_cache for KV cache management (matching
-        the approach in pi0.py's sample_low_level_task).
+        Uses the LLM's built-in _update_cache for KV cache management.
         """
         batch_size = prefix_mask.shape[0]
         output_tokens = jnp.zeros((batch_size, max_decoding_steps), dtype=jnp.int32)

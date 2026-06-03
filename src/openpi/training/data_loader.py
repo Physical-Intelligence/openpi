@@ -147,17 +147,16 @@ def create_torch_dataset(
         return LiberoSkillReasonDataset(data_config, action_horizon)
 
     if isinstance(data_config, _config.LiberoTraceDataConfig):
-        # Used both by training (`train_trace_vla.py`) — though that script imports the
-        # dataset directly — and by `compute_norm_stats.py`, which calls this factory to
-        # iterate the trace dataset's `state`/`actions` for norm-stat computation.
+        # Trace dataset: consumed by the standard training path (`train.py` ->
+        # `create_data_loader` -> `DataLoaderImpl` yields `TraceObservation`) and by
+        # `compute_norm_stats.py`, which iterates the trace dataset's `state`/`actions`.
         from openpi.policies.libero_trace_dataset import LiberoTraceDataset
         return LiberoTraceDataset(data_config, action_horizon)
 
     if isinstance(data_config, _config.LiberoTargetDataConfig):
-        # Trace-free counterpart of LiberoTraceDataConfig. Used by the
-        # ``train_target_vla_actionmoe.py`` training script (which imports the
-        # dataset directly) and by ``compute_norm_stats.py``, which needs this
-        # branch so the norm-stat computation can iterate the same dataset.
+        # Trace-free counterpart of LiberoTraceDataConfig: consumed by the standard
+        # training path (`DataLoaderImpl` yields `TargetObservation`) and by
+        # `compute_norm_stats.py`.
         from openpi.policies.libero_target_dataset import LiberoTargetDataset
         return LiberoTargetDataset(data_config, action_horizon)
 
@@ -581,6 +580,8 @@ class DataLoaderImpl(DataLoader):
     def __init__(self, data_config: _config.DataConfig, data_loader: TorchDataLoader | RLDSDataLoader):
         self._data_config = data_config
         self._data_loader = data_loader
+        self._use_target_observation = isinstance(data_config, _config.LiberoTargetDataConfig)
+        self._use_trace_observation = isinstance(data_config, _config.LiberoTraceDataConfig)
         self._use_fuse_observation = isinstance(data_config, _config.LiberoReasonDataConfig)
         self._use_atomic_observation = isinstance(data_config, _config.AtomicDataConfig)
 
@@ -588,8 +589,19 @@ class DataLoaderImpl(DataLoader):
         return self._data_config
 
     def __iter__(self):
+        # Dispatch the observation type. The trace/target configs must be checked by data-config
+        # type *before* the ``atomic_token``/``diffusion_loss_mask`` content fallbacks, since their
+        # batches also carry those keys.
         for batch in self._data_loader:
-            if self._use_atomic_observation or "atomic_token" in batch:
+            if self._use_target_observation:
+                from openpi.models import target_observation as _target_obs  # noqa: PLC0415
+
+                yield _target_obs.TargetObservation.from_dict(batch), batch["actions"]
+            elif self._use_trace_observation:
+                from openpi.models import trace_observation as _trace_obs  # noqa: PLC0415
+
+                yield _trace_obs.TraceObservation.from_dict(batch), batch["actions"]
+            elif self._use_atomic_observation or "atomic_token" in batch:
                 yield _model.AtomicObservation.from_dict(batch), batch["actions"]
             elif self._use_fuse_observation or "diffusion_loss_mask" in batch:
                 yield _model.FuseObservation.from_dict(batch), batch["actions"]
