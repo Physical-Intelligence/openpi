@@ -33,7 +33,17 @@ Removed ~155 LOC: `pi0.py` `left_to_right_align` + `sample_low_level_task` + com
 
 ---
 
-## 2. Gemma backbone duplication (`gemma.py`, `gemmoe.py`, `gemmoe_trace.py`, `gemma_fast.py`)
+## 2. Gemma backbone duplication — ✅ DONE (gemma.py ↔ gemmoe.py)
+
+`gemmoe.py` (657 → 553 LOC) now imports `RMSNorm`, `Embedder`, `FeedForward`, `_apply_rope`,
+`_name`, `_gated_residual`, `PALIGEMMA_VOCAB_SIZE` from `gemma.py` instead of redefining them
+(verified byte-identical first). `gemma.py` (the base used by pi0/pi05) is untouched;
+`gemmoe_trace.py` is unaffected (it imports these via gemmoe's namespace — re-export confirmed).
+Blank-line runs normalized. Validated: atomic_libero 1.3672 (exact, gemmoe path) and trace_vla_moe
+3.7695 (exact, gemmoe_trace path). `gemma_fast.py` left standalone (lower priority — own ConfigDict
++ lora.FeedForward).
+
+### (original analysis)
 
 `gemma.py` and `gemmoe.py` redefine the same core blocks byte-for-byte (~140 LOC duplicated):
 

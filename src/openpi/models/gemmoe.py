@@ -42,7 +42,17 @@ import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
 
-PALIGEMMA_VOCAB_SIZE = 257_152
+# Shared transformer primitives live in gemma.py; re-export them here so this MoE module and its
+# importers (e.g. gemmoe_trace) keep a single source of truth.
+from openpi.models.gemma import (
+    PALIGEMMA_VOCAB_SIZE,
+    Embedder,
+    FeedForward,
+    RMSNorm,
+    _apply_rope,
+    _gated_residual,
+    _name,
+)
 
 
 # =========================
@@ -176,54 +186,6 @@ def get_config(variant: Variant) -> Config:
 
 
 # =========================
-# RMSNorm / Embedding
-# =========================
-@at.typecheck
-class RMSNorm(nn.Module):
-    @nn.compact
-    def __call__(self, x, cond):
-        dtype = x.dtype  # original dtype, could be half-precision
-        var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)  # compute variance in float32
-        normed_inputs = jnp.asarray(x * jnp.reciprocal(jnp.sqrt(var + 1e-06)))  # compute normalization in float32
-        if cond is None:
-            # regular RMSNorm
-            scale = self.param("scale", nn.initializers.zeros_init(), (x.shape[-1]))
-            normed_inputs = normed_inputs * (
-                1 + scale
-            )  # scale by learned parameter in float32 (matches Flax implementation)
-            return normed_inputs.astype(dtype), None  # return in original dtype
-
-        # adaptive RMSNorm
-        modulation = nn.Dense(x.shape[-1] * 3, kernel_init=nn.initializers.zeros, dtype=dtype)(cond)
-        scale, shift, gate = jnp.split(modulation[:, None, :], 3, axis=-1)
-        normed_inputs = normed_inputs * (1 + scale) + shift  # scale and shift in float32
-        return normed_inputs.astype(dtype), gate
-
-
-@at.typecheck
-class Embedder(nn.Module):
-    """Embedder module."""
-
-    vocab_size: int
-    embed_dim: int
-
-    def setup(self):
-        self.input_embedding_table = self.param(
-            "input_embedding",
-            nn.initializers.normal(),
-            (self.vocab_size, self.embed_dim),
-        )
-
-    def encode(self, x):
-        x = self.input_embedding_table[(x,)]
-        x *= jnp.sqrt(self.embed_dim).astype(x.dtype)
-        return x
-
-    def decode(self, x):
-        return jnp.dot(x, self.input_embedding_table.T)
-
-
-# =========================
 # Attention
 # =========================
 @at.typecheck
@@ -340,36 +302,6 @@ class GemmoeBlockSparseTop2MLP(nn.Module):
         b = w3(x)
         y = w2(nn.silu(a) * b)
         return y
-
-@at.typecheck
-class FeedForward(nn.Module):
-    """Feed forward module."""
-
-    features: int
-    hidden_dim: int
-
-    @nn.compact
-    def __call__(self, x):
-        dtype = x.dtype  # original dtype, could be half-precision
-        w_gating = self.param(
-            "gating_einsum",
-            nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0,)),
-            (2, self.features, self.hidden_dim),
-        ).astype(dtype)
-        ff_gate = jnp.dot(x, w_gating[0])
-        gate_value = nn.gelu(ff_gate)
-
-        ff1 = jnp.dot(x, w_gating[1])
-        activations = gate_value * ff1
-
-        w_linear = self.param(
-            "linear",
-            nn.initializers.lecun_normal(in_axis=-2, out_axis=-1),
-            (self.hidden_dim, self.features),
-        ).astype(dtype)
-        outputs = jnp.dot(activations, w_linear)
-        assert outputs.dtype == dtype
-        return outputs
 
 
 # =========================
@@ -619,40 +551,3 @@ class Module(nn.Module):
             [jnp.zeros((1, c.width)) if u else None for u, c in zip(use_adarms, self.configs, strict=True)],
             jnp.zeros((1, 1, self.configs[1].width), dtype=jnp.bfloat16),
         )
-
-
-# =========================
-# Utilities
-# =========================
-
-def _apply_rope(x, *, positions, max_wavelength=10_000):
-    """Applies RoPE positions [B, L] to x [B, L, H, D]."""
-    freq_exponents = (2.0 / x.shape[-1]) * jnp.arange(x.shape[-1] // 2, dtype=jnp.float32)
-    timescale = max_wavelength**freq_exponents
-    radians = positions[..., None] / timescale[None, None, ]
-    radians = radians[..., None, :]
-    assert radians.dtype == jnp.float32
-    # radians.shape = [...,L,1,d=D/2]
-    sin, cos = jnp.sin(radians), jnp.cos(radians)
-    x1, x2 = jnp.split(x, 2, axis=-1)
-    res = jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
-    assert res.dtype == jnp.float32
-    return res.astype(x.dtype)
-
-
-def _name(name, i):
-    # we name layers like this because we want the first expert's weights to have no suffix (e.g., "attn"), so that they
-    # can be loaded seamlessly from the existing PaliGemma checkpoint. subsequent experts will have a suffix (e.g.,
-    # "attn_1") and their weights will be initialized from scratch. in practice, we only use two experts -- PaliGemma,
-    # and the action expert.
-    if i == 0:
-        return name
-    return f"{name}_{i}"
-
-def _gated_residual(x, y, gate):
-    assert (x is None) == (y is None)
-    if x is None:
-        return None
-    if gate is None:
-        return x + y
-    return x + y * gate
