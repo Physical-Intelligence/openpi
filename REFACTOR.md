@@ -148,15 +148,24 @@ three-way weighted loss), so it too lives in the base now; `target` keeps its ow
 `preprocess_trace_observation` (train-time geometric augmentation for non-square cameras; `None` =
 LIBERO square source, unchanged) — the field was added to every trace config; `target`'s config
 carries it plus a TODO since its own `compute_loss` doesn't wire it through yet. Each of the 4
-variants now inherits all of that and keeps only a small `_build_expert_configs` hook (which streams
-are MoE / 2-stream, via `has_trace_stream` + a single `self.num_skills`) plus its genuinely
-variant-specific `sample_*` (and `target`'s `_embed_action_suffix` + single-pass `_forward` +
-`compute_loss`, since it has no planning/execution split). Done in reviewed batches (commits
-`6230ec9`, `e635e72`, `db4f631`, `b6bfc7e`, `dfd8d2b`, `0effb0b`, the forward-fold, + the
-`compute_loss` fold `bd7f9bf`), each gated by a CPU param-path structural diff + an exact-loss smoke.
-Every config reproduced its baseline exactly: trace_vla 2.4391, trace_vla_moe 3.7695,
-trace_vla_actionmoe 2.4816, target_vla_actionmoe 0.9990. (The per-variant `sample_*` remain as the
-legitimate override points; further dedup there is optional.)
+variants now inherits all of that. The four sampling entrypoints (`sample_trace`, `sample_actions`,
+`sample_actions_and_completion`, `predict_completion`) were also ~identical across the 3 trace
+variants — differing only in the same trace_is_moe / action_is_moe combine-weights axis — so they
+too live in the base now; `target` keeps its own (target-conditioned action stream, no trace stream).
+After that fold the 3 trace variants are docstring + `_build_expert_configs` only (`Pi0TraceVLA` is
+pure base defaults). What's left per-variant: the small `_build_expert_configs` hook (which streams
+are MoE / 2-stream, which config registry — `_gemma` dense vs `_gemma_trace` MoE — supplies each
+expert, and a single `self.num_skills`) and, for `target` only, `_embed_action_suffix` + single-pass
+`_forward` + `compute_loss`. `_build_expert_configs` is intentionally NOT folded: beyond the
+assertions the variants pick `num_skills` from different config fields and pull each expert from a
+different (disjoint-name) registry, so a unified version would still need per-stream branching — the
+~10-line hooks document each architecture more clearly than that would. Done in reviewed batches
+(commits `6230ec9`, `e635e72`, `db4f631`, `b6bfc7e`, `dfd8d2b`, `0effb0b`, the forward-fold, the
+`compute_loss` fold `bd7f9bf`, + the sampling fold `a6b5a04`). The model-structure folds were gated
+by a CPU param-path structural diff + an exact-loss smoke (every config reproduced its baseline:
+trace_vla 2.4391, trace_vla_moe 3.7695, trace_vla_actionmoe 2.4816, target_vla_actionmoe 0.9990);
+the sampling fold was gated by `scripts/sampling_equivalence_test.py` — a CPU bit-exact A/B of the
+public policy API (worst max|Δ| = 0.000), baselines in `refactor_baselines/sampling/`.
 
 ### (original analysis)
 
