@@ -53,56 +53,9 @@ import openpi.models.gemmoe as _gemma
 import openpi.models.gemmoe_trace as _gemma_trace
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
+from openpi.models.pi0_trace_vla_base import fourier_encode_2d, make_attn_mask, posemb_sincos
 
 logger = logging.getLogger("openpi")
-
-
-# ---------------------------------------------------------------------------
-# Helpers — copied from ``pi0_trace_vla_actionmoe`` to avoid an import cycle.
-# ---------------------------------------------------------------------------
-
-def make_attn_mask(input_mask, mask_ar):
-    """Same as ``pi0_atomic.make_attn_mask`` / ``pi0_trace_vla.make_attn_mask``."""
-    mask_ar = jnp.broadcast_to(mask_ar, input_mask.shape)
-    cumsum = jnp.cumsum(mask_ar, axis=1)
-    attn_mask = cumsum[:, None, :] <= cumsum[:, :, None]
-    valid_mask = input_mask[:, None, :] * input_mask[:, :, None]
-    return jnp.logical_and(attn_mask, valid_mask)
-
-
-@at.typecheck
-def posemb_sincos(
-    pos: at.Real[at.Array, " b"], embedding_dim: int, min_period: float, max_period: float
-) -> at.Float[at.Array, "b {embedding_dim}"]:
-    """Sin/cos positional embedding for scalar positions (matches pi0/pi05)."""
-    if embedding_dim % 2 != 0:
-        raise ValueError(f"embedding_dim ({embedding_dim}) must be divisible by 2")
-    fraction = jnp.linspace(0.0, 1.0, embedding_dim // 2)
-    period = min_period * (max_period / min_period) ** fraction
-    sinusoid_input = jnp.einsum(
-        "i,j->ij",
-        pos,
-        1.0 / period * 2 * jnp.pi,
-        precision=jax.lax.Precision.HIGHEST,
-    )
-    return jnp.concatenate([jnp.sin(sinusoid_input), jnp.cos(sinusoid_input)], axis=-1)
-
-
-def fourier_encode_2d(p: at.Float[at.Array, "*b 2"], num_freqs: int) -> at.Float[at.Array, "*b feat"]:
-    """Fourier-encode 2-D normalized [0, 1] points -> ``(*b, 2 * 2 * num_freqs)`` features.
-
-    Same encoder used by ``Pi0TraceVLA`` / ``Pi0TraceVLAActionMoe`` /
-    ``Pi0TraceVLAMoe`` — we reuse the exact mathematical form so that the
-    AdaRMS conditioning signal flowing into the action MoE matches the trace
-    family's conditioning signal both in spectrum and in scale.
-    """
-    freqs = (2.0 ** jnp.arange(num_freqs, dtype=jnp.float32))
-    angles = p[..., None] * freqs * 2.0 * jnp.pi
-    sins = jnp.sin(angles)
-    coss = jnp.cos(angles)
-    feat = jnp.concatenate([sins, coss], axis=-1)
-    new_shape = (*feat.shape[:-2], feat.shape[-2] * feat.shape[-1])
-    return feat.reshape(new_shape)
 
 
 # ---------------------------------------------------------------------------
