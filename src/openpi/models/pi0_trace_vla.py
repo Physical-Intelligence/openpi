@@ -34,19 +34,14 @@ import logging
 import einops
 import flax.linen as nn
 import flax.nnx as nnx
-import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
 from openpi.models import model as _model
-from openpi.models import pi0_trace_vla_config as _config
 from openpi.models import trace_observation as _trace_obs
-import openpi.models.gemmoe as _gemma
-import openpi.models.gemmoe_trace as _gemma_trace
-import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
-from openpi.models.pi0_trace_vla_base import fourier_encode_2d, make_attn_mask, posemb_sincos
+from openpi.models.pi0_trace_vla_base import TraceVLABase, fourier_encode_2d, make_attn_mask, posemb_sincos
 
 logger = logging.getLogger("openpi")
 
@@ -55,105 +50,12 @@ logger = logging.getLogger("openpi")
 # Pi0TraceVLA model
 # ---------------------------------------------------------------------------
 
-class Pi0TraceVLA(_model.BaseModel):
+class Pi0TraceVLA(TraceVLABase):
     """Trace-augmented Vision-Language-Action model.
 
-    See module docstring for an architectural summary.
+    See module docstring for an architectural summary. Trunk + head construction lives in
+    ``TraceVLABase.__init__``; this subclass adds the embed/forward/loss/sample logic.
     """
-
-    def __init__(self, config: _config.Pi0TraceVLAConfig, rngs: nnx.Rngs):
-        super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
-        self.config = config
-        self.pi05 = config.pi05
-        if not self.pi05:
-            raise ValueError("Pi0TraceVLA assumes pi05=True (adaRMS pathway).")
-
-        self.num_trace_experts = int(config.num_trace_experts)
-        self.trace_horizon = int(config.trace_horizon)
-        self.trace_dim = int(config.trace_dim)
-        # When the semantic-target anchor row is appended, the trace stream
-        # internally carries ``trace_horizon + 1`` tokens (the extra one is
-        # inpainting-clamped to ``p_tgt`` and masked from the flow loss). The
-        # user-facing trace shape returned by ``sample_trace`` remains
-        # ``(B, trace_horizon, 2)``.
-        self.append_target_anchor = bool(getattr(config, "append_target_anchor", False))
-        self.trace_seq_len = self.trace_horizon + (1 if self.append_target_anchor else 0)
-
-        paligemma_config = _gemma.get_config(config.paligemma_variant)
-        action_expert_config = _gemma.get_config(config.action_expert_variant)
-        trace_expert_config = _gemma_trace.get_trace_config(config.trace_expert_variant)
-        if int(trace_expert_config.num_local_experts) != self.num_trace_experts:
-            raise ValueError(
-                f"trace_expert_variant has {trace_expert_config.num_local_experts} experts but "
-                f"config requested {self.num_trace_experts}."
-            )
-
-        self.paligemma_width = int(paligemma_config.width)
-        self.action_width = int(action_expert_config.width)
-        self.trace_width = int(trace_expert_config.width)
-
-        # ---------- Trunk: 3-stream Gemma with hard-routed trace MoE ----------
-        llm = nnx_bridge.ToNNX(
-            _gemma_trace.TraceModule(
-                configs=[paligemma_config, action_expert_config, trace_expert_config],
-                embed_dtype=config.dtype,
-                # adaRMS is enabled (set per-stream below).
-            )
-        )
-        # adaRMS on streams 1 (action) and 2 (trace).
-        llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True, True])
-        img = nnx_bridge.ToNNX(
-            _siglip.Module(
-                num_classes=paligemma_config.width,
-                variant="So400m/14",
-                pool_type="none",
-                scan=True,
-                dtype_mm=config.dtype,
-            )
-        )
-        img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
-
-        self.PaliGemma = nnx.Dict(llm=llm, img=img)
-
-        # ---------- Action expert I/O + time MLP ----------
-        self.action_in_proj = nnx.Linear(config.action_dim, self.action_width, rngs=rngs)
-        self.action_out_proj = nnx.Linear(self.action_width, config.action_dim, rngs=rngs)
-        self.action_time_mlp_in = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-        self.action_time_mlp_out = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-
-        # ---------- Trace expert I/O ----------
-        self.trace_in_proj = nnx.Linear(self.trace_dim, self.trace_width, rngs=rngs)
-        self.trace_out_proj = nnx.Linear(self.trace_width, self.trace_dim, rngs=rngs)
-        # Trace expert time MLP (separate parameters from the action expert's).
-        self.trace_time_mlp_in = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-        self.trace_time_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-
-        # ---------- Semantic-target Fourier MLP for trace AdaRMS conditioning ----------
-        target_fourier_dim = config.fourier_num_freqs * 2 * 2  # 2 coords * (sin+cos)
-        self.target_mlp_in = nnx.Linear(target_fourier_dim, self.trace_width, rngs=rngs)
-        self.target_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-
-        # ---------- Completion head ----------
-        # Shared compression from VLM hidden state width to a smaller dim.
-        self.completion_shared_in = nnx.Linear(
-            self.paligemma_width, config.completion_shared_dim, rngs=rngs
-        )
-        self.completion_shared_out = nnx.Linear(
-            config.completion_shared_dim, config.completion_shared_dim, rngs=rngs
-        )
-        # Per-skill stacked MLP head: (K, shared_dim, hidden) -> (K, hidden, 1)
-        K = self.num_trace_experts
-        S = int(config.completion_shared_dim)
-        H = int(config.completion_per_skill_hidden)
-        rng1, rng2 = jax.random.split(rngs.params(), 2)
-        std_in = (1.0 / S) ** 0.5
-        std_out = (1.0 / H) ** 0.5
-        self.cmp_w1 = nnx.Param(jax.random.normal(rng1, (K, S, H)) * std_in)
-        self.cmp_b1 = nnx.Param(jnp.zeros((K, H)))
-        self.cmp_w2 = nnx.Param(jax.random.normal(rng2, (K, H, 1)) * std_out)
-        self.cmp_b2 = nnx.Param(jnp.zeros((K, 1)))
-
-        self.deterministic = True
 
     # -----------------------------------------------------------------------
     # Embeddings
