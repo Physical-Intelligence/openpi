@@ -16,12 +16,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import einops
 import flax.nnx as nnx
 import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
 
 from openpi.models import model as _model
+from openpi.models import trace_observation as _trace_obs
 import openpi.models.gemmoe as _gemma
 import openpi.models.gemmoe_trace as _gemma_trace
 import openpi.models.siglip as _siglip
@@ -185,3 +187,140 @@ class TraceVLABase(_model.BaseModel):
         self.cmp_b2 = nnx.Param(jnp.zeros((K, 1)))
 
         self.deterministic = True
+
+    # -----------------------------------------------------------------------
+    # Embeddings
+    # -----------------------------------------------------------------------
+    @at.typecheck
+    def _embed_prefix_with_images(
+        self,
+        obs: _trace_obs.TraceObservation,
+        images: dict,
+        image_masks: dict,
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
+        """Same shape/structure as pi0_atomic.embed_prefix, but takes the images dict as
+        an explicit argument so we can run the prefix once with clean images (planning)
+        and once with overlay images (execution).
+        """
+        input_mask = []
+        ar_mask = []
+        tokens = []
+
+        for name in images:
+            image_tokens, _ = self.PaliGemma.img(images[name], train=False)
+            tokens.append(image_tokens)
+            input_mask.append(
+                einops.repeat(image_masks[name], "b -> b s", s=image_tokens.shape[1])
+            )
+            ar_mask.append(0 * input_mask[-1])
+
+        assert obs.tokenized_prompt is not None
+        assert obs.tokenized_prompt_mask is not None
+        assert obs.token_ar_mask is not None
+
+        txt_emb = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+        tokens.append(txt_emb)
+        input_mask.append(obs.tokenized_prompt_mask)
+        ar_mask.append(obs.token_ar_mask)
+
+        tokens = jnp.concatenate(tokens, axis=1)
+        input_mask = jnp.concatenate(input_mask, axis=1)
+        ar_mask = jnp.concatenate(ar_mask, axis=1)
+        return tokens, input_mask, ar_mask
+
+    @at.typecheck
+    def _embed_action_suffix(
+        self,
+        noisy_actions: at.Float[at.Array, "b ah ad"],
+        timestep: at.Float[at.Array, " b"],
+    ) -> tuple[
+        at.Float[at.Array, "b s emb"],
+        at.Bool[at.Array, "b s"],
+        at.Bool[at.Array, "b s"],
+        at.Float[at.Array, "b emb"],
+    ]:
+        action_tokens = self.action_in_proj(noisy_actions)
+        time_emb = posemb_sincos(timestep, self.action_width, min_period=4e-3, max_period=4.0)
+        time_emb = nnx.swish(self.action_time_mlp_in(time_emb))
+        time_emb = nnx.swish(self.action_time_mlp_out(time_emb))
+        adarms_cond = time_emb
+
+        input_mask = jnp.ones(action_tokens.shape[:2], dtype=jnp.bool_)
+        # Action tokens form a single block (causal-from-prefix, mutually visible internally).
+        ar_mask = jnp.broadcast_to(
+            jnp.array([True] + ([False] * (self.action_horizon - 1))),
+            action_tokens.shape[:2],
+        )
+        return action_tokens, input_mask, ar_mask, adarms_cond
+
+    @at.typecheck
+    def _embed_trace_suffix(
+        self,
+        noisy_trace: at.Float[at.Array, "b n 2"],
+        timestep: at.Float[at.Array, " b"],
+        target_xy: at.Float[at.Array, "b 2"],
+    ) -> tuple[
+        at.Float[at.Array, "b s emb"],
+        at.Bool[at.Array, "b s"],
+        at.Bool[at.Array, "b s"],
+        at.Float[at.Array, "b emb"],
+    ]:
+        trace_tokens = self.trace_in_proj(noisy_trace)
+
+        # Time embedding (Fourier sin/cos -> 2-layer MLP -> swish).
+        time_emb = posemb_sincos(timestep, self.trace_width, min_period=4e-3, max_period=4.0)
+        time_emb = nnx.swish(self.trace_time_mlp_in(time_emb))
+        time_emb = nnx.swish(self.trace_time_mlp_out(time_emb))
+
+        # Semantic-target Fourier embedding -> 2-layer MLP -> swish.
+        tgt_feat = fourier_encode_2d(target_xy, num_freqs=self.config.fourier_num_freqs)
+        tgt_emb = nnx.swish(self.target_mlp_in(tgt_feat))
+        tgt_emb = nnx.swish(self.target_mlp_out(tgt_emb))
+
+        adarms_cond = time_emb + tgt_emb  # (B, trace_width)
+
+        # Build masks dynamically from the actual trace-stream length (which may
+        # differ from ``self.trace_horizon`` when the semantic-target anchor row
+        # is appended; see ``trace_seq_len``).
+        seq_len = trace_tokens.shape[1]
+        input_mask = jnp.ones(trace_tokens.shape[:2], dtype=jnp.bool_)
+        # ar_mask = [True, False, ..., False] of length seq_len: the trace tokens
+        # form a single non-causal block (all mutually visible) after the prefix.
+        row0 = jnp.ones((1,), dtype=jnp.bool_)
+        rest = jnp.zeros((seq_len - 1,), dtype=jnp.bool_)
+        single_ar = jnp.concatenate([row0, rest], axis=0)
+        ar_mask = jnp.broadcast_to(single_ar, trace_tokens.shape[:2])
+        return trace_tokens, input_mask, ar_mask, adarms_cond
+
+    # -----------------------------------------------------------------------
+    # Completion head
+    # -----------------------------------------------------------------------
+    @at.typecheck
+    def _completion_predict(
+        self, prefix_out: at.Float[at.Array, "b p d"], prefix_mask: at.Bool[at.Array, "b p"], skill_id: at.Int[at.Array, " b"]
+    ) -> at.Float[at.Array, " b"]:
+        # Mean-pool the VLM prefix output, weighted by mask.
+        m = prefix_mask.astype(prefix_out.dtype)
+        denom = jnp.maximum(jnp.sum(m, axis=-1, keepdims=True), 1.0)
+        h_pool = jnp.sum(prefix_out * m[..., None], axis=1) / denom  # (B, paligemma_width)
+
+        # Shared compression.
+        h = nnx.swish(self.completion_shared_in(h_pool))
+        h = self.completion_shared_out(h)  # (B, S)
+
+        # Per-skill MLP heads (stacked weights). Compute outputs for ALL K experts then gather.
+        # cmp_w1: (K, S, H), cmp_b1: (K, H)
+        # h: (B, S)
+        cmp_w1 = self.cmp_w1.value.astype(h.dtype)
+        cmp_b1 = self.cmp_b1.value.astype(h.dtype)
+        cmp_w2 = self.cmp_w2.value.astype(h.dtype)
+        cmp_b2 = self.cmp_b2.value.astype(h.dtype)
+        h1 = jnp.einsum("bs,ksh->bkh", h, cmp_w1) + cmp_b1[None, :, :]
+        h1 = nnx.swish(h1)
+        out = jnp.einsum("bkh,kho->bko", h1, cmp_w2) + cmp_b2[None, :, :]
+        out = out[..., 0]  # (B, K)
+
+        K = self.num_trace_experts
+        skill_one_hot = jax.nn.one_hot(skill_id, K, dtype=out.dtype)  # (B, K)
+        logit = jnp.einsum("bk,bk->b", skill_one_hot, out)
+        return jax.nn.sigmoid(logit)
