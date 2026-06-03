@@ -138,28 +138,8 @@ class Pi0TargetVLAActionMoe(TraceVLABase):
         )
         return action_tokens, input_mask, ar_mask, adarms_cond
 
-    # -----------------------------------------------------------------------
-    # Helpers: hard combine weights for the action MoE.
-    # -----------------------------------------------------------------------
-    def _action_combine_weights(self, batch_size: int, skill_id: at.Int[at.Array, " b"], length: int) -> at.Float[at.Array, "b _t _k"]:
-        """Build ``(B, length, K)`` one-hot combine weights for the action MoE.
-
-        Used during the joint forward (length = ``action_horizon``) and during
-        the denoising loop in ``sample_actions`` / ``sample_actions_and_completion``.
-        """
-        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills)
-        return jnp.broadcast_to(
-            skill_one_hot[:, None, :], (batch_size, length, self.num_skills)
-        )
-
-    def _dummy_combine_weights(self, batch_size: int) -> at.Float[at.Array, "b _t _k"]:
-        """Tiny placeholder combine_weights for calls where the MoE stream has no tokens.
-
-        Used during prefix-only prefill calls — the action stream is ``None``
-        there, so the ``HardMoeBlock`` is never invoked, but the call still
-        needs a well-shaped tensor to satisfy ``nn.scan``'s broadcast contract.
-        """
-        return jnp.zeros((batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype))
+    # _combine_weights / _dummy_combine_weights are inherited from TraceVLABase
+    # (action_is_moe=True for this variant; the trace stream is absent).
 
     # -----------------------------------------------------------------------
     # Forward pass
@@ -208,7 +188,7 @@ class Pi0TargetVLAActionMoe(TraceVLABase):
             raise ValueError("atomic_token is required for hard MoE routing of the action expert.")
         skill_id = obs.atomic_token.astype(jnp.int32)
         batch_size = prefix_mask.shape[0]
-        combine_weights = self._action_combine_weights(batch_size, skill_id, self.action_horizon)
+        combine_weights = self._combine_weights(batch_size, skill_id, self.action_horizon)
 
         full_input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
         full_ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
@@ -319,7 +299,7 @@ class Pi0TargetVLAActionMoe(TraceVLABase):
         )
 
         # During the denoising loop the action MoE is active.
-        action_combine_weights = self._action_combine_weights(
+        action_combine_weights = self._combine_weights(
             batch_size, skill_id, self.action_horizon
         )
 
@@ -399,7 +379,7 @@ class Pi0TargetVLAActionMoe(TraceVLABase):
 
         progress_pred = self._completion_predict(prefix_out, prefix_mask, skill_id)
 
-        action_combine_weights = self._action_combine_weights(
+        action_combine_weights = self._combine_weights(
             batch_size, skill_id, self.action_horizon
         )
 

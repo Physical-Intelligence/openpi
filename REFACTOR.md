@@ -136,15 +136,20 @@ from the base too, but it's lower priority.
 ## 3. Pi0 trace/target model classes — ✅ DONE (all 4 fold into TraceVLABase)
 
 New `pi0_trace_vla_base.py` holds the shared module-level helpers + `TraceVLABase`: `__init__`
-(PaliGemma trunk + action/trace/target/completion heads), the embed methods, and the completion
-head. Each of the 4 variants now inherits it and keeps only a small `_build_expert_configs` hook
-(which streams are MoE / 2-stream, via `has_trace_stream` + a single `self.num_skills`) plus its
-genuinely variant-specific MoE-routing `_forward_*`/`sample_*` (and `target`'s `_embed_action_suffix`).
-Done in 6 reviewed batches (commits `6230ec9`, `e635e72`, `db4f631`, `b6bfc7e`, `dfd8d2b`, `0effb0b`),
-each gated by a CPU param-path structural diff + an exact-loss smoke. Every config reproduced its
-baseline exactly: trace_vla 2.4391, trace_vla_moe 3.7695, trace_vla_actionmoe 2.4816,
-target_vla_actionmoe 0.9990. (The per-variant `compute_loss`/`sample_*` remain as the legitimate
-override points; further dedup there is optional.)
+(PaliGemma trunk + action/trace/target/completion heads), the embed methods, the completion
+head, the hard-routing combine-weight helpers (`_combine_weights` / `_dummy_combine_weights`),
+**and the `_forward_planning` / `_forward_execution` passes**. The 3 trace variants' forward passes
+were ~90% identical — they differed only in which stream carried the MoE — so the base now selects
+the real-vs-dummy combine-weights path from two flags derived from the expert configs in `__init__`:
+`self.trace_is_moe` (planning) and `self.action_is_moe` (execution). Each of the 4 variants now
+inherits all of that and keeps only a small `_build_expert_configs` hook (which streams are MoE /
+2-stream, via `has_trace_stream` + a single `self.num_skills`) plus its genuinely variant-specific
+`sample_*`/`compute_loss` (and `target`'s `_embed_action_suffix` + single-pass `_forward`, since it
+has no planning/execution split). Done in reviewed batches (commits `6230ec9`, `e635e72`, `db4f631`,
+`b6bfc7e`, `dfd8d2b`, `0effb0b`, + this forward-fold), each gated by a CPU param-path structural diff
++ an exact-loss smoke. Every config reproduced its baseline exactly: trace_vla 2.4391,
+trace_vla_moe 3.7695, trace_vla_actionmoe 2.4816, target_vla_actionmoe 0.9990. (The per-variant
+`compute_loss`/`sample_*` remain as the legitimate override points; further dedup there is optional.)
 
 ### (original analysis)
 

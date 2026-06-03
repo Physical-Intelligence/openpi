@@ -131,6 +131,12 @@ class TraceVLABase(_model.BaseModel):
         # stream (target variant, which has no trace stream).
         cond_width = self.trace_width if self.has_trace_stream else self.action_width
 
+        # Whether each non-VLM stream is a hard-routed MoE (num_local_experts > 1) vs a dense FFN.
+        # The forward passes use this to pass real one-hot combine weights to a MoE stream and a
+        # dummy placeholder to a dense one (the dense FFN ignores combine weights).
+        self.action_is_moe = int(getattr(action_expert_config, "num_local_experts", 1)) > 1
+        self.trace_is_moe = self.has_trace_stream and int(getattr(trace_expert_config, "num_local_experts", 1)) > 1
+
         # ---------- Trunk: PaliGemma VLM + action expert (+ trace expert when present) ----------
         # adaRMS is enabled on every non-VLM stream: the action stream, and the trace stream when
         # the variant has one.
@@ -357,3 +363,186 @@ class TraceVLABase(_model.BaseModel):
         skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills, dtype=out.dtype)  # (B, num_skills)
         logit = jnp.einsum("bk,bk->b", skill_one_hot, out)
         return jax.nn.sigmoid(logit)
+
+    # -----------------------------------------------------------------------
+    # Hard-routed MoE combine weights
+    # -----------------------------------------------------------------------
+    @at.typecheck
+    def _combine_weights(
+        self, batch_size: int, skill_id: at.Int[at.Array, " b"], length: int
+    ) -> at.Float[at.Array, "b _t _k"]:
+        """Hard one-hot routing weights for a skill-routed MoE stream: the skill one-hot broadcast
+        over the token axis -> ``(B, length, num_skills)``."""
+        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills)
+        return jnp.broadcast_to(skill_one_hot[:, None, :], (batch_size, length, self.num_skills))
+
+    @at.typecheck
+    def _dummy_combine_weights(self, batch_size: int) -> at.Float[at.Array, "b _t _k"]:
+        """Placeholder combine weights for a pass whose active stream is dense (its hard-MoE block
+        is never invoked); shaped/typed to satisfy the typecheck through scan."""
+        return jnp.zeros((batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype))
+
+    # -----------------------------------------------------------------------
+    # Forward passes (planning = trace stream active; execution = action stream active)
+    # -----------------------------------------------------------------------
+    @at.typecheck
+    def _forward_planning(
+        self,
+        rng: at.KeyArrayLike,
+        obs: _trace_obs.TraceObservation,
+    ) -> tuple[at.Float[at.Array, "b n 2"], at.Float[at.Array, "b n 2"], at.Bool[at.Array, "b n"]]:
+        """Trace planning forward (stream 2 active, action stream None). Returns
+        ``(v_pred, u_target, loss_mask)`` over the *extended* trace sequence (length
+        ``trace_seq_len``); row 0 (current-EE inpaint) and, when ``append_target_anchor``, the
+        appended last row (semantic-target inpaint) are masked out of the loss.
+        """
+        noise_rng, time_rng = jax.random.split(rng, 2)
+
+        future_trace = obs.future_trace_xy  # (B, N, 2)
+        if future_trace is None:
+            raise ValueError("future_trace_xy is required for trace flow-matching loss.")
+        batch_shape = future_trace.shape[:-2]  # (B,)
+
+        target_xy = obs.semantic_target_xy
+        if target_xy is None:
+            raise ValueError("semantic_target_xy is required for trace conditioning.")
+
+        # When configured, append ``p_tgt`` as the extra (N+1)th supervised row. flow matching's
+        # joint distribution over the (N+1, 2) tokens is well-defined; the loss mask below excludes
+        # this row so only the true trace is supervised.
+        if self.append_target_anchor:
+            future_trace_ext = jnp.concatenate([future_trace, target_xy[:, None, :]], axis=1)
+        else:
+            future_trace_ext = future_trace
+
+        noise = jax.random.normal(noise_rng, future_trace_ext.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001  # (B,)
+        time_e = time[..., None, None]  # (B, 1, 1)
+        x_t = time_e * noise + (1.0 - time_e) * future_trace_ext
+        u_t = noise - future_trace_ext
+
+        # Inpainting clamp on row 0 (current EE): same noise level as the other rows, mean centered
+        # at p_ee instead of future_trace[:, 0].
+        ee = obs.current_ee_xy  # (B, 2)
+        x_t_row0 = (1.0 - time[:, None]) * ee + time[:, None] * noise[:, 0, :]
+        x_t = x_t.at[:, 0, :].set(x_t_row0)
+        # Inpainting clamp on the appended last row (semantic target), consistent with the
+        # supervision target since ``future_trace_ext[:, -1, :] == p_tgt``.
+        if self.append_target_anchor:
+            x_t_row_last = (1.0 - time[:, None]) * target_xy + time[:, None] * noise[:, -1, :]
+            x_t = x_t.at[:, -1, :].set(x_t_row_last)
+
+        # Prefix with the clean image (no overlay) for planning; trace suffix (time + target adaRMS).
+        prefix_tokens, prefix_mask, prefix_ar_mask = self._embed_prefix_with_images(
+            obs, obs.images, obs.image_masks
+        )
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond_trace = self._embed_trace_suffix(
+            x_t, time, target_xy
+        )
+
+        # Real one-hot combine weights when the trace stream is a MoE, else a dummy placeholder.
+        batch_size = prefix_mask.shape[0]
+        if self.trace_is_moe:
+            if obs.atomic_token is None:
+                raise ValueError("atomic_token is required for hard MoE routing.")
+            skill_id = obs.atomic_token.astype(jnp.int32)
+            combine_weights = self._combine_weights(batch_size, skill_id, self.trace_seq_len)
+        else:
+            combine_weights = self._dummy_combine_weights(batch_size)
+
+        full_input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+        full_ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
+        attn_mask = make_attn_mask(full_input_mask, full_ar_mask)
+        positions = jnp.cumsum(full_input_mask, axis=1) - 1
+
+        # Joint forward over [paligemma, None, trace_suffix].
+        (prefix_out, action_out_unused, trace_out), _ = self.PaliGemma.llm(
+            [prefix_tokens, None, suffix_tokens],
+            mask=attn_mask,
+            positions=positions,
+            adarms_cond=[None, None, adarms_cond_trace],
+            hard_combine_weights=combine_weights,
+        )
+        del prefix_out, action_out_unused
+
+        v_t = self.trace_out_proj(trace_out[:, -self.trace_seq_len :])
+        # Loss mask: drop row 0 always; drop the appended last row when present.
+        L = self.trace_seq_len
+        mask_first = jnp.zeros((1, 1), dtype=jnp.bool_)
+        if self.append_target_anchor:
+            mask_middle = jnp.ones((1, L - 2), dtype=jnp.bool_)
+            mask_last = jnp.zeros((1, 1), dtype=jnp.bool_)
+            loss_mask = jnp.concatenate([mask_first, mask_middle, mask_last], axis=1)
+        else:
+            mask_middle = jnp.ones((1, L - 1), dtype=jnp.bool_)
+            loss_mask = jnp.concatenate([mask_first, mask_middle], axis=1)
+        loss_mask = jnp.broadcast_to(loss_mask, v_t.shape[:2])
+        return v_t, u_t, loss_mask
+
+    @at.typecheck
+    def _forward_execution(
+        self,
+        rng: at.KeyArrayLike,
+        obs: _trace_obs.TraceObservation,
+        actions: _model.Actions,
+    ) -> tuple[
+        at.Float[at.Array, "b ah ad"],
+        at.Float[at.Array, "b ah ad"],
+        at.Float[at.Array, " b"],
+    ]:
+        """Action execution forward (stream 1 active, trace stream None). Returns
+        ``(action v_pred, action u_target, progress_pred)``."""
+        noise_rng, time_rng = jax.random.split(rng, 2)
+        batch_shape = actions.shape[:-2]
+        noise = jax.random.normal(noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+        time_e = time[..., None, None]
+        x_a_t = time_e * noise + (1.0 - time_e) * actions
+        u_a_t = noise - actions
+
+        # Execution-mode images: overlay base image + clean wrist images.
+        exec_images = dict(obs.images)
+        exec_image_masks = dict(obs.image_masks)
+        if getattr(obs, "overlay_images", None) is not None:
+            for k, v in obs.overlay_images.items():
+                exec_images[k] = v
+                if obs.overlay_image_masks is not None and k in obs.overlay_image_masks:
+                    exec_image_masks[k] = obs.overlay_image_masks[k]
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self._embed_prefix_with_images(
+            obs, exec_images, exec_image_masks
+        )
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond_action = self._embed_action_suffix(x_a_t, time)
+
+        # skill id: needed for the completion head always, and for action-stream MoE routing.
+        batch_size = prefix_mask.shape[0]
+        if obs.atomic_token is None:
+            if self.action_is_moe:
+                raise ValueError("atomic_token is required for hard MoE routing of the action expert.")
+            skill_id = jnp.zeros((batch_size,), dtype=jnp.int32)
+        else:
+            skill_id = obs.atomic_token.astype(jnp.int32)
+        # Real one-hot combine weights when the action stream is a MoE, else a dummy placeholder.
+        if self.action_is_moe:
+            combine_weights = self._combine_weights(batch_size, skill_id, self.action_horizon)
+        else:
+            combine_weights = self._dummy_combine_weights(batch_size)
+
+        full_input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+        full_ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
+        attn_mask = make_attn_mask(full_input_mask, full_ar_mask)
+        positions = jnp.cumsum(full_input_mask, axis=1) - 1
+
+        # Joint forward over [paligemma, action_suffix, None].
+        (prefix_out, action_out, trace_out_unused), _ = self.PaliGemma.llm(
+            [prefix_tokens, suffix_tokens, None],
+            mask=attn_mask,
+            positions=positions,
+            adarms_cond=[None, adarms_cond_action, None],
+            hard_combine_weights=combine_weights,
+        )
+        del trace_out_unused
+
+        v_a_t = self.action_out_proj(action_out[:, -self.action_horizon :])
+        progress_pred = self._completion_predict(prefix_out, prefix_mask, skill_id)
+        return v_a_t, u_a_t, progress_pred
