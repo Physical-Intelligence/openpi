@@ -41,7 +41,6 @@ import logging
 import einops
 import flax.linen as nn  # noqa: F401  (kept for parity with the original module)
 import flax.nnx as nnx
-import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
 from typing_extensions import override
@@ -51,9 +50,8 @@ from openpi.models import pi0_trace_vla_actionmoe_config as _config
 from openpi.models import trace_observation as _trace_obs
 import openpi.models.gemmoe as _gemma
 import openpi.models.gemmoe_trace as _gemma_trace
-import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
-from openpi.models.pi0_trace_vla_base import fourier_encode_2d, make_attn_mask, posemb_sincos
+from openpi.models.pi0_trace_vla_base import TraceVLABase, make_attn_mask
 
 logger = logging.getLogger("openpi")
 
@@ -62,227 +60,37 @@ logger = logging.getLogger("openpi")
 # Pi0TraceVLAActionMoe model
 # ---------------------------------------------------------------------------
 
-class Pi0TraceVLAActionMoe(_model.BaseModel):
-    """Trace-augmented VLA with MoE action head and single trace head."""
+class Pi0TraceVLAActionMoe(TraceVLABase):
+    """Trace-augmented VLA with an MoE action head and a single (dense) trace head.
 
-    def __init__(self, config: _config.Pi0TraceVLAActionMoeConfig, rngs: nnx.Rngs):
-        super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
-        self.config = config
-        self.pi05 = config.pi05
-        if not self.pi05:
-            raise ValueError("Pi0TraceVLAActionMoe assumes pi05=True (adaRMS pathway).")
+    Inherits the trunk/head construction and embed/completion methods from ``TraceVLABase``;
+    overrides ``_build_expert_configs`` (action MoE, dense trace) and keeps its action-MoE-routing
+    forward/sample methods below.
+    """
 
-        self.num_action_experts = int(config.num_action_experts)
-        self.trace_horizon = int(config.trace_horizon)
-        self.trace_dim = int(config.trace_dim)
-        # Optional appended semantic-target anchor row (see _forward_planning).
-        self.append_target_anchor = bool(getattr(config, "append_target_anchor", False))
-        self.trace_seq_len = self.trace_horizon + (1 if self.append_target_anchor else 0)
-
+    @override
+    def _build_expert_configs(self, config):
+        """Action expert is the MoE (``gemmoe_trace`` config); the trace expert is a single dense
+        FFN (``gemma`` config, ``num_local_experts=1``). Only the action stream is skill-routed, so
+        ``num_skills = num_action_experts``; the base builds the (3-stream) trunk + heads.
+        """
+        self.num_skills = int(config.num_action_experts)
         paligemma_config = _gemma.get_config(config.paligemma_variant)
-        # Action expert is now the MoE; pulled from gemmoe_trace's variants.
+        # Action expert is the MoE; pulled from gemmoe_trace's variants.
         action_expert_config = _gemma_trace.get_trace_config(config.action_expert_variant)
-        # Trace expert is now a dense FFN; pulled from gemmoe's variants.
+        # Trace expert is a single dense FFN; pulled from gemmoe's variants.
         trace_expert_config = _gemma.get_config(config.trace_expert_variant)
-
-        if int(action_expert_config.num_local_experts) != self.num_action_experts:
+        if int(action_expert_config.num_local_experts) != self.num_skills:
             raise ValueError(
                 f"action_expert_variant has {action_expert_config.num_local_experts} experts but "
-                f"config requested {self.num_action_experts}."
+                f"config requested {self.num_skills}."
             )
         if int(getattr(trace_expert_config, "num_local_experts", 1)) > 1:
             raise ValueError(
                 f"trace_expert_variant must be a single dense FFN (num_local_experts=1) for the "
                 f"actionmoe variant; got num_local_experts={trace_expert_config.num_local_experts}."
             )
-
-        self.paligemma_width = int(paligemma_config.width)
-        self.action_width = int(action_expert_config.width)
-        self.trace_width = int(trace_expert_config.width)
-
-        # ---------- Trunk: 3-stream Gemma. ----------
-        # TraceModule's per-stream FFN is chosen automatically per layer based on
-        # ``config.num_local_experts``: stream 1 (action MoE) gets ``HardMoeBlock``,
-        # stream 2 (dense trace) gets ``lora.FeedForward``.
-        llm = nnx_bridge.ToNNX(
-            _gemma_trace.TraceModule(
-                configs=[paligemma_config, action_expert_config, trace_expert_config],
-                embed_dtype=config.dtype,
-            )
-        )
-        # adaRMS on streams 1 (action) and 2 (trace) — same as TraceVLA.
-        llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True, True])
-        img = nnx_bridge.ToNNX(
-            _siglip.Module(
-                num_classes=paligemma_config.width,
-                variant="So400m/14",
-                pool_type="none",
-                scan=True,
-                dtype_mm=config.dtype,
-            )
-        )
-        img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
-
-        self.PaliGemma = nnx.Dict(llm=llm, img=img)
-
-        # ---------- Action expert I/O + time MLP ----------
-        self.action_in_proj = nnx.Linear(config.action_dim, self.action_width, rngs=rngs)
-        self.action_out_proj = nnx.Linear(self.action_width, config.action_dim, rngs=rngs)
-        self.action_time_mlp_in = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-        self.action_time_mlp_out = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-
-        # ---------- Trace expert I/O ----------
-        self.trace_in_proj = nnx.Linear(self.trace_dim, self.trace_width, rngs=rngs)
-        self.trace_out_proj = nnx.Linear(self.trace_width, self.trace_dim, rngs=rngs)
-        self.trace_time_mlp_in = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-        self.trace_time_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-
-        # ---------- Semantic-target Fourier MLP for trace AdaRMS conditioning ----------
-        target_fourier_dim = config.fourier_num_freqs * 2 * 2  # 2 coords * (sin+cos)
-        self.target_mlp_in = nnx.Linear(target_fourier_dim, self.trace_width, rngs=rngs)
-        self.target_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-
-        # ---------- Completion head (per-skill MLP) ----------
-        self.completion_shared_in = nnx.Linear(
-            self.paligemma_width, config.completion_shared_dim, rngs=rngs
-        )
-        self.completion_shared_out = nnx.Linear(
-            config.completion_shared_dim, config.completion_shared_dim, rngs=rngs
-        )
-        K = self.num_action_experts
-        S = int(config.completion_shared_dim)
-        H = int(config.completion_per_skill_hidden)
-        rng1, rng2 = jax.random.split(rngs.params(), 2)
-        std_in = (1.0 / S) ** 0.5
-        std_out = (1.0 / H) ** 0.5
-        self.cmp_w1 = nnx.Param(jax.random.normal(rng1, (K, S, H)) * std_in)
-        self.cmp_b1 = nnx.Param(jnp.zeros((K, H)))
-        self.cmp_w2 = nnx.Param(jax.random.normal(rng2, (K, H, 1)) * std_out)
-        self.cmp_b2 = nnx.Param(jnp.zeros((K, 1)))
-
-        self.deterministic = True
-
-    # -----------------------------------------------------------------------
-    # Embeddings
-    # -----------------------------------------------------------------------
-    @at.typecheck
-    def _embed_prefix_with_images(
-        self,
-        obs: _trace_obs.TraceObservation,
-        images: dict,
-        image_masks: dict,
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
-        input_mask = []
-        ar_mask = []
-        tokens = []
-
-        for name in images:
-            image_tokens, _ = self.PaliGemma.img(images[name], train=False)
-            tokens.append(image_tokens)
-            input_mask.append(
-                einops.repeat(image_masks[name], "b -> b s", s=image_tokens.shape[1])
-            )
-            ar_mask.append(0 * input_mask[-1])
-
-        assert obs.tokenized_prompt is not None
-        assert obs.tokenized_prompt_mask is not None
-        assert obs.token_ar_mask is not None
-
-        txt_emb = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
-        tokens.append(txt_emb)
-        input_mask.append(obs.tokenized_prompt_mask)
-        ar_mask.append(obs.token_ar_mask)
-
-        tokens = jnp.concatenate(tokens, axis=1)
-        input_mask = jnp.concatenate(input_mask, axis=1)
-        ar_mask = jnp.concatenate(ar_mask, axis=1)
-        return tokens, input_mask, ar_mask
-
-    @at.typecheck
-    def _embed_action_suffix(
-        self,
-        noisy_actions: at.Float[at.Array, "b ah ad"],
-        timestep: at.Float[at.Array, " b"],
-    ) -> tuple[
-        at.Float[at.Array, "b s emb"],
-        at.Bool[at.Array, "b s"],
-        at.Bool[at.Array, "b s"],
-        at.Float[at.Array, "b emb"],
-    ]:
-        action_tokens = self.action_in_proj(noisy_actions)
-        time_emb = posemb_sincos(timestep, self.action_width, min_period=4e-3, max_period=4.0)
-        time_emb = nnx.swish(self.action_time_mlp_in(time_emb))
-        time_emb = nnx.swish(self.action_time_mlp_out(time_emb))
-        adarms_cond = time_emb  # only time conditions the action stream
-
-        input_mask = jnp.ones(action_tokens.shape[:2], dtype=jnp.bool_)
-        ar_mask = jnp.broadcast_to(
-            jnp.array([True] + ([False] * (self.action_horizon - 1))),
-            action_tokens.shape[:2],
-        )
-        return action_tokens, input_mask, ar_mask, adarms_cond
-
-    @at.typecheck
-    def _embed_trace_suffix(
-        self,
-        noisy_trace: at.Float[at.Array, "b n 2"],
-        timestep: at.Float[at.Array, " b"],
-        target_xy: at.Float[at.Array, "b 2"],
-    ) -> tuple[
-        at.Float[at.Array, "b s emb"],
-        at.Bool[at.Array, "b s"],
-        at.Bool[at.Array, "b s"],
-        at.Float[at.Array, "b emb"],
-    ]:
-        trace_tokens = self.trace_in_proj(noisy_trace)
-
-        # Time embedding (Fourier sin/cos -> 2-layer MLP -> swish).
-        time_emb = posemb_sincos(timestep, self.trace_width, min_period=4e-3, max_period=4.0)
-        time_emb = nnx.swish(self.trace_time_mlp_in(time_emb))
-        time_emb = nnx.swish(self.trace_time_mlp_out(time_emb))
-
-        # Semantic-target Fourier embedding -> 2-layer MLP -> swish.
-        tgt_feat = fourier_encode_2d(target_xy, num_freqs=self.config.fourier_num_freqs)
-        tgt_emb = nnx.swish(self.target_mlp_in(tgt_feat))
-        tgt_emb = nnx.swish(self.target_mlp_out(tgt_emb))
-
-        adarms_cond = time_emb + tgt_emb
-
-        seq_len = trace_tokens.shape[1]
-        input_mask = jnp.ones(trace_tokens.shape[:2], dtype=jnp.bool_)
-        row0 = jnp.ones((1,), dtype=jnp.bool_)
-        rest = jnp.zeros((seq_len - 1,), dtype=jnp.bool_)
-        single_ar = jnp.concatenate([row0, rest], axis=0)
-        ar_mask = jnp.broadcast_to(single_ar, trace_tokens.shape[:2])
-        return trace_tokens, input_mask, ar_mask, adarms_cond
-
-    # -----------------------------------------------------------------------
-    # Completion head
-    # -----------------------------------------------------------------------
-    @at.typecheck
-    def _completion_predict(
-        self, prefix_out: at.Float[at.Array, "b p d"], prefix_mask: at.Bool[at.Array, "b p"], skill_id: at.Int[at.Array, " b"]
-    ) -> at.Float[at.Array, " b"]:
-        m = prefix_mask.astype(prefix_out.dtype)
-        denom = jnp.maximum(jnp.sum(m, axis=-1, keepdims=True), 1.0)
-        h_pool = jnp.sum(prefix_out * m[..., None], axis=1) / denom
-
-        h = nnx.swish(self.completion_shared_in(h_pool))
-        h = self.completion_shared_out(h)
-
-        cmp_w1 = self.cmp_w1.value.astype(h.dtype)
-        cmp_b1 = self.cmp_b1.value.astype(h.dtype)
-        cmp_w2 = self.cmp_w2.value.astype(h.dtype)
-        cmp_b2 = self.cmp_b2.value.astype(h.dtype)
-        h1 = jnp.einsum("bs,ksh->bkh", h, cmp_w1) + cmp_b1[None, :, :]
-        h1 = nnx.swish(h1)
-        out = jnp.einsum("bkh,kho->bko", h1, cmp_w2) + cmp_b2[None, :, :]
-        out = out[..., 0]
-
-        K = self.num_action_experts
-        skill_one_hot = jax.nn.one_hot(skill_id, K, dtype=out.dtype)
-        logit = jnp.einsum("bk,bk->b", skill_one_hot, out)
-        return jax.nn.sigmoid(logit)
+        return paligemma_config, action_expert_config, trace_expert_config
 
     # -----------------------------------------------------------------------
     # Helpers: hard combine weights for the action MoE.
@@ -295,9 +103,9 @@ class Pi0TraceVLAActionMoe(_model.BaseModel):
         such as ``1`` when only a placeholder is used because the action stream is None
         / passed empty for that call).
         """
-        skill_one_hot = jax.nn.one_hot(skill_id, self.num_action_experts)
+        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills)
         return jnp.broadcast_to(
-            skill_one_hot[:, None, :], (batch_size, length, self.num_action_experts)
+            skill_one_hot[:, None, :], (batch_size, length, self.num_skills)
         )
 
     def _dummy_combine_weights(self, batch_size: int) -> at.Float[at.Array, "b _t _k"]:
@@ -306,7 +114,7 @@ class Pi0TraceVLAActionMoe(_model.BaseModel):
         Used when neither the action stream nor any other MoE-equipped stream has tokens
         to apply this round (e.g. prefix-only prefill).
         """
-        return jnp.zeros((batch_size, 1, self.num_action_experts), dtype=jnp.dtype(self.config.dtype))
+        return jnp.zeros((batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype))
 
     # -----------------------------------------------------------------------
     # Forward passes
