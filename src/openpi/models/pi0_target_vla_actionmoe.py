@@ -41,7 +41,6 @@ import logging
 import einops
 import flax.linen as nn  # noqa: F401  (kept for parity with the original modules)
 import flax.nnx as nnx
-import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
 from typing_extensions import override
@@ -51,9 +50,8 @@ from openpi.models import pi0_target_vla_actionmoe_config as _config
 from openpi.models import target_observation as _target_obs
 import openpi.models.gemmoe as _gemma
 import openpi.models.gemmoe_trace as _gemma_trace
-import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
-from openpi.models.pi0_trace_vla_base import fourier_encode_2d, make_attn_mask, posemb_sincos
+from openpi.models.pi0_trace_vla_base import TraceVLABase, fourier_encode_2d, make_attn_mask, posemb_sincos
 
 logger = logging.getLogger("openpi")
 
@@ -62,138 +60,37 @@ logger = logging.getLogger("openpi")
 # Pi0TargetVLAActionMoe model
 # ---------------------------------------------------------------------------
 
-class Pi0TargetVLAActionMoe(_model.BaseModel):
-    """Trace-free ablation with MoE action head and semantic-target AdaRMS."""
+class Pi0TargetVLAActionMoe(TraceVLABase):
+    """Trace-free ablation with an MoE action head and semantic-target AdaRMS.
 
-    def __init__(self, config: _config.Pi0TargetVLAActionMoeConfig, rngs: nnx.Rngs):
-        super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
-        self.config = config
-        self.pi05 = config.pi05
-        if not self.pi05:
-            raise ValueError("Pi0TargetVLAActionMoe assumes pi05=True (adaRMS pathway).")
+    Inherits ``TraceVLABase`` as a 2-stream model: ``_build_expert_configs`` returns
+    ``trace_expert_config=None``, so the base skips the trace heads / 3rd trunk stream and points
+    ``target_mlp`` at the action stream. Overrides ``_embed_action_suffix`` (the semantic target
+    conditions the *action* stream here) and keeps its action-MoE forward/sample methods; inherits
+    the prefix-embed and completion methods.
+    """
 
-        self.num_action_experts = int(config.num_action_experts)
-
+    @override
+    def _build_expert_configs(self, config):
+        """Trace-free 2-stream variant: PaliGemma + an action MoE, no trace stream. Returns
+        ``trace_expert_config=None`` so the base skips the trace heads / 3rd trunk stream and points
+        ``target_mlp`` at the action stream. Only the action stream is skill-routed, so
+        ``num_skills = num_action_experts``.
+        """
+        self.num_skills = int(config.num_action_experts)
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         # Action expert is the MoE; pulled from gemmoe_trace's variants.
         action_expert_config = _gemma_trace.get_trace_config(config.action_expert_variant)
-
-        if int(action_expert_config.num_local_experts) != self.num_action_experts:
+        if int(action_expert_config.num_local_experts) != self.num_skills:
             raise ValueError(
                 f"action_expert_variant has {action_expert_config.num_local_experts} experts but "
-                f"config requested {self.num_action_experts}."
+                f"config requested {self.num_skills}."
             )
-
-        self.paligemma_width = int(paligemma_config.width)
-        self.action_width = int(action_expert_config.width)
-
-        # ---------- Trunk: 2-stream Gemma. ----------
-        # ``TraceModule`` is generic in the number of streams; passing two
-        # configs gives us a (paligemma, action_MoE) trunk. Stream 0 is
-        # dense (paligemma); stream 1 dispatches to ``HardMoeBlock`` because
-        # ``num_local_experts > 1``.
-        llm = nnx_bridge.ToNNX(
-            _gemma_trace.TraceModule(
-                configs=[paligemma_config, action_expert_config],
-                embed_dtype=config.dtype,
-            )
-        )
-        # adaRMS on stream 1 only (the action stream).
-        llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True])
-        img = nnx_bridge.ToNNX(
-            _siglip.Module(
-                num_classes=paligemma_config.width,
-                variant="So400m/14",
-                pool_type="none",
-                scan=True,
-                dtype_mm=config.dtype,
-            )
-        )
-        img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
-
-        self.PaliGemma = nnx.Dict(llm=llm, img=img)
-
-        # ---------- Action expert I/O + time MLP ----------
-        self.action_in_proj = nnx.Linear(config.action_dim, self.action_width, rngs=rngs)
-        self.action_out_proj = nnx.Linear(self.action_width, config.action_dim, rngs=rngs)
-        self.action_time_mlp_in = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-        self.action_time_mlp_out = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-
-        # ---------- Semantic-target Fourier MLP for AdaRMS conditioning ----------
-        # The MLP outputs ``action_width``-sized vectors so the sum
-        # ``time_emb + tgt_emb`` is a well-typed AdaRMS conditioning signal for
-        # the action stream. Same architectural pattern as
-        # ``Pi0TraceVLA._embed_trace_suffix``, just hooked to the action stream.
-        target_fourier_dim = config.fourier_num_freqs * 2 * 2  # 2 coords * (sin+cos)
-        self.target_mlp_in = nnx.Linear(target_fourier_dim, self.action_width, rngs=rngs)
-        self.target_mlp_out = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
-
-        # ---------- Completion head (per-skill MLP) ----------
-        # Same head as TraceVLA / actionmoe / moe variants: mean-pooled VLM
-        # prefix output -> shared compression -> per-skill MLP, hard-routed by
-        # ``atomic_token``.
-        self.completion_shared_in = nnx.Linear(
-            self.paligemma_width, config.completion_shared_dim, rngs=rngs
-        )
-        self.completion_shared_out = nnx.Linear(
-            config.completion_shared_dim, config.completion_shared_dim, rngs=rngs
-        )
-        K = self.num_action_experts
-        S = int(config.completion_shared_dim)
-        H = int(config.completion_per_skill_hidden)
-        rng1, rng2 = jax.random.split(rngs.params(), 2)
-        std_in = (1.0 / S) ** 0.5
-        std_out = (1.0 / H) ** 0.5
-        self.cmp_w1 = nnx.Param(jax.random.normal(rng1, (K, S, H)) * std_in)
-        self.cmp_b1 = nnx.Param(jnp.zeros((K, H)))
-        self.cmp_w2 = nnx.Param(jax.random.normal(rng2, (K, H, 1)) * std_out)
-        self.cmp_b2 = nnx.Param(jnp.zeros((K, 1)))
-
-        self.deterministic = True
+        return paligemma_config, action_expert_config, None
 
     # -----------------------------------------------------------------------
     # Embeddings
     # -----------------------------------------------------------------------
-    @at.typecheck
-    def _embed_prefix_with_images(
-        self,
-        obs: _target_obs.TargetObservation,
-        images: dict,
-        image_masks: dict,
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
-        """Same structure as the trace family's ``_embed_prefix_with_images``.
-
-        Takes an explicit ``images`` dict so this method has a uniform call
-        site between the training forward and the sampling endpoints. There is
-        no overlay version of the image — both training and inference call
-        sites pass ``obs.images`` directly.
-        """
-        input_mask = []
-        ar_mask = []
-        tokens = []
-
-        for name in images:
-            image_tokens, _ = self.PaliGemma.img(images[name], train=False)
-            tokens.append(image_tokens)
-            input_mask.append(
-                einops.repeat(image_masks[name], "b -> b s", s=image_tokens.shape[1])
-            )
-            ar_mask.append(0 * input_mask[-1])
-
-        assert obs.tokenized_prompt is not None
-        assert obs.tokenized_prompt_mask is not None
-        assert obs.token_ar_mask is not None
-
-        txt_emb = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
-        tokens.append(txt_emb)
-        input_mask.append(obs.tokenized_prompt_mask)
-        ar_mask.append(obs.token_ar_mask)
-
-        tokens = jnp.concatenate(tokens, axis=1)
-        input_mask = jnp.concatenate(input_mask, axis=1)
-        ar_mask = jnp.concatenate(ar_mask, axis=1)
-        return tokens, input_mask, ar_mask
-
     @at.typecheck
     def _embed_action_suffix(
         self,
@@ -242,35 +139,6 @@ class Pi0TargetVLAActionMoe(_model.BaseModel):
         return action_tokens, input_mask, ar_mask, adarms_cond
 
     # -----------------------------------------------------------------------
-    # Completion head
-    # -----------------------------------------------------------------------
-    @at.typecheck
-    def _completion_predict(
-        self, prefix_out: at.Float[at.Array, "b p d"], prefix_mask: at.Bool[at.Array, "b p"], skill_id: at.Int[at.Array, " b"]
-    ) -> at.Float[at.Array, " b"]:
-        """Per-skill completion head — identical math to the TraceVLA family."""
-        m = prefix_mask.astype(prefix_out.dtype)
-        denom = jnp.maximum(jnp.sum(m, axis=-1, keepdims=True), 1.0)
-        h_pool = jnp.sum(prefix_out * m[..., None], axis=1) / denom
-
-        h = nnx.swish(self.completion_shared_in(h_pool))
-        h = self.completion_shared_out(h)
-
-        cmp_w1 = self.cmp_w1.value.astype(h.dtype)
-        cmp_b1 = self.cmp_b1.value.astype(h.dtype)
-        cmp_w2 = self.cmp_w2.value.astype(h.dtype)
-        cmp_b2 = self.cmp_b2.value.astype(h.dtype)
-        h1 = jnp.einsum("bs,ksh->bkh", h, cmp_w1) + cmp_b1[None, :, :]
-        h1 = nnx.swish(h1)
-        out = jnp.einsum("bkh,kho->bko", h1, cmp_w2) + cmp_b2[None, :, :]
-        out = out[..., 0]
-
-        K = self.num_action_experts
-        skill_one_hot = jax.nn.one_hot(skill_id, K, dtype=out.dtype)
-        logit = jnp.einsum("bk,bk->b", skill_one_hot, out)
-        return jax.nn.sigmoid(logit)
-
-    # -----------------------------------------------------------------------
     # Helpers: hard combine weights for the action MoE.
     # -----------------------------------------------------------------------
     def _action_combine_weights(self, batch_size: int, skill_id: at.Int[at.Array, " b"], length: int) -> at.Float[at.Array, "b _t _k"]:
@@ -279,9 +147,9 @@ class Pi0TargetVLAActionMoe(_model.BaseModel):
         Used during the joint forward (length = ``action_horizon``) and during
         the denoising loop in ``sample_actions`` / ``sample_actions_and_completion``.
         """
-        skill_one_hot = jax.nn.one_hot(skill_id, self.num_action_experts)
+        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills)
         return jnp.broadcast_to(
-            skill_one_hot[:, None, :], (batch_size, length, self.num_action_experts)
+            skill_one_hot[:, None, :], (batch_size, length, self.num_skills)
         )
 
     def _dummy_combine_weights(self, batch_size: int) -> at.Float[at.Array, "b _t _k"]:
@@ -291,7 +159,7 @@ class Pi0TargetVLAActionMoe(_model.BaseModel):
         there, so the ``HardMoeBlock`` is never invoked, but the call still
         needs a well-shaped tensor to satisfy ``nn.scan``'s broadcast contract.
         """
-        return jnp.zeros((batch_size, 1, self.num_action_experts), dtype=jnp.dtype(self.config.dtype))
+        return jnp.zeros((batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype))
 
     # -----------------------------------------------------------------------
     # Forward pass
