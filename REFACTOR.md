@@ -9,6 +9,56 @@ Scope: `src/openpi/models/` (~11.6k LOC across 5 model families), plus
 
 ---
 
+## How to run (smoke tests & training)
+
+All configs train via the single `scripts/train.py`. Run commands from the repo root. Check disk
+with `quota -s` (not `df`).
+
+### Smoke test (2-step pipeline check)
+`scripts/smoke_run.sh <config> [train_script]` runs a 2-step training step (`--num-train-steps 2`,
+wandb off). Env knobs: `BATCH` (default 8), `FSDP` (default 2, set 4 for the heavy full-FT MoE
+configs). Each run writes a ~50 GB full-FT checkpoint to `checkpoints/<config>/smoke`; the group
+disk quota is tight (`quota -s`), so remove it after each run and don't run many heavy smokes at
+once: `rm -rf checkpoints/<config>/smoke`.
+
+```bash
+# light config (pi05 / atomic):
+bash scripts/smoke_run.sh atomic_libero
+
+# heavy full-FT MoE config (trace/target):
+FSDP=4 bash scripts/smoke_run.sh trace_vla_moe
+
+# memory-tight: shrink the batch
+BATCH=2 FSDP=4 bash scripts/smoke_run.sh trace_vla_actionmoe
+```
+
+### Real training run
+Norm stats must exist first: `python scripts/compute_norm_stats.py --config-name <config>`.
+
+```bash
+python scripts/train.py trace_vla_moe --exp-name my_run --fsdp-devices 4 --overwrite
+```
+
+### Param-tree structural check (CPU) — used to gate model refactors
+```bash
+python scripts/capture_param_paths.py <config>      # prints path<TAB>shape<TAB>dtype
+# diff against refactor_baselines/<config>.paths to confirm the flax tree is unchanged
+```
+
+### Flags introduced by this refactor
+No new config dataclass fields were added. The only new "flags" are the `WeightLoader` constructor
+params, set on each config's `weight_loader=` (full docstrings in `training/weight_loaders.py`):
+
+- `AtomicWeightLoader(params_path)` — atomic_libero.
+- `ActionMoeWeightLoader(params_path, num_action_experts=5, moe_target="moe_1"|"moe_2",
+  copy_stream2_attn=False, copy_mlp2=False)` — the trace/target action-MoE configs. `moe_target`
+  picks which stream's MoE is seeded from pi05's dense FFN; `copy_stream2_attn`/`copy_mlp2` replicate
+  the action expert's attn/norm + dense FFN into a dense second (trace) stream (trace_vla only).
+
+`scripts/smoke_run.sh` also reads the `BATCH` / `FSDP` env vars (above).
+
+---
+
 ## 1. Dead files & dead code (safe, high-confidence) — ✅ DONE (except pi0_skill_embed, on hold)
 
 Removed ~155 LOC: `pi0.py` `left_to_right_align` + `sample_low_level_task` + commented
@@ -83,7 +133,20 @@ from the base too, but it's lower priority.
 
 ---
 
-## 3. Pi0 trace/target model classes — biggest win
+## 3. Pi0 trace/target model classes — ✅ DONE (all 4 fold into TraceVLABase)
+
+New `pi0_trace_vla_base.py` holds the shared module-level helpers + `TraceVLABase`: `__init__`
+(PaliGemma trunk + action/trace/target/completion heads), the embed methods, and the completion
+head. Each of the 4 variants now inherits it and keeps only a small `_build_expert_configs` hook
+(which streams are MoE / 2-stream, via `has_trace_stream` + a single `self.num_skills`) plus its
+genuinely variant-specific MoE-routing `_forward_*`/`sample_*` (and `target`'s `_embed_action_suffix`).
+Done in 6 reviewed batches (commits `6230ec9`, `e635e72`, `db4f631`, `b6bfc7e`, `dfd8d2b`, `0effb0b`),
+each gated by a CPU param-path structural diff + an exact-loss smoke. Every config reproduced its
+baseline exactly: trace_vla 2.4391, trace_vla_moe 3.7695, trace_vla_actionmoe 2.4816,
+target_vla_actionmoe 0.9990. (The per-variant `compute_loss`/`sample_*` remain as the legitimate
+override points; further dedup there is optional.)
+
+### (original analysis)
 
 `pi0_trace_vla.py` (916), `pi0_trace_vla_moe.py` (883), `pi0_trace_vla_actionmoe.py` (865),
 `pi0_target_vla_actionmoe.py` (644) are **60–70% identical** (~3,300 LOC total).

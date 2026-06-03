@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
-# Smoke-test runner for a single training config on Slurm.
-# Usage:  scripts/smoke_run.sh <config_name> [train_script]
-#   train_script defaults to scripts/train.py; pass scripts/train_trace_vla.py for trace/target configs.
-# Runs a 2-step training smoke (small batch, wandb disabled) to validate the pipeline.
+# Smoke-test runner: a 2-step training step (small batch, wandb off) to validate the pipeline end
+# to end. Run from the repo root.
 #
-# train.py always saves a (~50 GB full-FT) checkpoint at the final step. The /work/hdd/bgtb group
-# quota is tight (check with `quota -s`, not `df`), so we (a) write checkpoints to a HOME scratch
-# dir, which has space, and (b) self-clean via a trap that fires even if the run/save crashes.
+# Usage:      scripts/smoke_run.sh <config_name> [train_script]   (train_script defaults to scripts/train.py)
+# Env knobs:  BATCH (default 8), FSDP (default 2; set 4 for the heavy full-FT MoE configs)
+#
+# Examples:
+#   bash scripts/smoke_run.sh atomic_libero
+#   FSDP=4 bash scripts/smoke_run.sh trace_vla_moe
+#
+# train.py always saves a (~50 GB full-FT) checkpoint at the final step (to the default
+# ./checkpoints/<config>/smoke), and the group disk quota is tight (check with `quota -s`, not
+# `df`), so remove each run's checkpoint afterward and don't run many heavy smokes at once:
+#   rm -rf checkpoints/<config>/smoke
 set -euo pipefail
 
 CONFIG="${1:?usage: smoke_run.sh <config_name> [train_script]}"
 TRAIN_SCRIPT="${2:-scripts/train.py}"
 
-REPO=/u/jcpeng2/workspace/mujoco_test/pace/openpi
-PY=/u/jcpeng2/workspace/mujoco_test/mujoco_playground/.venv/bin/python
-CKPT_BASE="$HOME/.smoke_checkpoints"   # on /u (HOME, ~PB free) — avoids the /work group quota
-cd "$REPO"
+# Resolve the repo root from this script's own location, so it is path-independent.
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 export WANDB_MODE=disabled
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export JAX_COMPILATION_CACHE_DIR="$HOME/.cache/jax"
 
-# Always remove this run's checkpoint on exit (success, failure, or a save crash).
-trap 'rm -rf "${CKPT_BASE:?}/${CONFIG}/smoke"' EXIT
-
 echo "[smoke] config=$CONFIG script=$TRAIN_SCRIPT host=$(hostname) start=$(date -Is)"
 rc=0
-"$PY" "$TRAIN_SCRIPT" "$CONFIG" \
+python "$TRAIN_SCRIPT" "$CONFIG" \
   --exp-name smoke \
-  --checkpoint-base-dir "$CKPT_BASE" \
   --num-train-steps 2 \
   --batch-size "${BATCH:-8}" \
   --fsdp-devices "${FSDP:-2}" \
