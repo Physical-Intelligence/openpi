@@ -363,14 +363,12 @@ dispatch into `DataLoaderImpl` and moving each remap into a `WeightLoader`, all 
 `train.py`. (Also note: `atomic_libero`'s registry entry hardcoded a dataset path under the full
 `/work` filesystem — changed to read local `data/libero-100`.)
 
-### Execution constraints (Slurm cluster)
-- **Never run compute (CPU/GPU) directly on the login node.** Launch via Slurm using the resource
-  flags from `slurm_example.sh` (`--account bgtb-dtai-gh --partition ghx4-interactive -G2
-  --time 120 -N1 --mem 256G --cpus-per-task 32`). For non-interactive runs, replace `--pty bash -i`
-  with the command, or use an `sbatch` wrapper.
-- **Disk is tight** — only room for a few checkpoints, *especially the non-LoRA (full-FT) configs*.
-  Outputs land in `./checkpoints/<config_name>/<exp_name>/`. `train.py` always saves at the final
-  step, so every run leaves ≥1 checkpoint. **`rm -rf` the smoke-test output dir between every run.**
+### Execution constraints
+- Light configs fit on 2 GPUs; the heavy full-FT MoE configs need 4 (`--fsdp-devices 4`).
+- **Disk is tight** — only room for a few checkpoints, *especially the non-LoRA (full-FT) configs*
+  (`quota -s`). Outputs land in `checkpoints/<config>/<exp_name>/`, and `train.py` always saves at
+  the final step, so every run leaves a ~50 GB checkpoint. `rm -rf checkpoints/<config>/smoke`
+  between every run, and don't run many heavy smokes at once.
 
 ### Baseline results (pre-refactor reference) — 2026-06-02
 
