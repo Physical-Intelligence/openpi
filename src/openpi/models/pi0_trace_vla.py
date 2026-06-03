@@ -140,10 +140,10 @@ class Pi0TraceVLA(TraceVLABase):
         if obs.atomic_token is None:
             raise ValueError("atomic_token is required for hard MoE routing.")
         skill_id = obs.atomic_token.astype(jnp.int32)  # (B,)
-        skill_one_hot = jax.nn.one_hot(skill_id, self.num_trace_experts)  # (B, K)
+        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills)  # (B, K)
         combine_weights = jnp.broadcast_to(
             skill_one_hot[:, None, :],
-            (skill_one_hot.shape[0], self.trace_seq_len, self.num_trace_experts),
+            (skill_one_hot.shape[0], self.trace_seq_len, self.num_skills),
         )
 
         # Joint forward over [paligemma, None, trace_suffix].
@@ -223,7 +223,7 @@ class Pi0TraceVLA(TraceVLABase):
         # combine_weights is unused (trace stream is None) but must be a valid array to please typecheck.
         # Use a tiny zero placeholder. Dtype matches the model's embed dtype to satisfy typechecking through scan.
         dummy_weights = jnp.zeros(
-            (prefix_mask.shape[0], 1, self.num_trace_experts), dtype=jnp.dtype(self.config.dtype)
+            (prefix_mask.shape[0], 1, self.num_skills), dtype=jnp.dtype(self.config.dtype)
         )
 
         (prefix_out, action_out, trace_out_unused), _ = self.PaliGemma.llm(
@@ -336,7 +336,7 @@ class Pi0TraceVLA(TraceVLABase):
         )
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        dummy_weights = jnp.zeros((batch_size, 1, self.num_trace_experts), dtype=jnp.dtype(self.config.dtype))
+        dummy_weights = jnp.zeros((batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype))
         _, kv_cache = self.PaliGemma.llm(
             [prefix_tokens, None, None],
             mask=prefix_attn_mask,
@@ -426,7 +426,7 @@ class Pi0TraceVLA(TraceVLABase):
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         dummy_weights = jnp.zeros(
-            (batch_size, 1, self.num_trace_experts), dtype=jnp.dtype(self.config.dtype)
+            (batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype)
         )
 
         # Note: sample_actions discards prefix_out; here we capture it for the
@@ -513,7 +513,7 @@ class Pi0TraceVLA(TraceVLABase):
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         dummy_weights = jnp.zeros(
-            (batch_size, 1, self.num_trace_experts), dtype=jnp.dtype(self.config.dtype)
+            (batch_size, 1, self.num_skills), dtype=jnp.dtype(self.config.dtype)
         )
 
         (prefix_out, _action_out, _trace_out), _kv_cache = self.PaliGemma.llm(
@@ -559,9 +559,9 @@ class Pi0TraceVLA(TraceVLABase):
         target_xy = observation.semantic_target_xy
         ee = observation.current_ee_xy
         skill_id = observation.atomic_token.astype(jnp.int32)
-        skill_one_hot = jax.nn.one_hot(skill_id, self.num_trace_experts)
+        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills)
         combine_weights = jnp.broadcast_to(
-            skill_one_hot[:, None, :], (batch_size, L, self.num_trace_experts)
+            skill_one_hot[:, None, :], (batch_size, L, self.num_skills)
         )
 
         # Prefill VLM with the clean (no-overlay) prefix.

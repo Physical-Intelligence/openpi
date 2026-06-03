@@ -83,15 +83,22 @@ def fourier_encode_2d(p: at.Float[at.Array, "*b 2"], num_freqs: int) -> at.Float
 class TraceVLABase(_model.BaseModel):
     """Shared base for the TraceVLA model family.
 
-    Currently holds the trunk + head construction for the canonical ``Pi0TraceVLA`` (3-stream:
-    PaliGemma VLM + dense action expert + hard-routed trace MoE). Subsequent batches generalize
-    this ``__init__`` (and add the shared embed/loss/sample methods) so the other variants
-    (TraceVLAMoe / TraceVLAActionMoe / TargetVLAActionMoe) inherit it too.
+    Builds the PaliGemma trunk + the action/trace/target/completion heads, and provides the shared
+    embed + completion methods. Variants subclass it and override:
+      - ``_build_expert_configs`` — which streams are dense vs MoE, and ``self.num_skills`` (return
+        ``trace_expert_config=None`` for a trace-free 2-stream variant).
+      - the MoE-routing ``_forward_*`` / ``sample_*`` methods (genuinely variant-specific).
+
+    A ``has_trace_stream`` flag (``trace_expert_config is not None``) gates the trace fields, trace
+    heads, the 3rd trunk stream + adaRMS, and whether ``target_mlp`` conditions the trace or action
+    stream — so the 3-stream variants (TraceVLA / Moe / ActionMoe) and the 2-stream target variant
+    share one ``__init__``.
 
     IMPORTANT: the submodule-construction order here is load-bearing — it fixes the order in which
     ``rngs`` is consumed, hence the random initialization of every head not loaded from pi05_base.
     Reordering changes those weights (and the loss). The attribute names are equally load-bearing:
-    they are the flax param-tree paths the weight loaders and checkpoints match on.
+    they are the flax param-tree paths the weight loaders and checkpoints match on. The variant hook
+    is rng-free, so overriding it never perturbs the init.
     """
 
     def __init__(self, config: "Pi0TraceVLAConfig", rngs: nnx.Rngs):
@@ -101,40 +108,41 @@ class TraceVLABase(_model.BaseModel):
         if not self.pi05:
             raise ValueError("Pi0TraceVLA assumes pi05=True (adaRMS pathway).")
 
-        self.num_trace_experts = int(config.num_trace_experts)
-        self.trace_horizon = int(config.trace_horizon)
-        self.trace_dim = int(config.trace_dim)
-        # When the semantic-target anchor row is appended, the trace stream
-        # internally carries ``trace_horizon + 1`` tokens (the extra one is
-        # inpainting-clamped to ``p_tgt`` and masked from the flow loss). The
-        # user-facing trace shape returned by ``sample_trace`` remains
-        # ``(B, trace_horizon, 2)``.
-        self.append_target_anchor = bool(getattr(config, "append_target_anchor", False))
-        self.trace_seq_len = self.trace_horizon + (1 if self.append_target_anchor else 0)
+        # Variant hook: resolve the per-stream gemma configs and set self.num_skills. rng-free, so
+        # overriding it does not perturb the random-init order of the heads built below. Trace-free
+        # variants (target) return trace_expert_config=None.
+        paligemma_config, action_expert_config, trace_expert_config = self._build_expert_configs(config)
+        self.has_trace_stream = trace_expert_config is not None
 
-        paligemma_config = _gemma.get_config(config.paligemma_variant)
-        action_expert_config = _gemma.get_config(config.action_expert_variant)
-        trace_expert_config = _gemma_trace.get_trace_config(config.trace_expert_variant)
-        if int(trace_expert_config.num_local_experts) != self.num_trace_experts:
-            raise ValueError(
-                f"trace_expert_variant has {trace_expert_config.num_local_experts} experts but "
-                f"config requested {self.num_trace_experts}."
-            )
+        if self.has_trace_stream:
+            self.trace_horizon = int(config.trace_horizon)
+            self.trace_dim = int(config.trace_dim)
+            # When the semantic-target anchor row is appended, the trace stream internally carries
+            # ``trace_horizon + 1`` tokens (the extra one is inpainting-clamped to ``p_tgt`` and
+            # masked from the flow loss). sample_trace still returns ``(B, trace_horizon, 2)``.
+            self.append_target_anchor = bool(getattr(config, "append_target_anchor", False))
+            self.trace_seq_len = self.trace_horizon + (1 if self.append_target_anchor else 0)
 
         self.paligemma_width = int(paligemma_config.width)
         self.action_width = int(action_expert_config.width)
-        self.trace_width = int(trace_expert_config.width)
+        if self.has_trace_stream:
+            self.trace_width = int(trace_expert_config.width)
+        # The Fourier semantic-target MLP conditions the trace stream when present, else the action
+        # stream (target variant, which has no trace stream).
+        cond_width = self.trace_width if self.has_trace_stream else self.action_width
 
-        # ---------- Trunk: 3-stream Gemma with hard-routed trace MoE ----------
+        # ---------- Trunk: PaliGemma VLM + action expert (+ trace expert when present) ----------
+        # adaRMS is enabled on every non-VLM stream: the action stream, and the trace stream when
+        # the variant has one.
+        trunk_configs = [paligemma_config, action_expert_config]
+        use_adarms = [False, True]
+        if self.has_trace_stream:
+            trunk_configs.append(trace_expert_config)
+            use_adarms.append(True)
         llm = nnx_bridge.ToNNX(
-            _gemma_trace.TraceModule(
-                configs=[paligemma_config, action_expert_config, trace_expert_config],
-                embed_dtype=config.dtype,
-                # adaRMS is enabled (set per-stream below).
-            )
+            _gemma_trace.TraceModule(configs=trunk_configs, embed_dtype=config.dtype)
         )
-        # adaRMS on streams 1 (action) and 2 (trace).
-        llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True, True])
+        llm.lazy_init(rngs=rngs, method="init", use_adarms=use_adarms)
         img = nnx_bridge.ToNNX(
             _siglip.Module(
                 num_classes=paligemma_config.width,
@@ -154,17 +162,18 @@ class TraceVLABase(_model.BaseModel):
         self.action_time_mlp_in = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
         self.action_time_mlp_out = nnx.Linear(self.action_width, self.action_width, rngs=rngs)
 
-        # ---------- Trace expert I/O ----------
-        self.trace_in_proj = nnx.Linear(self.trace_dim, self.trace_width, rngs=rngs)
-        self.trace_out_proj = nnx.Linear(self.trace_width, self.trace_dim, rngs=rngs)
-        # Trace expert time MLP (separate parameters from the action expert's).
-        self.trace_time_mlp_in = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
-        self.trace_time_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
+        # ---------- Trace expert I/O (only when a trace stream exists) ----------
+        if self.has_trace_stream:
+            self.trace_in_proj = nnx.Linear(self.trace_dim, self.trace_width, rngs=rngs)
+            self.trace_out_proj = nnx.Linear(self.trace_width, self.trace_dim, rngs=rngs)
+            # Trace expert time MLP (separate parameters from the action expert's).
+            self.trace_time_mlp_in = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
+            self.trace_time_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
 
-        # ---------- Semantic-target Fourier MLP for trace AdaRMS conditioning ----------
+        # ---------- Semantic-target Fourier MLP for AdaRMS conditioning ----------
         target_fourier_dim = config.fourier_num_freqs * 2 * 2  # 2 coords * (sin+cos)
-        self.target_mlp_in = nnx.Linear(target_fourier_dim, self.trace_width, rngs=rngs)
-        self.target_mlp_out = nnx.Linear(self.trace_width, self.trace_width, rngs=rngs)
+        self.target_mlp_in = nnx.Linear(target_fourier_dim, cond_width, rngs=rngs)
+        self.target_mlp_out = nnx.Linear(cond_width, cond_width, rngs=rngs)
 
         # ---------- Completion head ----------
         # Shared compression from VLM hidden state width to a smaller dim.
@@ -174,8 +183,8 @@ class TraceVLABase(_model.BaseModel):
         self.completion_shared_out = nnx.Linear(
             config.completion_shared_dim, config.completion_shared_dim, rngs=rngs
         )
-        # Per-skill stacked MLP head: (K, shared_dim, hidden) -> (K, hidden, 1)
-        K = self.num_trace_experts
+        # Per-skill stacked MLP head: (K, shared_dim, hidden) -> (K, hidden, 1).
+        K = self.num_skills
         S = int(config.completion_shared_dim)
         H = int(config.completion_per_skill_hidden)
         rng1, rng2 = jax.random.split(rngs.params(), 2)
@@ -188,19 +197,44 @@ class TraceVLABase(_model.BaseModel):
 
         self.deterministic = True
 
+    def _build_expert_configs(self, config):
+        """Resolve the gemma stream configs and set ``self.num_skills``. Override per variant.
+
+        Returns ``(paligemma_config, action_expert_config, trace_expert_config)``. A trace-free
+        variant (target) returns ``trace_expert_config=None``, which drives the ``has_trace_stream``
+        branches in ``__init__``.
+
+        Base = Pi0TraceVLA: dense action expert (``gemma`` config) + hard-routed trace MoE
+        (``gemmoe_trace`` config). rng-free, so overriding it does not change the random init.
+        """
+        # One skill count for the whole model: routing is a hard one-hot over atomic skills (there
+        # is no learned router), so the action MoE, the trace MoE, and the completion head all carry
+        # ``num_skills`` experts. NOTE for future variants: if you ever need *different* numbers of
+        # action vs trace experts, split this back into per-stream counts.
+        self.num_skills = int(config.num_trace_experts)
+        paligemma_config = _gemma.get_config(config.paligemma_variant)
+        action_expert_config = _gemma.get_config(config.action_expert_variant)
+        trace_expert_config = _gemma_trace.get_trace_config(config.trace_expert_variant)
+        if int(trace_expert_config.num_local_experts) != self.num_skills:
+            raise ValueError(
+                f"trace_expert_variant has {trace_expert_config.num_local_experts} experts but "
+                f"config requested {self.num_skills}."
+            )
+        return paligemma_config, action_expert_config, trace_expert_config
+
     # -----------------------------------------------------------------------
     # Embeddings
     # -----------------------------------------------------------------------
     @at.typecheck
     def _embed_prefix_with_images(
         self,
-        obs: _trace_obs.TraceObservation,
+        obs: _model.Observation,
         images: dict,
         image_masks: dict,
     ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
-        """Same shape/structure as pi0_atomic.embed_prefix, but takes the images dict as
-        an explicit argument so we can run the prefix once with clean images (planning)
-        and once with overlay images (execution).
+        """Embed the prefix (images + tokenized prompt). Takes the images dict explicitly so the
+        prefix can be run with clean images (planning) or overlay images (execution). Annotated on
+        the common ``Observation`` base so both Trace and Target variants share it.
         """
         input_mask = []
         ar_mask = []
@@ -320,7 +354,6 @@ class TraceVLABase(_model.BaseModel):
         out = jnp.einsum("bkh,kho->bko", h1, cmp_w2) + cmp_b2[None, :, :]
         out = out[..., 0]  # (B, K)
 
-        K = self.num_trace_experts
-        skill_one_hot = jax.nn.one_hot(skill_id, K, dtype=out.dtype)  # (B, K)
+        skill_one_hot = jax.nn.one_hot(skill_id, self.num_skills, dtype=out.dtype)  # (B, num_skills)
         logit = jnp.einsum("bk,bk->b", skill_one_hot, out)
         return jax.nn.sigmoid(logit)
