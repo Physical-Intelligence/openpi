@@ -2300,7 +2300,12 @@ _CONFIGS = [
             decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            num_action_experts=5,
+            copy_stream2_attn=True,  # trace stream is a dense second expert: inherit pi05 attn/norm
+            copy_mlp2=True,          # and the dense action FFN
+        ),
         num_train_steps=40_000,
         save_interval=5_000,
         keep_period=10_000,
@@ -2415,7 +2420,9 @@ _CONFIGS = [
             decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params", num_action_experts=5
+        ),
         num_train_steps=40_000,
         save_interval=5_000,
         keep_period=10_000,
@@ -2589,7 +2596,9 @@ _CONFIGS = [
             decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.ActionMoeWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params", num_action_experts=5
+        ),
         num_train_steps=40_000,
         save_interval=5_000,
         keep_period=10_000,
