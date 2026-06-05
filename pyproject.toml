@@ -1,3 +1,8 @@
+[[tool.uv.index]]
+name = "pypi-mirror"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
 [project]
 name = "openpi"
 version = "0.1.0"
@@ -11,7 +16,7 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.8",
     "flatbuffers>=24.3.25",
-    "flax==0.10.2",
+    "flax==0.10.2", 
     "fsspec[gcs]>=2024.6.0",
     "gym-aloha>=0.1.1",
     "imageio>=2.36.1",

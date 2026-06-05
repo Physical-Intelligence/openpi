@@ -100,6 +100,18 @@ def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
 
+    # Warmup inference to trigger JIT compilation before accepting client connections.
+    # The first inference can take 60-90s for JIT, which exceeds WebSocket keepalive timeout.
+    logging.info("Warming up model (JIT compilation)...")
+    if args.env == EnvMode.DROID or (isinstance(args.policy, Checkpoint) and "droid" in args.policy.config):
+        from openpi.policies import droid_policy
+        warmup_obs = droid_policy.make_droid_example()
+    else:
+        from openpi.policies import aloha_policy
+        warmup_obs = aloha_policy.make_aloha_example()
+    _ = policy.infer(warmup_obs)
+    logging.info("Warmup complete.")
+
     # Record the policy's behavior.
     if args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")

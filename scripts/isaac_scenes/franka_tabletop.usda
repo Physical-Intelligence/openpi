@@ -1,0 +1,589 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (5, 5, 5)
+                double3 target = (-3.978038431995401e-8, -3.978038254359717e-8, 7.956076863990802e-8)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary omni_layer = {
+            dictionary locked = {
+            }
+            dictionary muteness = {
+            }
+        }
+        dictionary renderSettings = {
+            bool "rtx:ecoMode:enabled" = 0
+        }
+    }
+    endTimeCode = 1000000
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+def "Render" (
+    hide_in_stage_window = true
+    no_delete = true
+)
+{
+    def "OmniverseKit"
+    {
+        def "HydraTextures" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            def RenderProduct "omni_kit_widget_viewport_ViewportTexture_0" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </OmniverseKit_Persp>
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled = 0
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1280, 720)
+            }
+
+            def RenderProduct "Replicator" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/ExteriorCamera>
+                bool omni:rtx:dlss:frameGeneration = 0
+                string[] omni:rtx:material:db:flattener:ior_constant = ["ior_constant", "glass_ior"]
+                string[] omni:rtx:material:db:flattener:reflection_roughness_constant = ["reflection_roughness_constant", "frosting_roughness"]
+                string[] omni:rtx:material:db:flattener:transmittance_color = ["transmittance_color", "glass_color"]
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:aa:op = "dlss"
+                token omni:rtx:post:dlss:execMode = "performance"
+                int omni:rtx:pt:clampSpp = 64
+                bool omni:rtx:pt:denoising:enabled = 1
+                int omni:rtx:pt:limits:maxBounces = 4
+                int omni:rtx:pt:limits:maxGlossyBounces = 6
+                int omni:rtx:pt:maxVolumeBounces = 4
+                int omni:rtx:pt:samplesPerIteration = 64
+                int omni:rtx:pt:samplesPerPixel = 64
+                bool omni:rtx:raytracing:picking:occluded:enabled = 0
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled = 0
+                int omni:rtx:rt:iesTextureRes = 1024
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                int omni:rtx:scene:hydra:subdivision:refinementLevel = 0
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (224, 224)
+            }
+
+            def RenderProduct "Replicator_01" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/Franka/panda_hand/wrist_camera>
+                bool omni:rtx:dlss:frameGeneration = 0
+                string[] omni:rtx:material:db:flattener:ior_constant = ["ior_constant", "glass_ior"]
+                string[] omni:rtx:material:db:flattener:reflection_roughness_constant = ["reflection_roughness_constant", "frosting_roughness"]
+                string[] omni:rtx:material:db:flattener:transmittance_color = ["transmittance_color", "glass_color"]
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:aa:op = "dlss"
+                token omni:rtx:post:dlss:execMode = "performance"
+                int omni:rtx:pt:clampSpp = 64
+                bool omni:rtx:pt:denoising:enabled = 1
+                int omni:rtx:pt:limits:maxBounces = 4
+                int omni:rtx:pt:limits:maxGlossyBounces = 6
+                int omni:rtx:pt:maxVolumeBounces = 4
+                int omni:rtx:pt:samplesPerIteration = 64
+                int omni:rtx:pt:samplesPerPixel = 64
+                bool omni:rtx:raytracing:picking:occluded:enabled = 0
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled = 0
+                int omni:rtx:rt:iesTextureRes = 1024
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                int omni:rtx:scene:hydra:subdivision:refinementLevel = 0
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (224, 224)
+            }
+        }
+    }
+
+    def RenderSettings "OmniverseGlobalRenderSettings" (
+        prepend apiSchemas = ["OmniRtxSettingsGlobalRtAdvancedAPI_1", "OmniRtxSettingsGlobalPtAdvancedAPI_1"]
+        no_delete = true
+    )
+    {
+        rel products = [
+            </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>,
+            </Render/OmniverseKit/HydraTextures/Replicator>,
+            </Render/OmniverseKit/HydraTextures/Replicator_01>,
+        ]
+    }
+
+    def "Vars"
+    {
+        def RenderVar "LdrColor" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            uniform string sourceName = "LdrColor"
+        }
+    }
+}
+
+def PhysicsScene "physicsScene" (
+    prepend apiSchemas = ["PhysxSceneAPI"]
+)
+{
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+    uniform token physxScene:broadphaseType = "MBP"
+    bool physxScene:enableCCD = 1
+    bool physxScene:enableGPUDynamics = 0
+    bool physxScene:enableStabilization = 0
+    uniform token physxScene:solverType = "TGS"
+    uint physxScene:timeStepsPerSecond = 60
+}
+
+def "World"
+{
+    def Xform "defaultGroundPlane" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Grid/default_environment.usd@
+    )
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        over "GroundPlane"
+        {
+            over "CollisionPlane" (
+                prepend apiSchemas = ["PhysicsMeshCollisionAPI", "PhysxCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                rel material:binding:physics = </World/Physics_Materials/physics_material> (
+                    bindMaterialAs = "strongerThanDescendants"
+                )
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    def "Physics_Materials"
+    {
+        def Material "physics_material" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 0.5
+            float physics:restitution = 0.8
+            float physics:staticFriction = 0.5
+        }
+
+        def Material "physics_material_1" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 1
+            float physics:restitution = 0
+            float physics:staticFriction = 0.2
+        }
+
+        def Material "physics_material_2" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 1
+            float physics:restitution = 0
+            float physics:staticFriction = 0.2
+        }
+
+        def Material "physics_material_3" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 1
+            float physics:restitution = 0
+            float physics:staticFriction = 0.2
+        }
+
+        def Material "physics_material_4" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 1
+            float physics:restitution = 0
+            float physics:staticFriction = 0.2
+        }
+    }
+
+    def Xform "Franka" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd@
+    )
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        over "panda_rightfinger" (
+            prepend apiSchemas = ["PhysxRigidBodyAPI"]
+        )
+        {
+            vector3f physics:angularVelocity = (1.8475902e-7, -1.8453772, -2.6096625)
+            vector3f physics:velocity = (0.12343041, 0.000036091315, 0.34183508)
+            float physxRigidBody:sleepThreshold = 0
+            quatf xformOp:orient = (0.0054584146, 0.9318829, 0.36244664, 0.014032161)
+            float3 xformOp:translate = (0.08995337, -0.0000025102847, 0.8732543)
+        }
+
+        over "panda_hand"
+        {
+            vector3f physics:angularVelocity = (1.8475902e-7, -1.8453772, -2.6096625)
+            vector3f physics:velocity = (0.015671667, 0.000024854988, 0.34183508)
+            quatf xformOp:orient = (0.0054584146, 0.9318829, 0.36244664, 0.014032161)
+            float3 xformOp:translate = (0.08819501, -0.0000024647081, 0.9316278)
+
+            def Camera "wrist_camera"
+            {
+                float verticalAperture = 20.955
+                quatd xformOp:orient = (0.5, 0.5, -0.5, -0.5)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0.05000000074505806, -0.05000000074505806)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            over "panda_finger_joint1"
+            {
+                float state:linear:physics:position = 4.11014e-7
+                float state:linear:physics:velocity = -0.0005243522
+            }
+
+            over "panda_finger_joint2"
+            {
+                float state:linear:physics:position = 4.8155762e-8
+                float state:linear:physics:velocity = 0.000015890813
+            }
+        }
+
+        over "panda_link0"
+        {
+            vector3f physics:angularVelocity = (0, 0, 0)
+            vector3f physics:velocity = (0, 0, 0)
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:translate = (-2.3841857e-9, 2.9802322e-10, 2.3841856e-8)
+
+            over "panda_joint1"
+            {
+                float state:angular:physics:position = 0.0004882258
+                float state:angular:physics:velocity = -0.007989039
+            }
+        }
+
+        over "panda_link1"
+        {
+            vector3f physics:angularVelocity = (-1.6622134e-11, 0, -0.00013943503)
+            vector3f physics:velocity = (0, 0, 0)
+            quatf xformOp:orient = (1, 5.0790443e-13, -1.6260082e-22, 0.0000042606116)
+            float3 xformOp:translate = (-2.3841857e-9, 2.9802322e-10, 0.333)
+
+            over "panda_joint2"
+            {
+                float state:angular:physics:position = -1.4068984
+                float state:angular:physics:velocity = -83.24296
+            }
+        }
+
+        over "panda_link2"
+        {
+            vector3f physics:angularVelocity = (-1.7321149e-7, -1.4528638, -0.0001396078)
+            vector3f physics:velocity = (0, 0, 0)
+            quatf xformOp:orient = (0.70705354, -0.7070534, -0.008684301, -0.008678275)
+            float3 xformOp:translate = (-2.3841857e-9, 2.9802322e-10, 0.333)
+
+            over "panda_joint3"
+            {
+                float state:angular:physics:position = 0.00030263475
+                float state:angular:physics:velocity = 0.013420668
+            }
+        }
+
+        over "panda_link3"
+        {
+            vector3f physics:angularVelocity = (-1.731835e-7, -1.4528638, 0.00009462797)
+            vector3f physics:velocity = (-0.45910493, 5.4734826e-8, 6.5248985e-15)
+            quatf xformOp:orient = (0.99992466, 5.6983055e-8, -0.012277196, 0.0000069020316)
+            float3 xformOp:translate = (-0.007758606, -1.2693906e-7, 0.6489048)
+
+            over "panda_joint4"
+            {
+                float state:angular:physics:position = -2.1216624
+                float state:angular:physics:velocity = -124.62139
+            }
+        }
+
+        over "panda_link4"
+        {
+            vector3f physics:angularVelocity = (-4.3247013e-7, 0.72219, 0.00009436926)
+            vector3f physics:velocity = (-0.45910493, 0.000007861637, 0.11986125)
+            quatf xformOp:orient = (0.70709306, 0.707093, 0.004415426, -0.004405665)
+            float3 xformOp:translate = (0.07471651, 0.000001011952, 0.6509304)
+
+            over "panda_joint5"
+            {
+                float state:angular:physics:position = -0.0023462295
+                float state:angular:physics:velocity = 0.010587918
+            }
+        }
+
+        over "panda_link5"
+        {
+            vector3f physics:angularVelocity = (-4.3244808e-7, 0.72219, 0.00027916225)
+            vector3f physics:velocity = (-0.18178396, 2.4222837e-7, 0.1794419)
+            quatf xformOp:orient = (0.99998057, -2.1711705e-7, 0.006237453, -0.000013572162)
+            float3 xformOp:translate = (-0.0029867738, 2.0875405e-8, 1.0359297)
+
+            over "panda_joint6"
+            {
+                float state:angular:physics:position = 2.440158
+                float state:angular:physics:velocity = 147.11076
+            }
+        }
+
+        over "panda_link6"
+        {
+            vector3f physics:angularVelocity = (-1.2637021e-7, -1.8453772, 0.0002794652)
+            vector3f physics:velocity = (-0.18178396, 2.4222837e-7, 0.1794419)
+            quatf xformOp:orient = (0.70702696, 0.7070263, -0.010656026, 0.010636845)
+            float3 xformOp:translate = (-0.0029867738, 2.0875405e-8, 1.0359297)
+
+            over "panda_joint7"
+            {
+                float state:angular:physics:position = 2.492355
+                float state:angular:physics:velocity = 149.53862
+            }
+        }
+
+        over "panda_link7"
+        {
+            vector3f physics:angularVelocity = (1.8475902e-7, -1.8453772, -2.6096625)
+            vector3f physics:velocity = (-0.18178396, 0.000024835119, 0.34183508)
+            quatf xformOp:orient = (-0.00032694123, 0.9996499, -0.021759281, 0.015052783)
+            float3 xformOp:translate = (0.08497331, -0.0000023663372, 1.0385793)
+        }
+
+        over "panda_leftfinger"
+        {
+            vector3f physics:angularVelocity = (1.8475902e-7, -1.8453772, -2.6096625)
+            vector3f physics:velocity = (0.12307089, 0.00039561064, 0.3418351)
+            quatf xformOp:orient = (0.0054584146, 0.9318829, 0.36244664, 0.014032161)
+            float3 xformOp:translate = (0.089953676, -0.0000028488205, 0.8732543)
+        }
+    }
+
+    def Cube "Table" (
+        prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI", "PhysicsMassAPI", "PhysicsRigidBodyAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        float3[] extent = [(-0.25, -0.25, -0.025), (0.25, 0.25, 0.025)]
+        rel material:binding = </World/Looks/visual_material> (
+            bindMaterialAs = "strongerThanDescendants"
+        )
+        rel material:binding:physics = </World/Physics_Materials/physics_material_1> (
+            bindMaterialAs = "strongerThanDescendants"
+        )
+        vector3f physics:angularVelocity = (-0.000007389592, -0.00020252547, 4.498846e-10)
+        bool physics:collisionEnabled = 1
+        float physics:mass = 0.02
+        vector3f physics:velocity = (4.035309e-9, 3.008163e-9, 0.065351225)
+        float physxCollision:contactOffset = 0.1
+        float physxCollision:minTorsionalPatchRadius = 0.8
+        float physxCollision:restOffset = 0
+        float physxCollision:torsionalPatchRadius = 1
+        float physxRigidBody:sleepThreshold = 0
+        double size = 1
+        quatd xformOp:orient = (1, 4.4022240075491936e-8, 3.04206992041145e-7, -1.062603232071524e-7)
+        double3 xformOp:scale = (0.5, 0.5, 0.05000000074505806)
+        double3 xformOp:translate = (0.5, -2.82606230084248e-12, 0.015000024810433388)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def "Looks"
+    {
+        def Material "visual_material"
+        {
+            token outputs:surface.connect = </World/Looks/visual_material/shader.outputs:surface>
+
+            def Shader "shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                float3 inputs:diffuseColor = (0.5, 0.3, 0.2)
+                token outputs:surface
+            }
+        }
+
+        def Material "visual_material_1"
+        {
+            token outputs:surface.connect = </World/Looks/visual_material_1/shader.outputs:surface>
+
+            def Shader "shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                float3 inputs:diffuseColor = (1, 0, 0)
+                token outputs:surface
+            }
+        }
+
+        def Material "visual_material_2"
+        {
+            token outputs:surface.connect = </World/Looks/visual_material_2/shader.outputs:surface>
+
+            def Shader "shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                float3 inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+        }
+
+        def Material "visual_material_3"
+        {
+            token outputs:surface.connect = </World/Looks/visual_material_3/shader.outputs:surface>
+
+            def Shader "shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                float3 inputs:diffuseColor = (0, 1, 0)
+                token outputs:surface
+            }
+        }
+    }
+
+    def Camera "ExteriorCamera"
+    {
+        float verticalAperture = 20.955
+        quatd xformOp:orient = (-0.4965800642967224, 0.692413866519928, -0.14339831471443176, -0.5033966898918152)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.800000011920929, 0.30000001192092896, 0.6000000238418579)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def "Objects"
+    {
+        def Cube "red_cube" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI", "PhysicsMassAPI", "PhysicsRigidBodyAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            float3[] extent = [(-0.015, -0.015, -0.015), (0.015, 0.015, 0.015)]
+            rel material:binding = </World/Looks/visual_material_1> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            rel material:binding:physics = </World/Physics_Materials/physics_material_2> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            vector3f physics:angularVelocity = (0, 0, 0)
+            bool physics:collisionEnabled = 1
+            float physics:mass = 0.02
+            vector3f physics:velocity = (0, 0, -0.16350001)
+            float physxCollision:contactOffset = 0.1
+            float physxCollision:minTorsionalPatchRadius = 0.8
+            float physxCollision:restOffset = 0
+            float physxCollision:torsionalPatchRadius = 1
+            float physxRigidBody:sleepThreshold = 0
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.029999999329447746, 0.029999999329447746, 0.029999999329447746)
+            double3 xformOp:translate = (0.4000000059604645, 0.10000000149011612, 0.34727534651756287)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Cube "blue_cube" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI", "PhysicsMassAPI", "PhysicsRigidBodyAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            float3[] extent = [(-0.015, -0.015, -0.015), (0.015, 0.015, 0.015)]
+            rel material:binding = </World/Looks/visual_material_2> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            rel material:binding:physics = </World/Physics_Materials/physics_material_3> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            vector3f physics:angularVelocity = (0, 0, 0)
+            bool physics:collisionEnabled = 1
+            float physics:mass = 0.02
+            vector3f physics:velocity = (0, 0, -0.16350001)
+            float physxCollision:contactOffset = 0.1
+            float physxCollision:minTorsionalPatchRadius = 0.8
+            float physxCollision:restOffset = 0
+            float physxCollision:torsionalPatchRadius = 1
+            float physxRigidBody:sleepThreshold = 0
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.029999999329447746, 0.029999999329447746, 0.029999999329447746)
+            double3 xformOp:translate = (0.5, -0.10000000149011612, 0.34727534651756287)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Cube "green_cube" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI", "PhysicsMassAPI", "PhysicsRigidBodyAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            float3[] extent = [(-0.015, -0.015, -0.015), (0.015, 0.015, 0.015)]
+            rel material:binding = </World/Looks/visual_material_3> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            rel material:binding:physics = </World/Physics_Materials/physics_material_4> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            vector3f physics:angularVelocity = (0, 0, 0)
+            bool physics:collisionEnabled = 1
+            float physics:mass = 0.02
+            vector3f physics:velocity = (0, 0, -0.16350001)
+            float physxCollision:contactOffset = 0.1
+            float physxCollision:minTorsionalPatchRadius = 0.8
+            float physxCollision:restOffset = 0
+            float physxCollision:torsionalPatchRadius = 1
+            float physxRigidBody:sleepThreshold = 0
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.029999999329447746, 0.029999999329447746, 0.029999999329447746)
+            double3 xformOp:translate = (0.44999998807907104, 0, 0.34727534651756287)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+    }
+}
+
