@@ -10,6 +10,7 @@
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 #SBATCH --requeue
+#SBATCH --exclude=nid010755
 
 # pi05_so101_stacking_big_rings — SO101 stacking big rings (6D joint-space, delta actions).
 #
@@ -114,7 +115,7 @@ fi
 
 if [ ! -f "${VALID_INDICES_PATH}" ]; then
     echo "Generating valid_indices.txt (all frames valid for this dataset)..."
-    PRECOMPUTE_CMD="${PRECOMPUTE_CMD}python -c \"
+    PRECOMPUTE_CMD="${PRECOMPUTE_CMD}uv run python -c \"
 from openpi.training import config as _config
 from openpi.training.data_loader import create_torch_dataset
 cfg = _config.get_config('${CONFIG_NAME}')
