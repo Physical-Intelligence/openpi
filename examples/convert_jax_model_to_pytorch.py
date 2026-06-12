@@ -26,6 +26,7 @@ Example:
     python examples/convert_jax_model_to_pytorch.py --checkpoint_dir /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch
 """
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -436,6 +437,9 @@ def convert_pi0_checkpoint(
 
     # Break down orbax ckpts by restoring via JAX to respect dtype
     initial_params = slice_initial_orbax_checkpoint(checkpoint_dir=checkpoint_dir, restore_precision="float32")
+    if model_config.dtype != "float32":
+        print(f"Using float32 for conversion instead of config dtype={model_config.dtype!r}")
+        model_config = dataclasses.replace(model_config, dtype="float32")
 
     # Process projection params
     if model_config.pi05:
