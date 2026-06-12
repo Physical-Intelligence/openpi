@@ -1,10 +1,22 @@
 import dataclasses
 
 import jax
+import pytest
 
 from openpi.models import pi0_config
 from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
+
+
+def test_lerobot_dataset_version_check_accepts_v21():
+    _data_loader.check_lerobot_dataset_version("v2.1", "test/repo")
+    _data_loader.check_lerobot_dataset_version("2.1", "test/repo")
+
+
+@pytest.mark.parametrize("version", ["v3.0", "v3.1"])
+def test_lerobot_dataset_version_check_rejects_v3(version):
+    with pytest.raises(ValueError, match="v2.1"):
+        _data_loader.check_lerobot_dataset_version(version, "test/repo")
 
 
 def test_torch_data_loader():
