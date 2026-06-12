@@ -169,15 +169,13 @@ def preprocess_observation(
             # Convert from [-1, 1] to [0, 1] for augmax.
             image = image / 2.0 + 0.5
 
-            transforms = []
-            if "wrist" not in key:
-                height, width = image.shape[1:3]
-                transforms += [
-                    augmax.RandomCrop(int(width * 0.95), int(height * 0.95)),
-                    augmax.Resize(width, height),
-                    augmax.Rotate((-5, 5)),
-                ]
-            transforms += [
+            height, width = image.shape[1:3]
+            # Follows pi0.5 Appendix E; the shared rng keeps per-frame augmentation
+            # parameters consistent across cameras.
+            transforms = [
+                augmax.RandomCrop(int(width * 0.95), int(height * 0.95)),
+                augmax.Resize(width, height),
+                augmax.Rotate((-5, 5)),
                 augmax.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5),
             ]
             sub_rngs = jax.random.split(rng, image.shape[0])
