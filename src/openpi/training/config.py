@@ -916,6 +916,29 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+    TrainConfig(
+        # Norm-stats AND fine-tuning config for the DROID-100 data converted to LeRobot format with the
+        # standard DROID *joint* schema (8-dim: 7 joints + gripper). The dataset is produced by
+        # `examples/droid/convert_droid_rlds_to_lerobot.py` from the `r2d2_faceblur` RLDS build, so it
+        # carries the same keys the official converter emits and loads directly via `LeRobotDROIDDataConfig`
+        # (state = joint_position[7] + gripper[1]; actions = joint_velocity[7] + gripper[1]).
+        #
+        # `assets` is left at the local default on purpose: norm stats are read from this config's own
+        # assets dir (`assets/pi05_droid100_lerobot/samratsahoo/droid_100_joint/`), i.e. the *freshly
+        # computed* stats from `scripts/compute_norm_stats.py --config-name pi05_droid100_lerobot` -- NOT
+        # the official DROID stats (`gs://openpi-assets/checkpoints/pi05_droid/assets`). Fine-tuning starts
+        # from the pi05-DROID checkpoint. Same config name is used for both norm-stats and training so the
+        # stats land where the trainer reads them.
+        name="pi05_droid100_lerobot",
+        model=pi0_config.Pi0Config(pi05=True, action_dim=32, action_horizon=16),
+        data=LeRobotDROIDDataConfig(
+            repo_id="samratsahoo/droid_100_joint",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
