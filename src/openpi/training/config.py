@@ -602,6 +602,8 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # Number of most-recent checkpoints to retain; older ones are pruned automatically.
+    max_to_keep: int = 1
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -761,6 +763,62 @@ _CONFIGS = [
         # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
         # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
+    ),
+
+    # Same data/recipe as pi05_BiYAMMolmoAct2, but with a mixed finetuning scheme:
+    # LoRA on the VLM (paligemma) and FULL finetuning of the action expert.
+    #   - paligemma_variant="gemma_2b_lora": the 2B VLM backbone is frozen and only its
+    #     low-rank LoRA adapters are trained -> big memory savings on the largest weights.
+    #   - action_expert_variant="gemma_300m": the action expert keeps its plain (non-LoRA)
+    #     variant, so it is fully finetuned.
+    # get_freeze_filter() on a matching Pi0Config resolves to
+    #   freeze (llm) AND NOT (action expert / llm_1) AND NOT (lora),
+    # i.e. freeze only the VLM base weights; train the LoRA adapters + the whole action expert.
+    TrainConfig(
+        name="pi05_BiYAMMolmoAct2_loravlm",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m",
+        ),
+        data=LeRobotBiYAMDataConfig(
+            repo_id="leokswang/18122025-foldclo-01_lerobot_format",
+            base_config=DataConfig(
+                # Feed the per-episode task instruction (the "task" field in the LeRobot
+                # dataset) to the model as the language prompt, like pi05_foldclo_babel.
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=False,
+        ),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/data/user_data/leokingw/openpi_checkpoints/pi05_foldclo_babel/foldclo_prompts_4gpu/4999/params"
+        ),
+        num_train_steps=2_000,
+        # --- Babel 4-GPU settings --------------------------------------------------
+        # Pure DATA parallelism: a full model replica lives on each of the 4 GPUs and the
+        # batch is split across them (64 -> 16 samples/GPU). 64 must be divisible by the
+        # GPU count (4). LoRA-on-VLM keeps memory low enough that an L40S (48GB) holds a
+        # full replica, so we avoid FSDP's per-step all-gather overhead.
+        batch_size=64,
+        # fsdp_devices=1 (the default) gives the mesh shape (num_gpus, 1): with the FSDP
+        # axis = 1, every parameter is REPLICATED rather than sharded -> standard DDP.
+        # (Set this > 1 only if a full replica no longer fits and you need model sharding.)
+        fsdp_devices=1,
+        # Save every 1000 steps. For the continual multi-dataset run we keep only the 3
+        # most-recent checkpoints (keep_period=None pins nothing) so user_data doesn't fill
+        # up across hundreds of datasets.
+        save_interval=1_000,
+        keep_period=None,
+        max_to_keep=3,
+        # Must match the model config above so the right params are frozen.
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m",
+        ).get_freeze_filter(),
+        # EMA is turned off for LoRA finetuning (matches the other LoRA configs).
+        ema_decay=None,
     ),
 
     # Fold-cloth fine-tune intended to run on the CMU Babel cluster across 4 GPUs.
