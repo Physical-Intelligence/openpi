@@ -106,12 +106,33 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Secondary prompt for loc-token CE supervision.
+    # The detect prompt is the PaliGemma-native "detect <obj>\n<loc><loc><loc><loc>"
+    # sequence. See experiments/transforms_loc.py:DualPromptTokenize.
+    # All fields default to None and are unused unless a model subclass (e.g.
+    # experiments/model_pi05_loc.py:Pi0WithLocCE) opts in.
+    tokenized_prompt_detect: at.Int[ArrayT, "*b ld"] | None = None
+    tokenized_prompt_detect_mask: at.Bool[ArrayT, "*b ld"] | None = None
+    # The 4 PaliGemma vocab IDs for the bbox YXYX quartet (already
+    # 256000 + 1024-bin index). Loss-side targets.
+    target_loc_tokens: at.Int[ArrayT, "*b 4"] | None = None
+    # Per-sample mask: True if the bbox supervision is real (has_bbox=True).
+    target_loc_mask: at.Bool[ArrayT, "*b"] | None = None
+    # Position indices in the detect-prefix where the 4 target tokens live;
+    # the CE loss reads logits at exactly these positions.
+    target_loc_positions: at.Int[ArrayT, "*b 4"] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+        # Same pair invariant for the detect prompt.
+        if ("tokenized_prompt_detect" in data) != ("tokenized_prompt_detect_mask" in data):
+            raise ValueError(
+                "tokenized_prompt_detect and tokenized_prompt_detect_mask must be provided together."
+            )
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
@@ -126,6 +147,11 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            tokenized_prompt_detect=data.get("tokenized_prompt_detect"),
+            tokenized_prompt_detect_mask=data.get("tokenized_prompt_detect_mask"),
+            target_loc_tokens=data.get("target_loc_tokens"),
+            target_loc_mask=data.get("target_loc_mask"),
+            target_loc_positions=data.get("target_loc_positions"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -205,6 +231,12 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        # Localize token
+        tokenized_prompt_detect=observation.tokenized_prompt_detect,
+        tokenized_prompt_detect_mask=observation.tokenized_prompt_detect_mask,
+        target_loc_tokens=observation.target_loc_tokens,
+        target_loc_mask=observation.target_loc_mask,
+        target_loc_positions=observation.target_loc_positions,
     )
 
 
