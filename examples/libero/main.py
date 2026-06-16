@@ -99,7 +99,7 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
-
+            done = False
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
                 try:
@@ -166,9 +166,8 @@ def eval_libero(args: Args) -> None:
 
             # Save a replay video of the episode
             suffix = "success" if done else "failure"
-            task_segment = task_description.replace(" ", "_")
             imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+                pathlib.Path(args.video_out_path) / f"rollout_task{task_id:02d}_ep{episode_idx:03d}_{suffix}.mp4",
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
