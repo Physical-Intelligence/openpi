@@ -18,6 +18,7 @@ import safetensors
 import torch
 
 from openpi.models_pytorch import pi0_pytorch
+from openpi.models_pytorch import lora_pytorch
 from openpi.shared import image_tools
 import openpi.shared.array_typing as at
 
@@ -243,6 +244,19 @@ class BaseModelConfig(abc.ABC):
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
+
+        # Check if train_config has LoRA config
+        has_lora_config = (
+            hasattr(train_config, "lora_config")
+            and train_config.lora_config is not None
+            and train_config.lora_config.enabled
+        )
+
+        if has_lora_config:
+            # Use the config's LoRA settings
+            lora_pytorch.apply_lora_to_pi0_pytorch(model, train_config.lora_config)
+            logger.info("LoRA layers applied successfully")
+
         safetensors.torch.load_model(model, weight_path)
         return model
 
