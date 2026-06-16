@@ -75,6 +75,33 @@ def test_pi0_fast_lora_model():
     assert len(lora_state_elems) > 0
 
 
+def test_pi05_subtask_model():
+    key = jax.random.key(0)
+    config = pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        action_dim=4,
+        action_horizon=2,
+        max_token_len=16,
+        train_subtask_prediction=True,
+        sample_subtask_prediction=True,
+        max_subtask_len=3,
+    )
+    model = config.create(key)
+
+    batch_size = 2
+    obs, act = config.fake_obs(batch_size), config.fake_act(batch_size)
+
+    loss = nnx_utils.module_jit(model.compute_loss)(key, obs, act)
+    assert loss.shape == (batch_size, config.action_horizon)
+
+    outputs = nnx_utils.module_jit(model.sample_actions_with_subtask)(key, obs, num_steps=2)
+    assert outputs["actions"].shape == (batch_size, model.action_horizon, model.action_dim)
+    assert outputs["subtask_tokens"].shape == (batch_size, config.max_subtask_len)
+    assert outputs["subtask_token_mask"].shape == (batch_size, config.max_subtask_len)
+
+
 @pytest.mark.manual
 def test_model_restore():
     key = jax.random.key(0)

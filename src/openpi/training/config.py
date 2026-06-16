@@ -125,12 +125,30 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
+                tokenizer = _tokenizer.PaligemmaTokenizer(model_config.max_token_len)
+                if model_config.train_subtask_prediction or model_config.sample_subtask_prediction:
+                    return _transforms.Group(
+                        inputs=[
+                            _transforms.InjectDefaultPrompt(self.default_prompt),
+                            _transforms.ResizeImages(224, 224),
+                            _transforms.TokenizePi05SubtaskInputs(
+                                tokenizer,
+                                discrete_state_input=model_config.discrete_state_input,
+                                train_subtask_prediction=model_config.train_subtask_prediction,
+                                sample_subtask_prediction=model_config.sample_subtask_prediction,
+                            ),
+                            _transforms.PadStatesAndActions(model_config.action_dim),
+                        ],
+                        outputs=(
+                            [_transforms.DetokenizeSubtask(tokenizer)] if model_config.sample_subtask_prediction else []
+                        ),
+                    )
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            tokenizer,
                             discrete_state_input=model_config.discrete_state_input,
                         ),
                         _transforms.PadStatesAndActions(model_config.action_dim),

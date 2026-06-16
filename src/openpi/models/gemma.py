@@ -386,6 +386,10 @@ class Module(nn.Module):
         return self.embedder.encode(tokens).astype(self.embed_dtype)
 
     @at.typecheck
+    def deembed(self, hidden: at.Float[at.Array, "b t d"]) -> at.Float[at.Array, "b t v"]:
+        return self.embedder.decode(hidden)
+
+    @at.typecheck
     def __call__(
         self,
         # list of token arrays, one for each expert, or None if that expert should not be run

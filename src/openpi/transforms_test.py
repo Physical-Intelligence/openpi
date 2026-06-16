@@ -5,6 +5,26 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.transforms as _transforms
 
 
+class _FakeSentencePiece:
+    def encode(self, text, **kwargs):
+        tokens = [sum(map(ord, piece)) % 97 + 2 for piece in text.split()]
+        if kwargs.get("add_bos", False):
+            tokens = [0, *tokens]
+        if kwargs.get("add_eos", False):
+            tokens = [*tokens, _tokenizer.PALIGEMMA_EOS_TOKEN]
+        return tokens
+
+    def decode(self, tokens):
+        return " ".join(map(str, tokens))
+
+
+def _make_fake_paligemma_tokenizer(max_len=64):
+    tokenizer = _tokenizer.PaligemmaTokenizer.__new__(_tokenizer.PaligemmaTokenizer)
+    tokenizer._max_len = max_len  # noqa: SLF001
+    tokenizer._tokenizer = _FakeSentencePiece()  # noqa: SLF001
+    return tokenizer
+
+
 def test_repack_transform():
     transform = _transforms.RepackTransform(
         structure={
@@ -76,6 +96,71 @@ def test_tokenize_prompt():
     tok_prompt, tok_mask = tokenizer.tokenize("Hello, world!")
     assert np.allclose(tok_prompt, data["tokenized_prompt"])
     assert np.allclose(tok_mask, data["tokenized_prompt_mask"])
+
+
+def test_tokenize_pi05_subtask_training():
+    tokenizer = _make_fake_paligemma_tokenizer(max_len=64)
+    transform = _transforms.TokenizePi05SubtaskInputs(
+        tokenizer,
+        discrete_state_input=True,
+        train_subtask_prediction=True,
+    )
+
+    data = transform(
+        {
+            "prompt": "Put apple on plate",
+            "subtask": "reach for the apple",
+            "state": np.zeros(3, dtype=np.float32),
+            "actions": np.zeros((2, 3), dtype=np.float32),
+        }
+    )
+
+    assert data["tokenized_prompt"].shape == (64,)
+    assert data["tokenized_prompt_mask"].shape == (64,)
+    assert data["token_ar_mask"].shape == (64,)
+    assert data["token_loss_mask"].shape == (64,)
+    assert "tokenized_action_suffix" not in data
+    assert np.sum(data["token_loss_mask"]) > 0
+
+
+def test_tokenize_pi05_subtask_inference():
+    tokenizer = _make_fake_paligemma_tokenizer(max_len=64)
+    transform = _transforms.TokenizePi05SubtaskInputs(
+        tokenizer,
+        discrete_state_input=True,
+        sample_subtask_prediction=True,
+    )
+
+    data = transform(
+        {
+            "prompt": "Put apple on plate",
+            "state": np.zeros(3, dtype=np.float32),
+        }
+    )
+
+    assert data["tokenized_prompt"].shape == (64,)
+    assert data["token_ar_mask"].shape == (64,)
+    assert data["token_loss_mask"].shape == (64,)
+    assert data["tokenized_action_suffix"].shape == (64,)
+    assert data["tokenized_action_suffix_mask"].shape == (64,)
+    assert not np.any(data["token_loss_mask"])
+
+
+def test_tokenize_pi05_subtask_training_requires_subtask():
+    tokenizer = _make_fake_paligemma_tokenizer(max_len=64)
+    transform = _transforms.TokenizePi05SubtaskInputs(
+        tokenizer,
+        train_subtask_prediction=True,
+    )
+
+    with pytest.raises(ValueError, match="Subtask is required"):
+        transform(
+            {
+                "prompt": "Put apple on plate",
+                "state": np.zeros(3, dtype=np.float32),
+                "actions": np.zeros((2, 3), dtype=np.float32),
+            }
+        )
 
 
 def test_tokenize_no_prompt():

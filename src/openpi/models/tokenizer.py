@@ -10,6 +10,8 @@ from transformers import AutoProcessor
 import openpi.models.utils.fsq_tokenizer as fsq_tokenizer
 import openpi.shared.download as download
 
+PALIGEMMA_EOS_TOKEN = 1
+
 
 class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
@@ -46,6 +48,97 @@ class PaligemmaTokenizer:
             mask = [True] * self._max_len
 
         return np.asarray(tokens), np.asarray(mask)
+
+    def tokenize_subtask_training(
+        self, prompt: str, subtask: str, state: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Tokenize pi0.5 inputs for supervised subtask prediction plus action conditioning."""
+        prefix_tokens = self._tokenizer.encode(self._subtask_prefix(prompt, state), add_bos=True)
+        subtask_tokens = self._tokenizer.encode(self._clean_text(subtask), add_eos=True)
+        action_suffix_tokens = self._tokenizer.encode("\nAction: ")
+
+        tokens = prefix_tokens + subtask_tokens + action_suffix_tokens
+        token_mask = [True] * len(tokens)
+        ar_mask = [0] * len(prefix_tokens) + [1] * (len(subtask_tokens) + len(action_suffix_tokens))
+        loss_mask = [False] * len(prefix_tokens) + [True] * len(subtask_tokens) + [False] * len(action_suffix_tokens)
+
+        return self._pad_token_arrays(tokens, token_mask, ar_mask, loss_mask)
+
+    def tokenize_subtask_inference(
+        self, prompt: str, state: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Tokenize pi0.5 inputs for two-stage inference.
+
+        The model first receives a `Subtask:` prefix, autoregressively predicts subtask tokens, then appends the
+        returned action cue before flow-matching action decoding.
+        """
+        prefix_tokens = self._tokenizer.encode(self._subtask_prefix(prompt, state), add_bos=True)
+        action_suffix_tokens = self._tokenizer.encode("\nAction: ")
+
+        prefix_tokens, prefix_mask, prefix_ar_mask, prefix_loss_mask = self._pad_token_arrays(
+            prefix_tokens,
+            [True] * len(prefix_tokens),
+            [0] * len(prefix_tokens),
+            [False] * len(prefix_tokens),
+        )
+        suffix_tokens, suffix_mask = (
+            self._pad_sequence(action_suffix_tokens, np.int32),
+            self._pad_sequence([True] * len(action_suffix_tokens), np.bool_),
+        )
+        return prefix_tokens, prefix_mask, prefix_ar_mask, prefix_loss_mask, suffix_tokens, suffix_mask
+
+    def detokenize(self, tokens: np.ndarray, mask: np.ndarray | None = None) -> str:
+        token_list = np.asarray(tokens).astype(np.int32).tolist()
+        if mask is not None:
+            mask_list = np.asarray(mask).astype(bool).tolist()
+            token_list = [token for token, valid in zip(token_list, mask_list, strict=True) if valid]
+        else:
+            token_list = [token for token in token_list if token != 0]
+
+        if PALIGEMMA_EOS_TOKEN in token_list:
+            token_list = token_list[: token_list.index(PALIGEMMA_EOS_TOKEN)]
+        return self._tokenizer.decode(token_list).strip()
+
+    def _clean_text(self, text: str) -> str:
+        return text.strip().replace("_", " ").replace("\n", " ")
+
+    def _state_str(self, state: np.ndarray) -> str:
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        return " ".join(map(str, discretized_state))
+
+    def _subtask_prefix(self, prompt: str, state: np.ndarray | None) -> str:
+        cleaned_text = self._clean_text(prompt)
+        if state is None:
+            return f"Task: {cleaned_text};\nSubtask: "
+        return f"Task: {cleaned_text}, State: {self._state_str(state)};\nSubtask: "
+
+    def _pad_sequence(self, values: list[int] | list[bool], dtype) -> np.ndarray:
+        values_len = len(values)
+        if values_len < self._max_len:
+            values = values + [False] * (self._max_len - values_len)
+        else:
+            values = values[: self._max_len]
+        return np.asarray(values, dtype=dtype)
+
+    def _pad_token_arrays(
+        self,
+        tokens: list[int],
+        token_mask: list[bool],
+        ar_mask: list[int],
+        loss_mask: list[bool],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        tokens_len = len(tokens)
+        if tokens_len > self._max_len:
+            logging.warning(
+                f"Token length ({tokens_len}) exceeds max length ({self._max_len}), truncating. "
+                "Consider increasing the `max_token_len` in your model config if this happens frequently."
+            )
+        return (
+            self._pad_sequence(tokens, np.int32),
+            self._pad_sequence(token_mask, np.bool_),
+            self._pad_sequence(ar_mask, np.int32),
+            self._pad_sequence(loss_mask, np.bool_),
+        )
 
 
 class FASTTokenizer:

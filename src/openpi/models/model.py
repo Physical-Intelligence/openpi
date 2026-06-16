@@ -66,8 +66,10 @@ IMAGE_RESOLUTION = (224, 224)
 #     "state": float32[*b, s],  # Low-dimensional robot state
 #     "tokenized_prompt": int32[*b, l],  # Optional, tokenized language prompt
 #     "tokenized_prompt_mask": bool[*b, l],  # Optional, mask for tokenized prompt
-#     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
-#     "token_loss_mask": bool[*b, l],  # Optional, loss mask for FAST model
+#     "token_ar_mask": int32[*b, l],  # Optional, autoregressive token mask
+#     "token_loss_mask": bool[*b, l],  # Optional, token loss mask
+#     "tokenized_action_suffix": int32[*b, l],  # Optional, tokenized action cue for staged pi0.5 inference
+#     "tokenized_action_suffix_mask": bool[*b, l],  # Optional, mask for tokenized action cue
 #
 #      # Actions data.
 #      "actions": float32[*b ah ad]
@@ -99,12 +101,16 @@ class Observation(Generic[ArrayT]):
     # Tokenized prompt mask.
     tokenized_prompt_mask: at.Bool[ArrayT, "*b l"] | None = None
 
-    # pi0-fast model specific fields.
+    # Autoregressive token fields used by pi0-fast and optional staged pi0.5 subtask prediction.
 
-    # Token auto-regressive mask (for FAST autoregressive model).
+    # Token auto-regressive mask.
     token_ar_mask: at.Int[ArrayT, "*b l"] | None = None
-    # Token loss mask (for FAST autoregressive model).
+    # Token loss mask.
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Optional tokenized action cue used when pi0.5 first predicts a subtask and then conditions actions on it.
+    tokenized_action_suffix: at.Int[ArrayT, "*b l"] | None = None
+    tokenized_action_suffix_mask: at.Bool[ArrayT, "*b l"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -112,6 +118,8 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+        if ("tokenized_action_suffix" in data) != ("tokenized_action_suffix_mask" in data):
+            raise ValueError("tokenized_action_suffix and tokenized_action_suffix_mask must be provided together.")
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
@@ -126,6 +134,8 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            tokenized_action_suffix=data.get("tokenized_action_suffix"),
+            tokenized_action_suffix_mask=data.get("tokenized_action_suffix_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -205,6 +215,8 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        tokenized_action_suffix=observation.tokenized_action_suffix,
+        tokenized_action_suffix_mask=observation.tokenized_action_suffix_mask,
     )
 
 
