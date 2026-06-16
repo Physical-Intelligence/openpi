@@ -241,6 +241,14 @@ policy = policy_config.create_trained_policy(config, checkpoint_dir)
 action_chunk = policy.infer(example)["actions"]
 ```
 
+For vectorized PyTorch inference, pass a sequence of per-environment observations to `infer_batch`. The same input and output transforms are applied per observation, then the PyTorch model is sampled once with a leading batch dimension:
+
+```python
+examples = [example0, example1]
+batched_action_chunks = policy.infer_batch(examples)["actions"]
+assert batched_action_chunks.shape[0] == len(examples)
+```
+
 ### Policy Server with PyTorch
 
 The policy server works identically with PyTorch models - just point to the converted checkpoint directory:
