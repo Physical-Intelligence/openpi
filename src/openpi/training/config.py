@@ -171,6 +171,10 @@ class DataConfigFactory(abc.ABC):
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
     base_config: tyro.conf.Suppress[DataConfig | None] = None
+    # If set, overrides the model-type-based default for quantile normalization.
+    # Released pi0-FAST LIBERO checkpoints were trained with z-score normalization,
+    # so their configs pin this to False for checkpoint compatibility.
+    use_quantile_norm_override: bool | None = None
 
     @abc.abstractmethod
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -184,7 +188,9 @@ class DataConfigFactory(abc.ABC):
             repo_id=repo_id,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
-            use_quantile_norm=model_config.model_type != ModelType.PI0,
+            use_quantile_norm=self.use_quantile_norm_override
+            if self.use_quantile_norm_override is not None
+            else model_config.model_type != ModelType.PI0,
         )
 
     def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
@@ -713,6 +719,9 @@ _CONFIGS = [
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
+            # The released pi0_fast_libero checkpoint predates the quantile-norm default for non-PI0
+            # models and was trained with z-score normalization, so keep normalization z-score.
+            use_quantile_norm_override=False,
         ),
         # Note that we load the pi0-FAST base model checkpoint here.
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
@@ -729,6 +738,9 @@ _CONFIGS = [
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
+            # The released pi0_fast_libero checkpoint predates the quantile-norm default for non-PI0
+            # models and was trained with z-score normalization, so keep normalization z-score.
+            use_quantile_norm_override=False,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
