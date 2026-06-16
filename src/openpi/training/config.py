@@ -939,6 +939,54 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+    TrainConfig(
+        # Same as `pi05_droid100_lerobot`, but on the *extended* dataset: DROID-100 plus extra successful
+        # trajectories, built by `examples/droid/convert_combined_droid_toys_to_lerobot.py`. Identical DROID
+        # joint schema, so norm stats are computed/read from this config's own assets dir
+        # (`assets/pi05_droid100_extended_lerobot/samratsahoo/droid_100_extended/`).
+        name="pi05_droid100_extended_lerobot",
+        model=pi0_config.Pi0Config(pi05=True, action_dim=32, action_horizon=16),
+        data=LeRobotDROIDDataConfig(
+            repo_id="samratsahoo/droid_100_extended",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
+    TrainConfig(
+        # LoRA fine-tune of pi05-DROID on the extended dataset (DROID-100 + toys). Same data/schema as
+        # `pi05_droid100_extended_lerobot`, but with LoRA adapters on both the VLM and action expert so it
+        # fits on a single GPU. Norm stats are reused from the `pi05_droid100_extended_lerobot` assets dir
+        # (identical dataset + data transforms), so no separate compute_norm_stats run is needed.
+        name="pi05_droid100_extended_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotDROIDDataConfig(
+            repo_id="samratsahoo/droid_100_extended",
+            assets=AssetsConfig(assets_dir="./assets/pi05_droid100_extended_lerobot"),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=20_000,
+        # Single 32GB GPU: keep the batch modest. Raise if you have headroom (or lower on OOM).
+        batch_size=16,
+        # Freeze everything except the LoRA adapters (must match the model variants above).
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # EMA is off for LoRA fine-tuning.
+        ema_decay=None,
+    ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
