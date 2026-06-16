@@ -75,6 +75,13 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, enabled: bool = T
         wandb.init(mode="disabled")
         return
 
+    has_api_key = bool(os.environ.get("WANDB_API_KEY"))
+    interactive = os.isatty(0) and os.isatty(1)
+    if not has_api_key and not interactive:
+        logging.warning("WANDB_API_KEY is not set in a non-interactive session; disabling wandb.")
+        wandb.init(mode="disabled")
+        return
+
     ckpt_dir = config.checkpoint_dir
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
