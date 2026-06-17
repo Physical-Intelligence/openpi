@@ -931,6 +931,30 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     #
+    # Fast ALOHA Sim configs. This config is used to instrument the FAST decode/generation path.
+    #
+    TrainConfig(
+        name="pi0_fast_aloha_sim",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=32,
+            action_horizon=32,
+            max_token_len=250,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="lerobot/aloha_sim_transfer_cube_human",
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi0_fast_base/assets",
+                asset_id="trossen",
+            ),
+            default_prompt="Transfer cube",
+            use_delta_joint_actions=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
+        num_train_steps=20_000,
+    ),
+    #
     # Debugging configs.
     #
     TrainConfig(
