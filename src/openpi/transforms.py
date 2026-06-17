@@ -369,6 +369,18 @@ class ExtractFASTActions(DataTransformFn):
 
             record["decoded_actions_shape"] = list(actions.shape)
 
+            # The HF FAST tokenizer swallows internal reshape failures, prints
+            # "Error decoding tokens: ...", and returns an all-zero fallback of the
+            # *correct* shape. So a correct shape alone does not mean success.
+            # Treat an all-zero result as a (likely) failed decode.
+            record["decoded_all_zero"] = not bool(np.any(actions))
+            if record["decoded_all_zero"]:
+                record["decode_ok"] = False
+                record["decode_error"] = (
+                    "FAST decode returned all-zero fallback (internal reshape failure; "
+                    "see server 'Error decoding tokens' log)"
+                )
+
         except Exception as e:
             record["decode_ok"] = False
             record["decode_error"] = repr(e)
