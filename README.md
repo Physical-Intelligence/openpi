@@ -184,6 +184,7 @@ If you want to embed a policy server call in your own robot runtime, we have a m
 
 We provide more examples for how to fine-tune and run inference with our models on the ALOHA platform in the following READMEs:
 - [ALOHA Simulator](examples/aloha_sim)
+  - [Recording and interpreting π₀-FAST action tokens](examples/aloha_sim/README.md#recording-and-interpreting-π-fast-action-tokens): run `pi0_fast_base` through ALOHA sim, log the raw generated action tokens to JSONL, and summarize them with `interpret_fast_tokens.py`.
 - [ALOHA Real](examples/aloha_real)
 - [UR5](examples/ur5)
 
