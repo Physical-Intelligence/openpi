@@ -28,12 +28,14 @@ services:
       - $PWD:/app
       - ${OPENPI_DATA_HOME:-~/.cache/openpi}:/openpi_assets
     environment:
-      - SERVER_ARGS
+      # Interpolated from the host shell (export ...) or from examples/aloha_sim/.env,
+      # which Compose auto-loads from this file's directory. Shell exports take precedence.
+      - SERVER_ARGS=${SERVER_ARGS:-}
       - OPENPI_DATA_HOME=/openpi_assets
       - IS_DOCKER=true
       # Pass the FAST token log path into the server container. Decoding (and thus
       # token logging) runs here, in openpi_server, not in the runtime container.
-      - OPENPI_FAST_TOKEN_LOG
+      - OPENPI_FAST_TOKEN_LOG=${OPENPI_FAST_TOKEN_LOG:-}
 
     # Comment out this block if not running on a machine with GPUs.
     deploy:

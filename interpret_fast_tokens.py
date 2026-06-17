@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -47,6 +48,27 @@ FAST_OFFSET = 257023     # 257152 - 1 - 128; fast_id = FAST_OFFSET - paligemma_i
 FAST_ID_MAX = 10000      # candidate FAST action token if 0 <= fast_id < FAST_ID_MAX
 ALOHA_DIMS = 14          # first 14 decoded dims are robot-relevant for ALOHA
 NEAR_ZERO_NORM = 1e-6    # a timestep with L2 norm below this counts as "near zero"
+
+# ALOHA decoded-action dim -> robot part. Verified against
+# src/openpi/policies/aloha_policy.py: state/action layout is
+# [left_arm_joints(6), left_gripper, right_arm_joints(6), right_gripper].
+ALOHA_JOINT_NAMES = [
+    "L_arm_j1", "L_arm_j2", "L_arm_j3", "L_arm_j4", "L_arm_j5", "L_arm_j6", "L_gripper",
+    "R_arm_j1", "R_arm_j2", "R_arm_j3", "R_arm_j4", "R_arm_j5", "R_arm_j6", "R_gripper",
+]
+
+# Token-only motion proxy thresholds (on normalized token entropy, 0..1).
+STILL_PROXY_T = 0.35     # below this -> likely "still" (few, repeated tokens)
+ACTIVE_PROXY_T = 0.60    # above this -> likely "active" (diverse tokens)
+
+# Per-joint movement: a dim whose peak-to-peak range over the chunk exceeds this
+# (in decoded action units) is considered "moving". Tunable via --joint-move-threshold.
+DEFAULT_JOINT_MOVE_THRESHOLD = 0.01
+
+
+def joint_name(dim: int) -> str:
+    """Human name for a decoded ALOHA action dim."""
+    return ALOHA_JOINT_NAMES[dim] if dim < len(ALOHA_JOINT_NAMES) else f"dim{dim}"
 
 
 # ---------------------------------------------------------------------------
@@ -141,9 +163,177 @@ def get_aloha_array(record: dict, decoded: np.ndarray | None) -> np.ndarray | No
 
 
 # ---------------------------------------------------------------------------
+# Analysis 1: token-only motion proxy (decode-free; works even when decode fails)
+# ---------------------------------------------------------------------------
+def token_motion_proxy(fast_tokens: list[int]) -> dict:
+    """Coarse, decode-free estimate of how much the chunk *moves*, from the FAST
+    token stream alone.
+
+    Rationale: FAST is a frequency-domain code. A near-constant ("still")
+    trajectory has energy only in the DC coefficient, quantizes to long runs of
+    zeros, and BPE compresses those into few, highly repeated tokens. A moving
+    trajectory excites more frequencies -> a longer, more diverse token stream.
+    So token *diversity* tracks whole-chunk motion magnitude.
+
+    IMPORTANT: this is a whole-chunk proxy, NOT per-joint and NOT exact. It only
+    ranks records by likely activity. Use ``joint_motion_analysis`` (needs decoded
+    actions) for anything quantitative or per-joint.
+    """
+    n = len(fast_tokens)
+    base = {
+        "token_count": n,
+        "unique_tokens": 0,
+        "unique_ratio": 0.0,
+        "entropy_bits": 0.0,
+        "normalized_entropy": 0.0,
+        "dominant_token": None,
+        "dominant_fraction": 0.0,
+        "motion_proxy": 0.0,
+        "motion_label": "unknown",
+    }
+    if n == 0:
+        return base
+
+    counts = collections.Counter(fast_tokens)
+    unique = len(counts)
+    probs = np.array(list(counts.values()), dtype=np.float64) / n
+    entropy = float(-(probs * np.log2(probs)).sum())
+    # Normalize by the max entropy achievable for this length (all-distinct = log2(n)).
+    norm_entropy = entropy / math.log2(n) if n > 1 else 0.0
+    dom_token, dom_count = counts.most_common(1)[0]
+
+    label = ("still" if norm_entropy < STILL_PROXY_T
+             else "active" if norm_entropy > ACTIVE_PROXY_T
+             else "low")
+
+    base.update(
+        unique_tokens=unique,
+        unique_ratio=unique / n,
+        entropy_bits=entropy,
+        normalized_entropy=norm_entropy,
+        dominant_token=int(dom_token),
+        dominant_fraction=dom_count / n,
+        motion_proxy=norm_entropy,
+        motion_label=label,
+    )
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Analysis 2: per-joint movement (needs decoded continuous actions in the log)
+# ---------------------------------------------------------------------------
+def joint_motion_analysis(
+    aloha: np.ndarray,
+    state: np.ndarray | None = None,
+    move_threshold: float = DEFAULT_JOINT_MOVE_THRESHOLD,
+) -> dict:
+    """Per-joint movement from the DECODED continuous chunk ``[T, <=14]``.
+
+    ALOHA actions here are ABSOLUTE joint positions (the sim config sets
+    ``use_delta_joint_actions=False``), so motion is measured as variation across
+    the T timesteps of the chunk:
+
+    * ``per_dim_std`` / ``peak_to_peak`` -> how much each joint varies; a dim is
+      flagged ``moving`` when its peak-to-peak range exceeds ``move_threshold``.
+    * ``step_delta`` (L2 norm of consecutive-timestep differences) -> per-timestep
+      motion; a timestep counts as moving when its step delta exceeds
+      ``move_threshold``.
+    * If ``state`` (the current pose) is provided, ``dist_from_state_per_timestep``
+      tells you how far the commanded chunk departs from where the robot is now.
+    """
+    T, D = aloha.shape
+    per_dim_std = aloha.std(axis=0)
+    per_dim_ptp = aloha.max(axis=0) - aloha.min(axis=0)
+    moving_mask = per_dim_ptp > move_threshold
+
+    joints = [
+        {
+            "dim": d,
+            "name": joint_name(d),
+            "std": float(per_dim_std[d]),
+            "peak_to_peak": float(per_dim_ptp[d]),
+            "moving": bool(moving_mask[d]),
+        }
+        for d in range(D)
+    ]
+    moving_joints = [j["name"] for j in joints if j["moving"]]
+    still_joints = [j["name"] for j in joints if not j["moving"]]
+
+    # Per-timestep step-to-step motion.
+    if T > 1:
+        step_deltas = np.linalg.norm(np.diff(aloha, axis=0), axis=1)
+    else:
+        step_deltas = np.zeros(0)
+    timestep_moving = step_deltas > move_threshold
+
+    # Distance from the current pose, if state is available.
+    dist_from_state = None
+    if state is not None and state.shape[-1] >= D:
+        dist_from_state = np.linalg.norm(aloha - state[:D], axis=1).tolist()
+
+    # Rank joints by peak-to-peak range (most-moving first).
+    order = np.argsort(per_dim_ptp)[::-1]
+    top_moving = [
+        {"name": joint_name(int(d)), "dim": int(d), "peak_to_peak": float(per_dim_ptp[d])}
+        for d in order[:5]
+    ]
+
+    return {
+        "shape": [int(T), int(D)],
+        "move_threshold": move_threshold,
+        "joints": joints,
+        "moving_joints": moving_joints,
+        "still_joints": still_joints,
+        "num_moving_joints": len(moving_joints),
+        "chunk_is_static": len(moving_joints) == 0,
+        "num_moving_timesteps": int(timestep_moving.sum()),
+        "num_timesteps": int(T),
+        "step_delta_mean": float(step_deltas.mean()) if step_deltas.size else 0.0,
+        "step_delta_max": float(step_deltas.max()) if step_deltas.size else 0.0,
+        "dist_from_state_per_timestep": dist_from_state,
+        "top_moving_joints": top_moving,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-timestep view: map each timestep of a decoded chunk to its action values
+# and the joints that are "relevant" (changed) at that timestep.
+# ---------------------------------------------------------------------------
+def per_timestep_rows(aloha: np.ndarray, move_threshold: float,
+                      state: np.ndarray | None = None) -> list[dict]:
+    """One row per timestep of a decoded ``[T, <=14]`` chunk.
+
+    Each row carries the named joint values at that timestep, the step delta from
+    the previous timestep, the list of joints whose value changed by more than
+    ``move_threshold`` ("relevant_joints"), and — if ``state`` is given — the
+    distance from the current pose.
+    """
+    T, D = aloha.shape
+    rows: list[dict] = []
+    for t in range(T):
+        row: dict = {"timestep": t}
+        for d in range(D):
+            row[joint_name(d)] = float(aloha[t, d])
+        if t == 0:
+            row["step_delta"] = 0.0
+            changed: list[str] = []
+        else:
+            diff = np.abs(aloha[t] - aloha[t - 1])
+            row["step_delta"] = float(np.linalg.norm(aloha[t] - aloha[t - 1]))
+            changed = [joint_name(d) for d in range(D) if diff[d] > move_threshold]
+        row["num_relevant_joints"] = len(changed)
+        row["relevant_joints"] = "|".join(changed)
+        if state is not None and state.shape[-1] >= D:
+            row["dist_from_state"] = float(np.linalg.norm(aloha[t] - state[:D]))
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Per-record processing
 # ---------------------------------------------------------------------------
-def process_record(index: int, record: dict) -> dict:
+def process_record(index: int, record: dict,
+                   move_threshold: float = DEFAULT_JOINT_MOVE_THRESHOLD) -> dict:
     """Turn one raw JSONL record into a flat, summarized dict."""
     raw_tokens = record.get("raw_paligemma_token_ids") or []
     if not isinstance(raw_tokens, list):
@@ -182,6 +372,10 @@ def process_record(index: int, record: dict) -> dict:
         "top_aloha_dims_by_std": None,
         "top_aloha_dims_by_abs": None,
         "_aloha_array": None,  # kept in-memory for aggregate plots/stats; not serialized
+        "_state_array": None,  # current pose, in-memory only
+        # Analysis 1 (decode-free) is always available; analysis 2 needs decoded actions.
+        "token_motion": token_motion_proxy(fast_tokens),
+        "joint_motion": None,
     }
 
     decoded = _to_array(record.get("decoded_actions"))
@@ -207,6 +401,17 @@ def process_record(index: int, record: dict) -> dict:
         by_std, by_abs = top_dims(aloha, k=3)
         out["top_aloha_dims_by_std"] = by_std
         out["top_aloha_dims_by_abs"] = by_abs
+
+        # Per-joint movement (analysis 2). Use the current pose if the log has it.
+        state_val = record.get("state")
+        state_arr = None
+        if state_val is not None:
+            try:
+                state_arr = np.asarray(state_val, dtype=np.float64).reshape(-1)
+            except (ValueError, TypeError):
+                state_arr = None
+        out["_state_array"] = state_arr
+        out["joint_motion"] = joint_motion_analysis(aloha, state_arr, move_threshold)
 
     return out
 
@@ -452,6 +657,226 @@ def print_aggregate(summary: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Analysis 1 output: token-only motion proxy
+# ---------------------------------------------------------------------------
+def write_token_motion_csv(path: str, processed: list[dict]) -> None:
+    columns = [
+        "record_index", "decode_ok", "token_count", "unique_tokens", "unique_ratio",
+        "entropy_bits", "normalized_entropy", "dominant_token", "dominant_fraction",
+        "motion_proxy", "motion_label",
+    ]
+
+    def row_of(rec: dict) -> dict:
+        tm = rec["token_motion"]
+        return {
+            "record_index": rec["record_index"],
+            "decode_ok": rec["decode_ok"],
+            "token_count": tm["token_count"],
+            "unique_tokens": tm["unique_tokens"],
+            "unique_ratio": round(tm["unique_ratio"], 4),
+            "entropy_bits": round(tm["entropy_bits"], 4),
+            "normalized_entropy": round(tm["normalized_entropy"], 4),
+            "dominant_token": tm["dominant_token"],
+            "dominant_fraction": round(tm["dominant_fraction"], 4),
+            "motion_proxy": round(tm["motion_proxy"], 4),
+            "motion_label": tm["motion_label"],
+        }
+
+    rows = [row_of(r) for r in processed]
+    try:
+        import pandas as pd  # noqa: PLC0415
+        pd.DataFrame(rows, columns=columns).to_csv(path, index=False)
+    except ImportError:
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+
+
+def print_token_motion(processed: list[dict], n_print: int) -> None:
+    print("=" * 70)
+    print("ANALYSIS 1: TOKEN-ONLY MOTION PROXY (decode-free)")
+    print("=" * 70)
+    print("Proxy = normalized token entropy in [0,1]. Higher -> more diverse tokens")
+    print(f"-> more likely motion.  still < {STILL_PROXY_T}  <= low <= {ACTIVE_PROXY_T} < active")
+    print("NOTE: whole-chunk estimate only; NOT per-joint, NOT exact.\n")
+
+    shown = min(n_print, len(processed)) if n_print > 0 else 0
+    for rec in processed[:shown]:
+        tm = rec["token_motion"]
+        flag = "" if rec["decode_ok"] else "  [decode failed]"
+        print(f"Record {rec['record_index']:>3}: {tm['motion_label']:<6} "
+              f"proxy={tm['motion_proxy']:.2f}  "
+              f"unique={tm['unique_tokens']:>3}/{tm['token_count']:<3} "
+              f"({tm['unique_ratio']:.2f})  "
+              f"dominant={tm['dominant_token']}@{tm['dominant_fraction']*100:.0f}%{flag}")
+    if shown:
+        print()
+
+    labels = collections.Counter(r["token_motion"]["motion_label"] for r in processed)
+    proxies = [r["token_motion"]["motion_proxy"] for r in processed if r["token_motion"]["token_count"]]
+    print(f"Records by motion label: {dict(labels)}")
+    if proxies:
+        print(f"Mean motion proxy: {float(np.mean(proxies)):.3f}  "
+              f"(min {min(proxies):.2f}, max {max(proxies):.2f})")
+    print("=" * 70)
+
+
+# ---------------------------------------------------------------------------
+# Analysis 2 output: per-joint movement
+# ---------------------------------------------------------------------------
+def write_joint_motion_json(path: str, processed: list[dict]) -> None:
+    payload = [
+        {"record_index": r["record_index"], "decode_ok": r["decode_ok"], **r["joint_motion"]}
+        for r in processed if r["joint_motion"] is not None
+    ]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def write_joint_motion_csv(path: str, processed: list[dict]) -> None:
+    columns = [
+        "record_index", "decode_ok", "num_timesteps", "chunk_is_static",
+        "num_moving_joints", "moving_joints", "num_moving_timesteps",
+        "step_delta_mean", "step_delta_max", "top_moving_joints",
+    ]
+
+    def row_of(rec: dict) -> dict:
+        jm = rec["joint_motion"]
+        return {
+            "record_index": rec["record_index"],
+            "decode_ok": rec["decode_ok"],
+            "num_timesteps": jm["num_timesteps"],
+            "chunk_is_static": jm["chunk_is_static"],
+            "num_moving_joints": jm["num_moving_joints"],
+            "moving_joints": "|".join(jm["moving_joints"]),
+            "num_moving_timesteps": jm["num_moving_timesteps"],
+            "step_delta_mean": round(jm["step_delta_mean"], 5),
+            "step_delta_max": round(jm["step_delta_max"], 5),
+            "top_moving_joints": "|".join(j["name"] for j in jm["top_moving_joints"]),
+        }
+
+    rows = [row_of(r) for r in processed if r["joint_motion"] is not None]
+    try:
+        import pandas as pd  # noqa: PLC0415
+        pd.DataFrame(rows, columns=columns).to_csv(path, index=False)
+    except ImportError:
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+
+
+def print_joint_motion(processed: list[dict], n_print: int) -> None:
+    print("=" * 70)
+    print("ANALYSIS 2: PER-JOINT MOVEMENT (from decoded continuous actions)")
+    print("=" * 70)
+
+    recs = [r for r in processed if r["joint_motion"] is not None]
+    if not recs:
+        print("No decoded continuous actions in the log, so per-joint movement")
+        print("cannot be computed. Add these to the ExtractFASTActions record and")
+        print("re-run the sim:")
+        print('    record["decoded_actions"]   = actions.tolist()')
+        print('    record["aloha_actions_14d"] = actions[:, :14].tolist()')
+        print('    record["state"]             = data["state"].tolist()  # optional, for dist-from-pose')
+        print("=" * 70)
+        return
+
+    thr = recs[0]["joint_motion"]["move_threshold"]
+    print(f"A joint is 'moving' if its peak-to-peak range over the chunk > {thr} (action units).")
+    print("ALOHA dims: 0-5 L_arm_j1..6, 6 L_gripper, 7-12 R_arm_j1..6, 13 R_gripper.\n")
+
+    shown = min(n_print, len(recs)) if n_print > 0 else 0
+    for rec in recs[:shown]:
+        jm = rec["joint_motion"]
+        if jm["chunk_is_static"]:
+            desc = "STATIC (holds pose, no joint exceeds threshold)"
+        else:
+            tops = ", ".join(f"{j['name']}({j['peak_to_peak']:.3f})" for j in jm["top_moving_joints"]
+                             if j["peak_to_peak"] > thr)
+            desc = f"{jm['num_moving_joints']} joints moving; top: {tops}"
+        print(f"Record {rec['record_index']:>3}: {desc}")
+        print(f"           moving timesteps {jm['num_moving_timesteps']}/{jm['num_timesteps']-1}, "
+              f"step delta mean {jm['step_delta_mean']:.4f} max {jm['step_delta_max']:.4f}")
+    if shown:
+        print()
+
+    # Aggregate: how often each joint moves across all chunks.
+    move_freq: collections.Counter = collections.Counter()
+    for r in recs:
+        move_freq.update(r["joint_motion"]["moving_joints"])
+    n_static = sum(1 for r in recs if r["joint_motion"]["chunk_is_static"])
+    print(f"Chunks with decoded actions: {len(recs)}  (static: {n_static})")
+    if move_freq:
+        print("Most-frequently-moving joints (joint: # chunks):")
+        for name, c in move_freq.most_common(10):
+            print(f"  {name:<10}: {c}")
+    else:
+        print("No joint exceeded the movement threshold in any chunk.")
+    print("=" * 70)
+
+
+# ---------------------------------------------------------------------------
+# Per-timestep output: one CSV per record mapping timestep -> action + relevant joints
+# ---------------------------------------------------------------------------
+def write_per_timestep(out_subdir: str, processed: list[dict],
+                       move_threshold: float, n_print: int) -> int:
+    """Write one CSV per decoded record (timestep -> joint values + relevant joints),
+    and print a compact preview. Returns the number of files written."""
+    recs = [r for r in processed if r["_aloha_array"] is not None]
+
+    print("=" * 70)
+    print("PER-TIMESTEP ACTION MAPPING (one file per decoded chunk)")
+    print("=" * 70)
+    if not recs:
+        print("No decoded continuous actions in the log, so per-timestep tables")
+        print("cannot be built. Add decoded_actions/aloha_actions_14d to the")
+        print("ExtractFASTActions record and re-run the sim. See Analysis 2 above.")
+        print("=" * 70)
+        return 0
+
+    os.makedirs(out_subdir, exist_ok=True)
+
+    try:
+        import pandas as pd  # noqa: PLC0415
+        have_pandas = True
+    except ImportError:
+        import csv
+        have_pandas = False
+
+    written = 0
+    for rec in recs:
+        rows = per_timestep_rows(rec["_aloha_array"], move_threshold, rec["_state_array"])
+        path = os.path.join(out_subdir, f"record_{rec['record_index']}.csv")
+        if have_pandas:
+            pd.DataFrame(rows).to_csv(path, index=False)
+        else:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+        written += 1
+
+    print(f"Wrote {written} per-timestep CSV file(s) to {out_subdir}/")
+    print(f"A timestep's 'relevant_joints' = joints whose value changed by > {move_threshold} "
+          "vs the previous timestep.\n")
+
+    # Compact preview: for the first decoded record, show which joints are relevant
+    # at each of the first few timesteps.
+    preview = recs[0]
+    rows = per_timestep_rows(preview["_aloha_array"], move_threshold, preview["_state_array"])
+    print(f"Preview of record {preview['record_index']} (first {min(n_print, len(rows))} timesteps):")
+    for row in rows[:n_print]:
+        rel = row["relevant_joints"] or "(none)"
+        print(f"  t={row['timestep']:>2}  step_delta={row['step_delta']:.4f}  relevant: {rel}")
+    print("=" * 70)
+    return written
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
@@ -468,6 +893,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plots", action="store_true", help="Write PNG plots (needs matplotlib)")
     parser.add_argument("--print-records", type=int, default=0,
                         help="Print compact per-record summaries for the first N records")
+    parser.add_argument("--token-motion", action="store_true",
+                        help="Analysis 1: decode-free token motion proxy (works on any log); "
+                             "prints a section and writes token_motion.csv")
+    parser.add_argument("--joint-motion", action="store_true",
+                        help="Analysis 2: per-joint movement from decoded actions (needs "
+                             "decoded_actions/aloha_actions_14d in the log); prints a section "
+                             "and writes joint_motion.json + joint_motion.csv")
+    parser.add_argument("--joint-move-threshold", type=float, default=DEFAULT_JOINT_MOVE_THRESHOLD,
+                        help="Per-dim peak-to-peak range above which a joint counts as 'moving'")
+    parser.add_argument("--per-timestep", action="store_true",
+                        help="Write one CSV per decoded chunk mapping each timestep to its joint "
+                             "values and the joints that changed (needs decoded actions in the log)")
+    parser.add_argument("--motion-print", type=int, default=10,
+                        help="How many per-record lines to print in the motion sections")
     args = parser.parse_args(argv)
 
     if not os.path.isfile(args.input):
@@ -478,7 +917,7 @@ def main(argv: list[str] | None = None) -> int:
 
     processed: list[dict] = []
     for i, record in enumerate(load_records(args.input, args.max_records)):
-        processed.append(process_record(i, record))
+        processed.append(process_record(i, record, move_threshold=args.joint_move_threshold))
 
     if not processed:
         print("ERROR: no valid records found in input.", file=sys.stderr)
@@ -515,7 +954,32 @@ def main(argv: list[str] | None = None) -> int:
         make_plots(processed, args.output_dir)
         written.append(os.path.join(args.output_dir, "*.png"))
 
+    # Optional analyses (each independent; run either, both, or neither).
+    if args.token_motion:
+        tm_path = os.path.join(args.output_dir, "token_motion.csv")
+        write_token_motion_csv(tm_path, processed)
+        written.append(tm_path)
+    if args.joint_motion:
+        jm_json = os.path.join(args.output_dir, "joint_motion.json")
+        jm_csv = os.path.join(args.output_dir, "joint_motion.csv")
+        write_joint_motion_json(jm_json, processed)
+        write_joint_motion_csv(jm_csv, processed)
+        written.extend([jm_json, jm_csv])
+
     print_aggregate(summary)
+    if args.token_motion:
+        print()
+        print_token_motion(processed, args.motion_print)
+    if args.joint_motion:
+        print()
+        print_joint_motion(processed, args.motion_print)
+    if args.per_timestep:
+        print()
+        pt_dir = os.path.join(args.output_dir, "per_timestep")
+        n = write_per_timestep(pt_dir, processed, args.joint_move_threshold, args.motion_print)
+        if n:
+            written.append(os.path.join(pt_dir, "record_*.csv"))
+
     print("\nWrote:")
     for p in written:
         print(f"  {p}")

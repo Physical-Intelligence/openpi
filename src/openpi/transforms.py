@@ -393,6 +393,18 @@ class ExtractFASTActions(DataTransformFn):
             )
             record["decoded_actions_shape"] = list(actions.shape)
 
+        # Record the decoded continuous actions so downstream tooling
+        # (interpret_fast_tokens.py --joint-motion / --per-timestep) can analyze
+        # per-joint, per-timestep movement.
+        # NOTE: these are model-space (normalized) values captured *before* the
+        # downstream Unnormalize / AlohaOutputs transforms. Motion (variation across
+        # timesteps) is still meaningful here, just expressed in normalized units.
+        aloha_relevant_dims = 14  # ALOHA: 2 arms x (6 joints + 1 gripper)
+        record["decoded_actions"] = actions.tolist()
+        record["aloha_actions_14d"] = actions[:, :aloha_relevant_dims].tolist()
+        if "state" in data:
+            record["state"] = np.asarray(data["state"], dtype=np.float32).reshape(-1).tolist()
+
         # Optional JSONL logging.
         token_log_path = os.environ.get("OPENPI_FAST_TOKEN_LOG")
         if token_log_path:

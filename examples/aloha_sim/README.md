@@ -78,12 +78,40 @@ fail to decode (they appear as `decode_ok: false`, `decoded_all_zero: true`).
 
 ### 1. Run the sim and record tokens
 
+The server reads two variables, forwarded into the `openpi_server` container by
+[compose.yml](compose.yml): `SERVER_ARGS` (which config/checkpoint to serve) and
+`OPENPI_FAST_TOKEN_LOG` (where to write the token log; `/app` inside the container is the
+repo root on the host, so it lands in `./data`). Set them one of two ways.
+
+**Option A — `.env` file (persists across logins; recommended).** A ready-made
+[examples/aloha_sim/.env](.env) is provided and Compose auto-loads it (its project
+directory defaults to the compose file's directory). It is gitignored, so if you cloned
+fresh and it's missing, create it with:
+
 ```bash
-# Point the server at the FAST config + checkpoint, and choose where to write the token log.
-# /app inside the container == the repo root on the host, so this file appears in ./data.
+cat > examples/aloha_sim/.env <<'EOF'
+SERVER_ARGS=policy:checkpoint --policy.config=pi0_fast_aloha_sim --policy.dir=gs://openpi-assets/checkpoints/pi0_fast_base
+OPENPI_FAST_TOKEN_LOG=/app/data/aloha_sim/token_logs/pi0_fast_tokens.jsonl
+EOF
+```
+
+With the `.env` in place you can skip straight to the `docker compose` command below.
+
+**Option B — export in your shell (per session).** `export`ed variables are lost when you
+log out, so you must re-run these (and they override the `.env` if both are set):
+
+```bash
 export SERVER_ARGS="policy:checkpoint --policy.config=pi0_fast_aloha_sim --policy.dir=gs://openpi-assets/checkpoints/pi0_fast_base"
 export OPENPI_FAST_TOKEN_LOG=/app/data/aloha_sim/token_logs/pi0_fast_tokens.jsonl
 
+# Confirm they are set BEFORE launching (a common failure is an empty/forgotten export):
+echo "SERVER_ARGS=$SERVER_ARGS"
+echo "OPENPI_FAST_TOKEN_LOG=$OPENPI_FAST_TOKEN_LOG"
+```
+
+**Then build and run:**
+
+```bash
 # Start fresh — the log is opened in append mode, so remove any previous run's file.
 rm -f data/aloha_sim/token_logs/pi0_fast_tokens.jsonl
 
@@ -145,6 +173,96 @@ arrays to the record in `ExtractFASTActions`:
 ```python
 record["decoded_actions"] = actions.tolist()           # full [32, 32] chunk
 record["aloha_actions_14d"] = actions[:, :14].tolist()  # robot-relevant dims
+record["state"] = data["state"].tolist()                # optional: current pose
 ```
 
 then re-run steps 1–3.
+
+### 4. Understand whether/where the robot moves
+
+A FAST token does **not** map to a single joint or timestep: the encoder runs a DCT
+along time (mixing all timesteps) and then BPE-compresses across dimensions (mixing all
+joints). So "which token moves which joint" is not recoverable from tokens directly — the
+movement lives in the *decoded continuous chunk* `[32, 14]`, where the 14 ALOHA dims are
+(verified against [aloha_policy.py](../../src/openpi/policies/aloha_policy.py)):
+
+| dims  | robot part            |
+| ----- | --------------------- |
+| 0–5   | left arm joints 1–6   |
+| 6     | left gripper          |
+| 7–12  | right arm joints 1–6  |
+| 13    | right gripper         |
+
+`interpret_fast_tokens.py` provides two independent analyses for this, each behind its own
+flag (run either, both, or neither):
+
+#### Analysis 1 — token-only motion proxy (`--token-motion`)
+
+A **decode-free** estimate that works on *any* log, including failed/all-zero decodes.
+FAST is a frequency-domain code: a near-still trajectory has energy only in the DC
+coefficient, quantizes to long zero-runs, and BPE compresses those into few, highly
+repeated tokens — while a moving trajectory excites more frequencies and produces a
+longer, more diverse token stream. The tool therefore uses **normalized token entropy**
+(0–1) as a whole-chunk proxy for motion and labels each record `still` / `low` / `active`.
+This is coarse and **not per-joint**, but it lets you rank steps by likely activity even
+when decoding fails.
+
+```bash
+uv run python interpret_fast_tokens.py \
+  --input data/aloha_sim/token_logs/pi0_fast_tokens.jsonl \
+  --token-motion --motion-print 10
+```
+
+Prints a per-record table (proxy, unique-token ratio, dominant token) plus an aggregate
+label breakdown, and writes `token_motion.csv`. Tunables: `--motion-print N` controls how
+many per-record lines are shown.
+
+#### Analysis 2 — per-joint movement (`--joint-motion`)
+
+A **quantitative, per-joint** analysis computed from the *decoded* continuous actions, so
+it requires the `decoded_actions` (or `aloha_actions_14d`) field described above to be in
+the log. ALOHA actions here are absolute joint positions, so motion is measured as
+variation across the 32-step chunk: a joint is flagged **moving** when its peak-to-peak
+range exceeds `--joint-move-threshold`. For each chunk it reports which named joints move,
+whether the chunk is static (holds pose), per-timestep step deltas, and — if you also log
+`state` — how far the commanded chunk departs from the current pose. An aggregate table
+shows which joints move most often across the run.
+
+```bash
+uv run python interpret_fast_tokens.py \
+  --input data/aloha_sim/token_logs/pi0_fast_tokens.jsonl \
+  --joint-motion --joint-move-threshold 0.02 --motion-print 10
+```
+
+Writes `joint_motion.json` (full per-record detail) and `joint_motion.csv` (per-record
+summary). If no decoded actions are present, the section prints exactly which fields to add
+to `ExtractFASTActions` and exits gracefully.
+
+#### Per-timestep action mapping (`--per-timestep`)
+
+For the finest-grained view, this writes **one CSV per decoded chunk** mapping every
+timestep to its 14 named joint values, the step delta from the previous timestep, the
+`relevant_joints` that changed by more than `--joint-move-threshold` at that timestep, and
+(if `state` is logged) the distance from the current pose. This answers "at timestep *t*,
+which joints actually move and by how much." It needs decoded actions in the log, same as
+Analysis 2.
+
+```bash
+uv run python interpret_fast_tokens.py \
+  --input data/aloha_sim/token_logs/pi0_fast_tokens.jsonl \
+  --joint-motion --per-timestep --joint-move-threshold 0.01
+```
+
+Files are written to `<output-dir>/per_timestep/record_<i>.csv`. Note the threshold is
+applied two ways: Analysis 2 flags a joint as "moving" by its **peak-to-peak** range over
+the whole chunk, while `relevant_joints` here uses the **step-to-step** delta — so a joint
+that drifts slowly can be chunk-level "moving" yet rarely "relevant" at any single step.
+
+> **Note on units:** the logged `decoded_actions` are model-space (normalized) values,
+> captured before the downstream Unnormalize/AlohaOutputs transforms. Relative motion
+> (which joints vary, and when) is faithful; absolute magnitudes are in normalized units,
+> not radians.
+
+> **Heads-up:** with un-finetuned `pi0_fast_base` on ALOHA sim, decoding fails or returns
+> garbage for most steps, so Analysis 2's numbers are not yet meaningful — use Analysis 1
+> (which works regardless) until you have a checkpoint fine-tuned for this embodiment.
