@@ -72,6 +72,8 @@ class AdamW(OptimizerConfig):
     # Changing this to 0 can cause out-of-memory errors for some reason, so we set it to a negligible value.
     weight_decay: float = 1e-10
     clip_gradient_norm: float = 1.0
+    # PyTorch training only (scripts/train_pytorch.py): torch.optim.AdamW(fused=True).
+    fused: bool = False
 
     def create(
         self,

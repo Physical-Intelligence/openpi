@@ -42,9 +42,11 @@ import wandb
 
 import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
+import openpi.models_pytorch.sdpa_utils as _sdpa_utils
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
+import openpi.training.optimizer as _optimizer
 
 
 def init_logging():
@@ -144,6 +146,34 @@ def get_model_parameters(model):
         if isinstance(model, torch.nn.parallel.DistributedDataParallel)
         else model.parameters()
     )
+
+
+def create_torch_adamw(
+    parameters,
+    *,
+    lr: float,
+    b1: float,
+    b2: float,
+    eps: float,
+    weight_decay: float,
+    use_fused: bool = True,
+) -> torch.optim.AdamW:
+    """Create AdamW; use fused CUDA kernel when supported (falls back on ROCm/CPU)."""
+    kwargs = {
+        "params": parameters,
+        "lr": lr,
+        "betas": (b1, b2),
+        "eps": eps,
+        "weight_decay": weight_decay,
+    }
+    if use_fused and torch.cuda.is_available():
+        try:
+            optim = torch.optim.AdamW(**kwargs, fused=True)
+            logging.info("Using fused AdamW optimizer")
+            return optim
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logging.warning("fused AdamW not available (%s), using unfused AdamW", exc)
+    return torch.optim.AdamW(**kwargs)
 
 
 def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
@@ -406,7 +436,15 @@ def train_loop(config: _config.TrainConfig):
         # Update dtype to match pytorch_training_precision
         object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
-    model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
+    joint_attention = _sdpa_utils.resolve_pytorch_joint_attention(
+        joint_attention=config.pytorch_joint_attention,
+        use_joint_sdpa_legacy=config.pytorch_use_joint_sdpa,
+    )
+    model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(
+        model_cfg,
+        joint_attention=joint_attention,
+        submodule_attn=config.pytorch_submodule_attn,
+    ).to(device)
 
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
@@ -455,12 +493,14 @@ def train_loop(config: _config.TrainConfig):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
-    optim = torch.optim.AdamW(
-        model.parameters(),
+    optim = create_torch_adamw(
+        get_model_parameters(model),
         lr=peak_lr,
-        betas=(config.optimizer.b1, config.optimizer.b2),
+        b1=config.optimizer.b1,
+        b2=config.optimizer.b2,
         eps=config.optimizer.eps,
         weight_decay=config.optimizer.weight_decay,
+        use_fused=config.optimizer.fused if isinstance(config.optimizer, _optimizer.AdamW) else False,
     )
 
     # Load checkpoint if resuming
@@ -494,10 +534,19 @@ def train_loop(config: _config.TrainConfig):
             f"LR schedule: warmup={warmup_steps}, peak_lr={peak_lr:.2e}, decay_steps={decay_steps}, end_lr={end_lr:.2e}"
         )
         logging.info(
-            f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, clip_norm={config.optimizer.clip_gradient_norm}"
+            f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, "
+            f"clip_norm={config.optimizer.clip_gradient_norm}, "
+            f"fused_adamw={config.optimizer.fused if isinstance(config.optimizer, _optimizer.AdamW) else False}"
         )
         logging.info("EMA is not supported for PyTorch training")
         logging.info(f"Training precision: {model_cfg.dtype}")
+        _sdpa_utils.log_joint_sdpa_backend_info(
+            joint_attention=joint_attention,
+            submodule_attn=config.pytorch_submodule_attn,
+            device=device,
+            model=model,
+            batch_size=min(config.batch_size, 4),
+        )
 
     # Training loop - iterate until we reach num_train_steps
     pbar = (
