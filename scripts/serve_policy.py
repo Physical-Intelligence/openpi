@@ -48,6 +48,9 @@ class Args:
 
     # Port to serve the policy on.
     port: int = 8000
+    # Number of worker threads used to execute blocking policy inference outside the asyncio event loop.
+    # The default keeps calls into the shared policy object serialized.
+    inference_workers: int = 1
     # Record the policy's behavior for debugging.
     record: bool = False
 
@@ -113,6 +116,7 @@ def main(args: Args) -> None:
         host="0.0.0.0",
         port=args.port,
         metadata=policy_metadata,
+        inference_workers=args.inference_workers,
     )
     server.serve_forever()
 

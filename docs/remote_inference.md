@@ -19,6 +19,8 @@ uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_droid 
 
 This will start a policy server that will serve the policy specified by the `config` and `dir` arguments. The policy will be served on the specified port (default: 8000).
 
+The websocket server uses async I/O and runs blocking policy inference in a bounded worker thread pool so one inference call does not block new websocket handshakes or other event-loop work. By default, the server uses `--inference-workers=1`, which keeps calls into the shared policy object serialized while still keeping the event loop responsive. Increasing `--inference-workers` can improve multi-client throughput only when the served policy implementation is safe to call concurrently and the model backend has enough memory and compute headroom.
+
 ## Querying the remote policy server from your robot code
 
 We provide a client utility with minimal dependencies that you can easily embed into any robot codebase.
