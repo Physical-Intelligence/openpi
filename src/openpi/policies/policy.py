@@ -15,6 +15,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import model as _model
+from openpi.models import prefix_cache as _prefix_cache
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
@@ -33,6 +34,7 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
+        enable_prefix_cache: bool = False,
     ):
         """Initialize the Policy.
 
@@ -46,6 +48,10 @@ class Policy(BasePolicy):
             pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda:0").
                           Only relevant when is_pytorch=True.
             is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
+            enable_prefix_cache: Whether to enable prefix caching for JAX models.
+                               When enabled, the policy caches prefix embeddings and KV cache
+                               to avoid redundant computation when observation hasn't changed.
+                               Only effective for JAX models (ignored for PyTorch).
         """
         self._model = model
         self._input_transform = _transforms.compose(transforms)
@@ -54,6 +60,8 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        self._enable_prefix_cache = enable_prefix_cache and not is_pytorch
+        self._prefix_cache: _prefix_cache.PrefixCache | None = None
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -62,6 +70,8 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            if self._enable_prefix_cache:
+                self._sample_actions_with_cache = nnx_utils.module_jit(model.sample_actions_with_cache)
             self._rng = rng or jax.random.key(0)
 
     @override
@@ -89,9 +99,18 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
+
+        if self._enable_prefix_cache:
+            sample_kwargs["prefix_cache"] = self._prefix_cache
+            actions, self._prefix_cache = self._sample_actions_with_cache(
+                sample_rng_or_pytorch_device, observation, **sample_kwargs
+            )
+        else:
+            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            "actions": actions,
         }
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
@@ -103,11 +122,29 @@ class Policy(BasePolicy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
+        if self._enable_prefix_cache:
+            outputs["policy_timing"]["cache_enabled"] = True
         return outputs
 
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata
+
+    def clear_cache(self) -> None:
+        """Clear the prefix cache.
+
+        Call this when starting a new episode or when you want to force
+        recomputation of the prefix embeddings.
+        """
+        self._prefix_cache = None
+
+    def reset(self) -> None:
+        """Reset the policy state.
+
+        This clears the prefix cache and can be extended by subclasses
+        to reset additional state.
+        """
+        self.clear_cache()
 
 
 class PolicyRecorder(_base_policy.BasePolicy):
