@@ -290,7 +290,7 @@ class Pi0FAST(_model.BaseModel):
 
             # Decode one step
             token_embedding = self.PaliGemma.llm(token, embed_only=True)
-            positions = prefill_len[:, None] + step + 1
+            positions = prefill_len[:, None] + step
             mask = jnp.logical_and(
                 jnp.arange(prefill_size + max_decoding_steps)[None, None, :] >= prefix_start[:, None, None],
                 jnp.arange(prefill_size + max_decoding_steps)[None, None, :]
