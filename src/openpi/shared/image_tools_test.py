@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import torch
 
 from openpi.shared import image_tools
 
@@ -35,3 +36,17 @@ def test_resize_with_pad_shapes():
     resized_images = image_tools.resize_with_pad(images, height, width)
     assert resized_images.shape == (1, height, width, 3)
     assert jnp.all(resized_images == 0)
+
+
+def test_resize_with_pad_torch_preserves_batch_dim():
+    # Regression test for #805: resize_with_pad_torch must preserve the input
+    # rank, matching the JAX resize_with_pad. A channels-last batch of size 1
+    # (4D) must stay 4D and not be squeezed down to a single 3D image.
+    images = torch.zeros((1, 480, 640, 3), dtype=torch.float32)
+    resized = image_tools.resize_with_pad_torch(images, 224, 224)
+    assert tuple(resized.shape) == (1, 224, 224, 3)
+
+    # A genuinely unbatched 3D image still returns unbatched.
+    single = torch.zeros((480, 640, 3), dtype=torch.float32)
+    resized_single = image_tools.resize_with_pad_torch(single, 224, 224)
+    assert tuple(resized_single.shape) == (224, 224, 3)
