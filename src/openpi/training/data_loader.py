@@ -424,6 +424,7 @@ class TorchDataLoader:
                 jax.sharding.PartitionSpec("B"),
             )
         self._num_batches = num_batches
+        self._sampler = sampler
 
         mp_context = None
         if num_workers > 0:
@@ -448,6 +449,15 @@ class TorchDataLoader:
     @property
     def torch_loader(self) -> torch.utils.data.DataLoader:
         return self._data_loader
+
+    def set_epoch(self, epoch: int) -> None:
+        if hasattr(self._sampler, "set_epoch"):
+            self._sampler.set_epoch(epoch)
+
+    def __len__(self) -> int:
+        if self._num_batches is not None:
+            return self._num_batches
+        return len(self._data_loader)
 
     def __iter__(self):
         num_items = 0
@@ -534,6 +544,13 @@ class DataLoaderImpl(DataLoader):
 
     def data_config(self) -> _config.DataConfig:
         return self._data_config
+
+    def set_epoch(self, epoch: int) -> None:
+        if hasattr(self._data_loader, "set_epoch"):
+            self._data_loader.set_epoch(epoch)
+
+    def __len__(self) -> int:
+        return len(self._data_loader)
 
     def __iter__(self):
         for batch in self._data_loader:
