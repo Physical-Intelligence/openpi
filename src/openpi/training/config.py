@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -19,6 +20,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.g1_policy as g1_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -459,6 +461,46 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotG1DataConfig(DataConfigFactory):
+    """LeRobot contract for one G1 head camera and the 21-D Fruit Ninja controller."""
+
+    task_action_dim: int = 21
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "head_image": "observation.images.head",
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[
+                g1_policy.G1Inputs(
+                    model_type=model_config.model_type,
+                    task_action_dim=self.task_action_dim,
+                )
+            ],
+            outputs=[g1_policy.G1Outputs(task_action_dim=self.task_action_dim)],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
         )
 
 
@@ -916,6 +958,37 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+    TrainConfig(
+        # Spark-ready full pi0.5 fine-tuning contract for the existing 21-D G1
+        # Fruit Ninja task controller. Override data.repo_id with the recorded
+        # LeRobot dataset before computing stats or starting training.
+        name="pi05_spark_g1_fruit_ninja",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv("OPENPI_G1_DATASET_REPO_ID", "your_hf_username/g1_fruit_ninja"),
+            task_action_dim=21,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        batch_size=1,
+        num_workers=4,
+        num_train_steps=20_000,
+        log_interval=10,
+        save_interval=1_000,
+        keep_period=5_000,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="fruit_ninja_pi05",
+        wandb_enabled=False,
+    ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
@@ -963,6 +1036,34 @@ _CONFIGS = [
         num_train_steps=10,
         overwrite=True,
         exp_name="debug_pi05",
+        wandb_enabled=False,
+    ),
+    # NVIDIA DGX Spark / GB10 compatibility smoke test. Unlike debug_pi05, this
+    # deliberately instantiates and updates the full pi0.5 model. The matching
+    # NVIDIA PyTorch runtime and converted checkpoint are provided by
+    # scripts/docker/spark_gb10.Dockerfile and scripts/spark/prepare_pi05.sh.
+    TrainConfig(
+        name="pi05_spark_smoke",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=FakeDataConfig(),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        batch_size=1,
+        num_workers=0,
+        num_train_steps=1,
+        log_interval=1,
+        save_interval=1,
+        keep_period=None,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        overwrite=True,
+        exp_name="gb10_full_model_smoke",
         wandb_enabled=False,
     ),
     # RoboArena & PolaRiS configs.

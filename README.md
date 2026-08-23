@@ -123,6 +123,9 @@ We provide detailed step-by-step examples for running inference of our pre-train
 
 ## Fine-Tuning Base Models on Your Own Data
 
+For NVIDIA GB10 / DGX Spark inference and full pi0.5 fine-tuning, including the
+G1 Fruit Ninja LeRobot contract, see [docs/spark_gb10_pi05.md](docs/spark_gb10_pi05.md).
+
 We will fine-tune the $\pi_{0.5}$ model on the [LIBERO dataset](https://libero-project.github.io/datasets) as a running example for how to fine-tune a base model on your own data. We will explain three steps:
 1. Convert your data to a LeRobot dataset (which we use for training)
 2. Defining training configs and running training
