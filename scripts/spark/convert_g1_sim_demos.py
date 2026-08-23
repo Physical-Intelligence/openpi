@@ -156,7 +156,7 @@ def main() -> None:
                     "task": task,
                 }
             )
-        dataset.save_episode(task=task)
+        dataset.save_episode()
         converted += 1
 
     if converted == 0:

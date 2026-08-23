@@ -466,8 +466,9 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotG1DataConfig(DataConfigFactory):
-    """LeRobot contract for one G1 head camera and the 21-D Fruit Ninja controller."""
+    """LeRobot contract for one G1 head camera and a task-level controller."""
 
+    state_dim: int = 29
     task_action_dim: int = 21
 
     @override
@@ -488,6 +489,7 @@ class LeRobotG1DataConfig(DataConfigFactory):
             inputs=[
                 g1_policy.G1Inputs(
                     model_type=model_config.model_type,
+                    state_dim=self.state_dim,
                     task_action_dim=self.task_action_dim,
                 )
             ],
@@ -972,6 +974,7 @@ _CONFIGS = [
         ),
         data=LeRobotG1DataConfig(
             repo_id=os.getenv("OPENPI_G1_DATASET_REPO_ID", "your_hf_username/g1_fruit_ninja"),
+            state_dim=29,
             task_action_dim=21,
             base_config=DataConfig(prompt_from_task=True),
         ),
@@ -987,6 +990,39 @@ _CONFIGS = [
         checkpoint_base_dir="/openpi_assets/training",
         assets_base_dir="/openpi_assets/assets",
         exp_name="fruit_ninja_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # Vision-language-action policy for the Isaac/real Coke pickup contract:
+        # one rendered/head RGB view, 24 upper-body positions, and the existing
+        # seven normalized right-hand pose/grip commands.  Keeping action_dim=32
+        # preserves all pretrained pi0.5 checkpoint shapes.
+        name="pi05_spark_g1_coke_pickup",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv("OPENPI_G1_COKE_DATASET_REPO_ID", "your_hf_username/g1_coke_pickup"),
+            state_dim=24,
+            task_action_dim=7,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        batch_size=1,
+        num_workers=4,
+        num_train_steps=20_000,
+        log_interval=10,
+        save_interval=1_000,
+        keep_period=5_000,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="g1_coke_pickup_pi05",
         wandb_enabled=False,
     ),
     #

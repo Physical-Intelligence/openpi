@@ -25,11 +25,17 @@ class G1Inputs(transforms.DataTransformFn):
     """Map one G1 head camera and low-dimensional state into pi0.5 slots."""
 
     model_type: _model.ModelType
+    state_dim: int = 29
     task_action_dim: int = 21
 
     def __call__(self, data: dict) -> dict:
         state = np.asarray(data["state"], dtype=np.float32)
         head_image = _parse_image(data["head_image"])
+
+        if state.shape != (self.state_dim,):
+            raise ValueError(f"Expected {self.state_dim} G1 state values, got shape {state.shape}")
+        if not np.isfinite(state).all():
+            raise ValueError("G1 state contains non-finite values")
 
         if self.model_type not in (_model.ModelType.PI0, _model.ModelType.PI05):
             raise ValueError(f"Unsupported G1 model type: {self.model_type}")
@@ -52,6 +58,8 @@ class G1Inputs(transforms.DataTransformFn):
             actions = np.asarray(data["actions"], dtype=np.float32)
             if actions.shape[-1] != self.task_action_dim:
                 raise ValueError(f"Expected {self.task_action_dim} G1 task actions, got shape {actions.shape}")
+            if not np.isfinite(actions).all():
+                raise ValueError("G1 actions contain non-finite values")
             inputs["actions"] = actions
 
         if "prompt" in data:
