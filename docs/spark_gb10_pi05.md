@@ -62,6 +62,20 @@ export OPENPI_G1_NUM_TRAIN_STEPS=20000
 ./scripts/spark/train_g1.sh
 ```
 
+Simulation rollouts produced by `g1-fruit-ninja-mjwarp` can be validated and
+converted into this exact LeRobot contract before upload:
+
+```bash
+python scripts/spark/convert_g1_sim_demos.py \
+  --raw-dir /openpi_assets/demonstrations/g1-fruit-ninja \
+  --repo-id owner/g1-fruit-ninja-sim
+```
+
+The converter checks every episode's SHA-256, RGB, 29-joint state, 21-action
+command, frame count, contiguous frame index, finite values, and exact 50 Hz
+timestamps. It refuses failed episodes by default and creates private Hugging
+Face datasets when `--push-to-hub` is explicitly supplied.
+
 The launcher computes and persists normalization statistics before training. A
 new experiment name is required for each run so an older checkpoint is not
 silently replaced.
