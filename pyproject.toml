@@ -26,7 +26,7 @@ dependencies = [
     "orbax-checkpoint==0.11.13",
     "pillow>=11.0.0",
     "sentencepiece>=0.2.0",
-    "torch==2.7.1",
+    "torch>=2.7.1",
     "tqdm-loggable>=0.2",
     "typing-extensions>=4.12.2",
     "tyro>=0.9.5",
@@ -61,14 +61,35 @@ rlds = [
     "tensorflow-cpu==2.15.0",
     "tensorflow-datasets==4.9.9",
 ]
+xpu = [
+    # Intel XPU inference support (replaces the default CUDA/CPU torch wheels).
+    # Requires Intel oneAPI Base Toolkit: https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html
+    "torch==2.11.0+xpu",
+    "torchvision==0.26.0+xpu",
+    "triton-xpu==3.7.0",
+]
 
 [tool.uv]
 override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true
 
 [tool.uv.sources]
 openpi-client = { workspace = true }
 lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
 dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+torch = [
+    { index = "pytorch-xpu", group = "xpu" },
+]
+torchvision = [
+    { index = "pytorch-xpu", group = "xpu" },
+]
+triton-xpu = [
+    { index = "pytorch-xpu", group = "xpu" },
+]
 
 [tool.uv.workspace]
 members = ["packages/*"]
