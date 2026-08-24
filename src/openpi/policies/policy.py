@@ -56,12 +56,20 @@ class Policy(BasePolicy):
         self._pytorch_device = pytorch_device
 
         if self._is_pytorch_model:
+            if getattr(model, "sample_subtask_prediction", False):
+                raise NotImplementedError("pi0.5 subtask prediction is currently implemented for JAX policies only.")
             self._model = self._model.to(pytorch_device)
             self._model.eval()
             self._sample_actions = model.sample_actions
+            self._sample_actions_returns_dict = False
         else:
             # JAX model setup
-            self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            if getattr(model, "sample_subtask_prediction", False):
+                self._sample_actions = nnx_utils.module_jit(model.sample_actions_with_subtask)
+                self._sample_actions_returns_dict = True
+            else:
+                self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+                self._sample_actions_returns_dict = False
             self._rng = rng or jax.random.key(0)
 
     @override
@@ -89,10 +97,14 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
-        outputs = {
-            "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
-        }
+        model_outputs = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        if self._sample_actions_returns_dict:
+            outputs = {"state": inputs["state"], **model_outputs}
+        else:
+            outputs = {
+                "state": inputs["state"],
+                "actions": model_outputs,
+            }
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)

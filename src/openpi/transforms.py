@@ -267,6 +267,65 @@ class TokenizePrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TokenizePi05SubtaskInputs(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    discrete_state_input: bool = False
+    train_subtask_prediction: bool = False
+    sample_subtask_prediction: bool = False
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+
+        if self.discrete_state_input:
+            if (state := data.get("state", None)) is None:
+                raise ValueError("State is required.")
+        else:
+            state = None
+
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+
+        subtask = data.pop("subtask", None)
+        if subtask is not None:
+            if not isinstance(subtask, str):
+                subtask = subtask.item()
+            tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize_subtask_training(prompt, subtask, state)
+            return {
+                **data,
+                "tokenized_prompt": tokens,
+                "tokenized_prompt_mask": token_mask,
+                "token_ar_mask": ar_mask,
+                "token_loss_mask": loss_mask,
+            }
+
+        if self.train_subtask_prediction and "actions" in data:
+            raise ValueError("Subtask is required when train_subtask_prediction is enabled.")
+
+        if self.sample_subtask_prediction:
+            (
+                tokens,
+                token_mask,
+                ar_mask,
+                loss_mask,
+                action_suffix,
+                action_suffix_mask,
+            ) = self.tokenizer.tokenize_subtask_inference(prompt, state)
+            return {
+                **data,
+                "tokenized_prompt": tokens,
+                "tokenized_prompt_mask": token_mask,
+                "token_ar_mask": ar_mask,
+                "token_loss_mask": loss_mask,
+                "tokenized_action_suffix": action_suffix,
+                "tokenized_action_suffix_mask": action_suffix_mask,
+            }
+
+        tokens, token_mask = self.tokenizer.tokenize(prompt, state)
+        return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_mask}
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 
@@ -304,6 +363,18 @@ class ExtractFASTActions(DataTransformFn):
             **data,
             "actions": actions,
         }
+
+
+@dataclasses.dataclass(frozen=True)
+class DetokenizeSubtask(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "subtask_tokens" not in data:
+            return data
+        tokens = data["subtask_tokens"]
+        mask = data.get("subtask_token_mask")
+        return {**data, "subtask": self.tokenizer.detokenize(tokens.astype(np.int32), mask)}
 
 
 @dataclasses.dataclass(frozen=True)

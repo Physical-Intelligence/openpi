@@ -86,6 +86,9 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.sample_subtask_prediction = config.sample_subtask_prediction
+        if config.train_subtask_prediction or config.sample_subtask_prediction:
+            raise NotImplementedError("pi0.5 subtask prediction is currently implemented for JAX models only.")
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -117,7 +120,7 @@ class PI0Pytorch(nn.Module):
 
         msg = "transformers_replace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`."
         try:
-            from transformers.models.siglip import check
+            from transformers.models.siglip import check  # noqa: PLC0415
 
             if not check.check_whether_transformers_replace_is_installed_correctly():
                 raise ValueError(msg)
