@@ -517,7 +517,14 @@ def convert_pi0_checkpoint(
     all_params = {**paligemma_params, **gemma_params, **projection_params}
 
     # Load state dict
-    pi0_model.load_state_dict(all_params, strict=False)
+    load_result = pi0_model.load_state_dict(all_params, strict=False)
+    unexpected_lora_keys = [key for key in load_result.unexpected_keys if "lora" in key.lower()]
+    if unexpected_lora_keys:
+        raise ValueError(
+            "LoRA adapter weights were found after conversion, but this converter does not merge LoRA adapters yet. "
+            "Saving this checkpoint would silently drop the adapters and produce incorrect PyTorch weights. "
+            f"Unexpected LoRA keys: {unexpected_lora_keys}"
+        )
 
     if precision == "float32":
         pi0_model = pi0_model.to(torch.float32)
