@@ -52,7 +52,7 @@ dev = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
     "matplotlib>=3.10.0",
-    "pynvml>=12.0.0",
+    "nvidia-ml-py>=13",
 ]
 rlds = [
     # NOTE: tensorflow-cpu 2.15.0 only ships cp311 wheels on PyPI.
