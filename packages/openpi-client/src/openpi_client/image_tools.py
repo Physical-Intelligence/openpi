@@ -6,9 +6,12 @@ def convert_to_uint8(img: np.ndarray) -> np.ndarray:
     """Converts an image to uint8 if it is a float image.
 
     This is important for reducing the size of the image when sending it over the network.
+
+    Float inputs are assumed to be in approximately the [0, 1] range. Values are
+    clipped before scaling so out-of-range pixels do not wrap under `astype(uint8)`.
     """
     if np.issubdtype(img.dtype, np.floating):
-        img = (255 * img).astype(np.uint8)
+        img = (255 * np.clip(img, 0.0, 1.0)).astype(np.uint8)
     return img
 
 
