@@ -27,6 +27,7 @@ import dataclasses
 import gc
 import json
 import logging
+import math
 import os
 import platform
 import shutil
@@ -38,15 +39,17 @@ import safetensors.torch
 import torch
 import torch.distributed as dist
 import torch.nn.parallel
+from torch.utils.tensorboard import SummaryWriter
 import tqdm
 import wandb
-from torch.utils.tensorboard import SummaryWriter
 
 import openpi.models.pi0_config
+import openpi.models_pytorch.lora as _lora
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
+from openpi.training.reward_checkpoints import RewardCheckpointStore
 
 
 def init_logging():
@@ -130,101 +133,113 @@ def build_datasets(config: _config.TrainConfig):
     return data_loader, data_loader.data_config()
 
 
-def get_model_state_dict(model):
-    """Get state dict from model, handling DDP wrapper."""
-    return (
-        model.module.state_dict()
-        if isinstance(model, torch.nn.parallel.DistributedDataParallel)
-        else model.state_dict()
+def build_reward_batches(config: _config.TrainConfig):
+    """Materialize a deterministic, episode-spanning offline scoring set."""
+    loader = _data.create_data_loader(config, framework="pytorch", shuffle=False)
+    if not isinstance(loader, _data.DataLoaderImpl):
+        raise TypeError("Offline reward checkpointing requires the finite PyTorch dataset loader")
+    batches = loader.evenly_spaced_batches(
+        num_batches=config.checkpoint_reward_batches,
+        batch_size=config.batch_size,
     )
+    if not batches:
+        raise RuntimeError("Cannot checkpoint by reward without evaluation batches")
+    return batches
 
 
-def get_model_parameters(model):
-    """Get parameters from model, handling DDP wrapper."""
-    return (
-        model.module.parameters()
-        if isinstance(model, torch.nn.parallel.DistributedDataParallel)
-        else model.parameters()
-    )
+def unwrap_model(model):
+    return model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main, data_config, *, force=False):
-    """Save a checkpoint with model state, optimizer state, and metadata."""
-    if not is_main:
-        return
-
-    # Only save if it's time to save or if it's the final step
-    if force or (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
-        # Create temporary directory for atomic checkpoint saving
-        final_ckpt_dir = config.checkpoint_dir / f"{global_step}"
-        tmp_ckpt_dir = config.checkpoint_dir / f"tmp_{global_step}"
-
-        # Remove any existing temp directory and create new one
-        if tmp_ckpt_dir.exists():
-            shutil.rmtree(tmp_ckpt_dir)
-        tmp_ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save model state using safetensors (handle shared tensors)
-        model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        safetensors.torch.save_model(model_to_save, tmp_ckpt_dir / "model.safetensors")
-
-        # Save optimizer state using PyTorch format
-        torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
-
-        # Save training metadata (avoid saving full config to prevent JAX/Flax compatibility issues)
-        metadata = {
-            "global_step": global_step,
-            "config": dataclasses.asdict(config),
-            "timestamp": time.time(),
-        }
-        torch.save(metadata, tmp_ckpt_dir / "metadata.pt")
-
-        # save norm stats
-        norm_stats = data_config.norm_stats
-        if norm_stats is not None and data_config.asset_id is not None:
-            _normalize.save(tmp_ckpt_dir / "assets" / data_config.asset_id, norm_stats)
-
-        # Atomically move temp directory to final location
-        if final_ckpt_dir.exists():
-            shutil.rmtree(final_ckpt_dir)
-        tmp_ckpt_dir.rename(final_ckpt_dir)
-
-        logging.info(f"Saved checkpoint at step {global_step} -> {final_ckpt_dir}")
-
-        # Log checkpoint to wandb
-        if config.wandb_enabled:
-            wandb.log({"checkpoint_step": global_step}, step=global_step)
+def trainable_parameters(model):
+    return [parameter for parameter in model.parameters() if parameter.requires_grad]
 
 
-def load_checkpoint(model, optimizer, checkpoint_dir, device):
-    """Load the latest checkpoint and return the global step."""
-    checkpoint_steps = [
-        int(d.name)
-        for d in checkpoint_dir.iterdir()
-        if d.is_dir() and d.name.isdigit() and not d.name.startswith("tmp_")
-    ]
+def evaluate_offline_reward(model, batches, device, *, seed: int) -> tuple[float, float]:
+    """Return deterministic imitation reward and loss; this is not task reward."""
+    target = unwrap_model(model)
+    was_training = target.training
+    target.eval()
+    losses: list[float] = []
+    fork_devices = [device] if device.type == "cuda" else []
+    try:
+        with torch.no_grad(), torch.random.fork_rng(devices=fork_devices):
+            torch.manual_seed(seed)
+            if device.type == "cuda":
+                torch.cuda.manual_seed_all(seed)
+            for cpu_observation, cpu_actions in batches:
+                observation = jax.tree.map(lambda value: value.to(device), cpu_observation)
+                actions = cpu_actions.to(device=device, dtype=torch.float32)
+                batch_losses = target(observation, actions)
+                if isinstance(batch_losses, list | tuple):
+                    batch_losses = torch.stack(batch_losses)
+                losses.append(float(batch_losses.float().mean().item()))
+    finally:
+        target.train(was_training)
+    mean_loss = sum(losses) / len(losses)
+    return math.exp(-mean_loss), mean_loss
 
-    if not checkpoint_steps:
-        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
 
-    latest_step = max(checkpoint_steps)
-    ckpt_dir = checkpoint_dir / f"{latest_step}"
+def write_checkpoint_contents(
+    checkpoint_dir,
+    *,
+    model,
+    optimizer,
+    global_step,
+    reward,
+    reward_loss,
+    config,
+    data_config,
+):
+    target = unwrap_model(model)
+    if config.pytorch_lora_rank is not None:
+        state = _lora.trainable_state_dict(target)
+        safetensors.torch.save_file(state, checkpoint_dir / "model.safetensors")
+        checkpoint_kind = "pytorch_lora_adapter"
+    else:
+        safetensors.torch.save_model(target, checkpoint_dir / "model.safetensors")
+        checkpoint_kind = "pytorch_full_model"
 
-    # Clear memory before loading checkpoints
+    torch.save(optimizer.state_dict(), checkpoint_dir / "optimizer.pt")
+    metadata = {
+        "global_step": global_step,
+        "config": dataclasses.asdict(config),
+        "timestamp": time.time(),
+        "checkpoint_kind": checkpoint_kind,
+        "checkpoint_metric": "offline_imitation_reward",
+        "checkpoint_reward": reward,
+        "offline_imitation_loss": reward_loss,
+    }
+    torch.save(metadata, checkpoint_dir / "metadata.pt")
+
+    norm_stats = data_config.norm_stats
+    if norm_stats is not None and data_config.asset_id is not None:
+        _normalize.save(checkpoint_dir / "assets" / data_config.asset_id, norm_stats)
+
+
+def load_checkpoint(model, optimizer, checkpoint_store, device):
+    """Resume from the highest-reward checkpoint."""
+    ckpt_dir = checkpoint_store.best_checkpoint_dir()
+    if ckpt_dir is None:
+        raise FileNotFoundError(f"No reward checkpoints found in {checkpoint_store.root}")
+    latest_step = int(ckpt_dir.name)
+
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         gc.collect()
         log_memory_usage(device, latest_step, "before_loading_checkpoint")
 
     try:
-        # Load model state with error handling
-        logging.info("Loading model state...")
+        logging.info("Loading highest-reward model state from %s", ckpt_dir)
         safetensors_path = ckpt_dir / "model.safetensors"
-
         if safetensors_path.exists():
-            model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-            safetensors.torch.load_model(model_to_load, safetensors_path, device=str(device))
-            logging.info("Loaded model state from safetensors format")
+            target = unwrap_model(model)
+            state = safetensors.torch.load_file(safetensors_path, device=str(device))
+            if any(name.endswith(("lora_a", "lora_b")) for name in state):
+                _lora.load_trainable_state_dict(target, state)
+            else:
+                safetensors.torch.load_model(target, safetensors_path, device=str(device))
+            logging.info("Loaded reward-selected model state")
         else:
             raise FileNotFoundError(f"No model checkpoint found at {ckpt_dir}")
 
@@ -257,7 +272,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
         gc.collect()
         log_memory_usage(device, latest_step, "after_loading_metadata")
 
-        logging.info(f"Successfully loaded all checkpoint components from step {latest_step}")
+        logging.info(f"Successfully loaded reward checkpoint components from step {latest_step}")
         return global_step
 
     except RuntimeError as e:
@@ -271,18 +286,6 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
                 "Out of memory while loading checkpoint. Try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
             ) from e
         raise
-
-
-def get_latest_checkpoint_step(checkpoint_dir):
-    """Get the latest checkpoint step number from a checkpoint directory."""
-    checkpoint_steps = [
-        int(d.name)
-        for d in checkpoint_dir.iterdir()
-        if d.is_dir() and d.name.isdigit() and not d.name.startswith("tmp_")
-    ]
-    return max(checkpoint_steps) if checkpoint_steps else None
-
-
 def log_memory_usage(device, step, phase="unknown"):
     """Log detailed memory usage information."""
     if not torch.cuda.is_available():
@@ -313,23 +316,13 @@ def train_loop(config: _config.TrainConfig):
     is_main = (not use_ddp) or (dist.get_rank() == 0)
     set_seed(config.seed, local_rank)
 
-    # Initialize checkpoint directory and wandb
+    # Initialize checkpoint directory and wandb.
     resuming = False
     if config.resume:
-        # Find checkpoint directory based on experiment name
         exp_checkpoint_dir = config.checkpoint_dir
-        if exp_checkpoint_dir.exists():
-            # Use validation to find the latest working checkpoint
-            latest_step = get_latest_checkpoint_step(exp_checkpoint_dir)
-            if latest_step is not None:
-                resuming = True
-                logging.info(
-                    f"Resuming from experiment checkpoint directory: {exp_checkpoint_dir} at step {latest_step}"
-                )
-            else:
-                raise FileNotFoundError(f"No valid checkpoints found in {exp_checkpoint_dir} for resume")
-        else:
+        if not exp_checkpoint_dir.exists():
             raise FileNotFoundError(f"Experiment checkpoint directory {exp_checkpoint_dir} does not exist for resume")
+        resuming = True
     elif config.overwrite and config.checkpoint_dir.exists():
         shutil.rmtree(config.checkpoint_dir)
         logging.info(f"Overwriting checkpoint directory: {config.checkpoint_dir}")
@@ -341,8 +334,25 @@ def train_loop(config: _config.TrainConfig):
         exp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
         logging.info(f"Created experiment checkpoint directory: {exp_checkpoint_dir}")
     else:
-        # For resume, checkpoint_dir is already set to the experiment directory
         logging.info(f"Using existing experiment checkpoint directory: {config.checkpoint_dir}")
+
+    checkpoint_store = RewardCheckpointStore(
+        config.checkpoint_dir,
+        metric_name="offline_imitation_reward",
+        minimum_reward=config.checkpoint_reward_min,
+        minimum_delta=config.checkpoint_reward_min_delta,
+        minimum_free_bytes=int(config.checkpoint_min_free_disk_gib * 1024**3),
+        minimum_free_fraction=config.checkpoint_min_free_disk_fraction,
+    )
+    if resuming:
+        best = checkpoint_store.best_record()
+        if best is None:
+            raise FileNotFoundError(f"No reward checkpoint found in {config.checkpoint_dir}")
+        logging.info(
+            "Resuming from best reward checkpoint: step=%d reward=%.8f",
+            int(best["step"]),
+            float(best["reward"]),
+        )
 
     # Initialize wandb (only on main process)
     if is_main:
@@ -359,6 +369,7 @@ def train_loop(config: _config.TrainConfig):
 
     # Pass the original batch size to data loader - it will handle DDP splitting internally
     loader, data_config = build_datasets(config)
+    reward_batches = build_reward_batches(config)
 
     # Log sample images to wandb on first batch
     if is_main and config.wandb_enabled and not resuming:
@@ -410,6 +421,37 @@ def train_loop(config: _config.TrainConfig):
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
 
+    # Always load the immutable base weights before inserting LoRA wrappers.
+    if config.pytorch_weight_path is not None:
+        logging.info(f"Loading base weights from: {config.pytorch_weight_path}")
+        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
+        safetensors.torch.load_model(model, model_path)
+        logging.info(f"Loaded PyTorch base weights from {config.pytorch_weight_path}")
+
+    lora_modules: list[str] = []
+    if config.pytorch_lora_rank is not None:
+        action_expert_rank = config.pytorch_lora_action_expert_rank or config.pytorch_lora_rank
+        lora_modules = _lora.apply_pi0_lora(
+            model,
+            paligemma_rank=config.pytorch_lora_rank,
+            action_expert_rank=action_expert_rank,
+            paligemma_alpha=config.pytorch_lora_alpha,
+            action_expert_alpha=config.pytorch_lora_action_expert_alpha,
+            dropout=config.pytorch_lora_dropout,
+            train_action_heads=config.pytorch_lora_train_action_heads,
+        )
+        logging.info("Inserted LoRA into %d transformer linear layers", len(lora_modules))
+
+    total_parameters, trainable_parameter_count = _lora.parameter_counts(model)
+    if trainable_parameter_count == 0:
+        raise RuntimeError("Training configuration froze every model parameter")
+    logging.info(
+        "Parameters: total=%d trainable=%d trainable_fraction=%.6f",
+        total_parameters,
+        trainable_parameter_count,
+        trainable_parameter_count / total_parameters,
+    )
+
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
         model.gradient_checkpointing_enable()
@@ -435,20 +477,10 @@ def train_loop(config: _config.TrainConfig):
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[device.index] if device.type == "cuda" else None,
-            find_unused_parameters=True,  # Disable for memory efficiency
-            gradient_as_bucket_view=True,  # Enable for memory efficiency
+            find_unused_parameters=False,
+            gradient_as_bucket_view=True,
             static_graph=world_size >= 8,  # Enable for 8+ GPUs
         )
-
-    # Load weights from weight_loader if specified (for fine-tuning)
-    if config.pytorch_weight_path is not None:
-        logging.info(f"Loading weights from: {config.pytorch_weight_path}")
-
-        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
-        )
-        logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
@@ -457,8 +489,9 @@ def train_loop(config: _config.TrainConfig):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
+    optimized_parameters = trainable_parameters(model)
     optim = torch.optim.AdamW(
-        model.parameters(),
+        optimized_parameters,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -468,7 +501,7 @@ def train_loop(config: _config.TrainConfig):
     # Load checkpoint if resuming
     global_step = 0
     if resuming:
-        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device)
+        global_step = load_checkpoint(model, optim, checkpoint_store, device)
         logging.info(f"Resumed training from step {global_step}")
 
     def lr_schedule(step: int):
@@ -491,6 +524,9 @@ def train_loop(config: _config.TrainConfig):
     tensorboard_dir = config.checkpoint_dir / "tensorboard"
     tensorboard = SummaryWriter(log_dir=str(tensorboard_dir), purge_step=global_step) if is_main else None
     state_path = config.checkpoint_dir / "run_state.json"
+    last_reward = None
+    last_reward_loss = None
+    last_reward_eval_step = None
 
     def write_run_state(state: str, **extra):
         if not is_main:
@@ -502,12 +538,44 @@ def train_loop(config: _config.TrainConfig):
             "training_started_epoch": training_started_at,
             "deadline_epoch": deadline_epoch,
             "tensorboard_dir": str(tensorboard_dir),
+            "checkpoint_metric": "offline_imitation_reward",
+            "checkpoint_metric_is_task_reward": False,
+            "last_offline_imitation_reward": last_reward,
+            "last_offline_imitation_loss": last_reward_loss,
+            "last_reward_eval_step": last_reward_eval_step,
+            "best_reward_checkpoint": checkpoint_store.best_record(),
+            "total_parameters": total_parameters,
+            "trainable_parameters": trainable_parameter_count,
             **extra,
         }
         temporary = state_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(state_path)
 
+    baseline_reward, baseline_reward_loss = evaluate_offline_reward(
+        model,
+        reward_batches,
+        device,
+        seed=config.seed + 10_000,
+    )
+    last_reward = baseline_reward
+    last_reward_loss = baseline_reward_loss
+    last_reward_eval_step = global_step
+    if checkpoint_store.best_record() is None:
+        checkpoint_store.minimum_reward = max(
+            checkpoint_store.minimum_reward,
+            baseline_reward + config.checkpoint_reward_min_delta,
+        )
+    if is_main:
+        logging.info(
+            "Offline checkpoint baseline: reward=%.8f loss=%.8f (not simulator task reward)",
+            baseline_reward,
+            baseline_reward_loss,
+        )
+        if tensorboard is not None:
+            tensorboard.add_scalar("eval/offline_imitation_reward", baseline_reward, global_step)
+            tensorboard.add_scalar("eval/offline_imitation_loss", baseline_reward_loss, global_step)
+            tensorboard.flush()
     write_run_state("TRAINING_RUNNING")
     start_time = time.time()
     infos = []  # Collect stats over log interval
@@ -527,6 +595,67 @@ def train_loop(config: _config.TrainConfig):
         )
         logging.info("EMA is not supported for PyTorch training")
         logging.info(f"Training precision: {model_cfg.dtype}")
+        logging.info(
+            "LoRA: modules=%d trainable=%d/%d (%.4f%%)",
+            len(lora_modules),
+            trainable_parameter_count,
+            total_parameters,
+            100.0 * trainable_parameter_count / total_parameters,
+        )
+
+    def evaluate_and_maybe_checkpoint():
+        nonlocal last_reward, last_reward_loss, last_reward_eval_step
+        reward, reward_loss = evaluate_offline_reward(
+            model,
+            reward_batches,
+            device,
+            seed=config.seed + 10_000,
+        )
+        last_reward = reward
+        last_reward_loss = reward_loss
+        last_reward_eval_step = global_step
+        if not is_main:
+            return None
+        result = checkpoint_store.maybe_save(
+            step=global_step,
+            reward=reward,
+            write_checkpoint=lambda checkpoint_dir: write_checkpoint_contents(
+                checkpoint_dir,
+                model=model,
+                optimizer=optim,
+                global_step=global_step,
+                reward=reward,
+                reward_loss=reward_loss,
+                config=config,
+                data_config=data_config,
+            ),
+        )
+        logging.info(
+            "Offline checkpoint evaluation: step=%d reward=%.8f loss=%.8f saved=%s reason=%s",
+            global_step,
+            reward,
+            reward_loss,
+            result.saved,
+            result.reason,
+        )
+        if tensorboard is not None:
+            tensorboard.add_scalar("eval/offline_imitation_reward", reward, global_step)
+            tensorboard.add_scalar("eval/offline_imitation_loss", reward_loss, global_step)
+            tensorboard.add_scalar("checkpoint/saved", float(result.saved), global_step)
+            if result.best_reward is not None:
+                tensorboard.add_scalar("checkpoint/best_reward", result.best_reward, global_step)
+            tensorboard.flush()
+        if config.wandb_enabled:
+            wandb.log(
+                {
+                    "offline_imitation_reward": reward,
+                    "offline_imitation_loss": reward_loss,
+                    "checkpoint_saved": int(result.saved),
+                },
+                step=global_step,
+            )
+        write_run_state("TRAINING_RUNNING")
+        return result
 
     # Training loop - iterate until we reach num_train_steps
     pbar = (
@@ -576,7 +705,9 @@ def train_loop(config: _config.TrainConfig):
                 log_memory_usage(device, global_step, "after_backward")
 
             # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                optimized_parameters, max_norm=config.optimizer.clip_gradient_norm
+            )
 
             # Optimizer step
             optim.step()
@@ -649,8 +780,8 @@ def train_loop(config: _config.TrainConfig):
                 infos = []  # Reset stats collection
 
             global_step += 1
-            # Save checkpoint using the new mechanism
-            save_checkpoint(model, optim, global_step, config, is_main, data_config)
+            if global_step % config.save_interval == 0:
+                evaluate_and_maybe_checkpoint()
 
             # Update progress bar
             if pbar is not None:
@@ -659,8 +790,8 @@ def train_loop(config: _config.TrainConfig):
                     {"loss": f"{loss.item():.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
                 )
 
-    if deadline_reached:
-        save_checkpoint(model, optim, global_step, config, is_main, data_config, force=True)
+    if global_step > 0 and last_reward_eval_step != global_step:
+        evaluate_and_maybe_checkpoint()
     write_run_state(
         "TRAINING_DEADLINE_COMPLETE" if deadline_reached else "TRAINING_STEPS_COMPLETE",
         uptime_seconds=time.time() - training_started_at,

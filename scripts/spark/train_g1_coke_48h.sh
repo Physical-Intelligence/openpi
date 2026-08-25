@@ -45,8 +45,16 @@ while [[ "$(date +%s)" -lt "${deadline_epoch}" ]]; do
         --max-train-seconds "${chunk_seconds}" \
         "${resume_args[@]}"
 
-    checkpoint="$(find "${run_dir}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -print | sort -V | tail -1)"
-    test -n "${checkpoint}"
+    checkpoint="$(python3 -c '
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "reward_checkpoints.json").read_text())
+records = [r for r in manifest.get("records", []) if (root / str(r["step"])).is_dir()]
+if not records:
+    raise SystemExit("no improving reward checkpoint is available for evaluation or resume")
+best = max(records, key=lambda record: float(record["reward"]))
+print(root / str(best["step"]))
+' "${run_dir}")"
     step="$(basename "${checkpoint}")"
     python3 scripts/spark/evaluate_g1_coke_checkpoint_video.py \
         --checkpoint-dir "${checkpoint}" \

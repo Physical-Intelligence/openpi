@@ -538,3 +538,20 @@ class DataLoaderImpl(DataLoader):
     def __iter__(self):
         for batch in self._data_loader:
             yield _model.Observation.from_dict(batch), batch["actions"]
+
+    def evenly_spaced_batches(self, *, num_batches: int, batch_size: int):
+        """Materialize deterministic random-access batches spanning the dataset."""
+        if not isinstance(self._data_loader, TorchDataLoader):
+            raise TypeError("Evenly spaced evaluation batches require a TorchDataLoader")
+        dataset = self._data_loader.torch_loader.dataset
+        sample_count = min(len(dataset), num_batches * batch_size)
+        indices = np.linspace(0, len(dataset) - 1, sample_count, dtype=np.int64)
+        batches = []
+        for start in range(0, sample_count, batch_size):
+            batch_indices = indices[start : start + batch_size]
+            if len(batch_indices) < batch_size:
+                break
+            batch = _collate_fn([dataset[int(index)] for index in batch_indices])
+            batch = jax.tree.map(torch.as_tensor, batch)
+            batches.append((_model.Observation.from_dict(batch), batch["actions"]))
+        return batches

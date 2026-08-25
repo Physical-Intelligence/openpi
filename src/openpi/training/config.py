@@ -529,6 +529,16 @@ class TrainConfig:
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
 
+    # Optional dependency-free PyTorch LoRA. When enabled, the pretrained
+    # vision tower and base weights remain frozen; LoRA residuals are inserted
+    # into both transformers and the task action heads remain trainable.
+    pytorch_lora_rank: int | None = None
+    pytorch_lora_alpha: float = 16.0
+    pytorch_lora_action_expert_rank: int | None = None
+    pytorch_lora_action_expert_alpha: float = 32.0
+    pytorch_lora_dropout: float = 0.0
+    pytorch_lora_train_action_heads: bool = True
+
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -563,6 +573,16 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+
+    # PyTorch reward-gated checkpointing. The current trainer defines the
+    # offline reward as exp(-deterministic imitation loss); it is explicitly
+    # not a simulator task reward. A checkpoint is written only when this
+    # reward improves by at least checkpoint_reward_min_delta.
+    checkpoint_reward_batches: int = 16
+    checkpoint_reward_min: float = 0.0
+    checkpoint_reward_min_delta: float = 1.0e-6
+    checkpoint_min_free_disk_gib: float = 256.0
+    checkpoint_min_free_disk_fraction: float = 0.10
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -603,6 +623,22 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
         if self.max_train_seconds is not None and self.max_train_seconds <= 0:
             raise ValueError("max_train_seconds must be positive when set.")
+        if self.pytorch_lora_rank is not None and self.pytorch_lora_rank <= 0:
+            raise ValueError("pytorch_lora_rank must be positive when set.")
+        if self.pytorch_lora_action_expert_rank is not None and self.pytorch_lora_action_expert_rank <= 0:
+            raise ValueError("pytorch_lora_action_expert_rank must be positive when set.")
+        if self.pytorch_lora_alpha <= 0 or self.pytorch_lora_action_expert_alpha <= 0:
+            raise ValueError("PyTorch LoRA alpha values must be positive.")
+        if not 0.0 <= self.pytorch_lora_dropout < 1.0:
+            raise ValueError("pytorch_lora_dropout must be in [0, 1).")
+        if self.checkpoint_reward_batches <= 0:
+            raise ValueError("checkpoint_reward_batches must be positive.")
+        if self.checkpoint_reward_min_delta < 0:
+            raise ValueError("checkpoint_reward_min_delta cannot be negative.")
+        if self.checkpoint_min_free_disk_gib < 0:
+            raise ValueError("checkpoint_min_free_disk_gib cannot be negative.")
+        if not 0.0 <= self.checkpoint_min_free_disk_fraction < 1.0:
+            raise ValueError("checkpoint_min_free_disk_fraction must be in [0, 1).")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -1018,15 +1054,26 @@ _CONFIGS = [
         ),
         pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
         pytorch_training_precision="bfloat16",
-        batch_size=1,
+        pytorch_lora_rank=16,
+        pytorch_lora_alpha=16.0,
+        pytorch_lora_action_expert_rank=32,
+        pytorch_lora_action_expert_alpha=32.0,
+        pytorch_lora_dropout=0.0,
+        pytorch_lora_train_action_heads=True,
+        batch_size=4,
         # This bootstrap dataset contains a single recorded episode. Keep
         # loading in-process so OpenCV is not imported concurrently by spawned
         # workers during normalization on Spark.
         num_workers=0,
         num_train_steps=20_000,
         log_interval=10,
-        save_interval=1_000,
-        keep_period=5_000,
+        save_interval=100,
+        keep_period=None,
+        checkpoint_reward_batches=8,
+        checkpoint_reward_min=0.0,
+        checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_min_free_disk_gib=256.0,
+        checkpoint_min_free_disk_fraction=0.10,
         ema_decay=None,
         checkpoint_base_dir="/openpi_assets/training",
         assets_base_dir="/openpi_assets/assets",
