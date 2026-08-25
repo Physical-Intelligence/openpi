@@ -25,6 +25,7 @@ Multi-Node Training:
 
 import dataclasses
 import gc
+import json
 import logging
 import os
 import platform
@@ -39,6 +40,7 @@ import torch.distributed as dist
 import torch.nn.parallel
 import tqdm
 import wandb
+from torch.utils.tensorboard import SummaryWriter
 
 import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
@@ -146,13 +148,13 @@ def get_model_parameters(model):
     )
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
+def save_checkpoint(model, optimizer, global_step, config, is_main, data_config, *, force=False):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
         return
 
     # Only save if it's time to save or if it's the final step
-    if (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
+    if force or (global_step % config.save_interval == 0 and global_step > 0) or global_step == config.num_train_steps - 1:
         # Create temporary directory for atomic checkpoint saving
         final_ckpt_dir = config.checkpoint_dir / f"{global_step}"
         tmp_ckpt_dir = config.checkpoint_dir / f"tmp_{global_step}"
@@ -480,6 +482,33 @@ def train_loop(config: _config.TrainConfig):
         return end_lr + (peak_lr - end_lr) * cos
 
     model.train()
+    training_started_at = time.time()
+    deadline_epoch = (
+        training_started_at + config.max_train_seconds
+        if config.max_train_seconds is not None
+        else None
+    )
+    tensorboard_dir = config.checkpoint_dir / "tensorboard"
+    tensorboard = SummaryWriter(log_dir=str(tensorboard_dir), purge_step=global_step) if is_main else None
+    state_path = config.checkpoint_dir / "run_state.json"
+
+    def write_run_state(state: str, **extra):
+        if not is_main:
+            return
+        payload = {
+            "state": state,
+            "pid": os.getpid(),
+            "global_step": global_step,
+            "training_started_epoch": training_started_at,
+            "deadline_epoch": deadline_epoch,
+            "tensorboard_dir": str(tensorboard_dir),
+            **extra,
+        }
+        temporary = state_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(state_path)
+
+    write_run_state("TRAINING_RUNNING")
     start_time = time.time()
     infos = []  # Collect stats over log interval
     if is_main:
@@ -506,7 +535,8 @@ def train_loop(config: _config.TrainConfig):
         else None
     )
 
-    while global_step < config.num_train_steps:
+    deadline_reached = False
+    while global_step < config.num_train_steps and not deadline_reached:
         # Set epoch for distributed training
         if use_ddp and hasattr(loader, "set_epoch"):
             loader.set_epoch(global_step // len(loader))
@@ -514,6 +544,9 @@ def train_loop(config: _config.TrainConfig):
         for observation, actions in loader:
             # Check if we've reached the target number of steps
             if global_step >= config.num_train_steps:
+                break
+            if deadline_epoch is not None and time.time() >= deadline_epoch:
+                deadline_reached = True
                 break
 
             # The unified data loader returns (observation, actions) tuple
@@ -597,6 +630,21 @@ def train_loop(config: _config.TrainConfig):
                         log_payload["grad_norm"] = avg_grad_norm
                     wandb.log(log_payload, step=global_step)
 
+                if tensorboard is not None:
+                    tensorboard.add_scalar("train/loss", avg_loss, global_step)
+                    tensorboard.add_scalar("train/learning_rate", avg_lr, global_step)
+                    tensorboard.add_scalar("train/time_per_step_s", elapsed / max(1, len(infos)), global_step)
+                    if avg_grad_norm is not None:
+                        tensorboard.add_scalar("train/grad_norm", avg_grad_norm, global_step)
+                    tensorboard.flush()
+                write_run_state(
+                    "TRAINING_RUNNING",
+                    loss=avg_loss,
+                    learning_rate=avg_lr,
+                    grad_norm=avg_grad_norm,
+                    uptime_seconds=time.time() - training_started_at,
+                )
+
                 start_time = time.time()
                 infos = []  # Reset stats collection
 
@@ -611,6 +659,13 @@ def train_loop(config: _config.TrainConfig):
                     {"loss": f"{loss.item():.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
                 )
 
+    if deadline_reached:
+        save_checkpoint(model, optim, global_step, config, is_main, data_config, force=True)
+    write_run_state(
+        "TRAINING_DEADLINE_COMPLETE" if deadline_reached else "TRAINING_STEPS_COMPLETE",
+        uptime_seconds=time.time() - training_started_at,
+    )
+
     # Close progress bar
     if pbar is not None:
         pbar.close()
@@ -618,6 +673,8 @@ def train_loop(config: _config.TrainConfig):
     # Finish wandb run
     if is_main and config.wandb_enabled:
         wandb.finish()
+    if tensorboard is not None:
+        tensorboard.close()
 
     cleanup_ddp()
 

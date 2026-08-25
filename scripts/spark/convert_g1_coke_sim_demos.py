@@ -13,10 +13,11 @@ from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 import numpy as np
 
-EXPECTED_FORMAT = "g1-coke-pickup-pi05-raw-v1"
+EXPECTED_FORMAT = "g1-coke-pickup-pi05-raw-v2"
 EXPECTED_FPS = 50
 EXPECTED_STATE_DIM = 24
-EXPECTED_ACTION_DIM = 7
+EXPECTED_ACTION_DIM = 21
+MAX_ABS_WAIST_ROLL_PITCH_RAD = np.deg2rad(5.0)
 
 
 def _sha256(path: Path) -> str:
@@ -56,7 +57,7 @@ def _load_manifest(raw_dir: Path) -> dict[str, object]:
     if manifest.get("state", {}).get("shape") != [EXPECTED_STATE_DIM]:
         raise ValueError("manifest does not contain the 24-value G1 upper-body state")
     if manifest.get("action", {}).get("shape") != [EXPECTED_ACTION_DIM]:
-        raise ValueError("manifest does not contain the seven-value Coke task action")
+        raise ValueError("manifest does not contain the 21-joint Coke task action")
     episodes = manifest.get("episodes")
     if not isinstance(episodes, list) or not episodes:
         raise ValueError("manifest contains no episodes")
@@ -82,8 +83,14 @@ def _load_episode(raw_dir: Path, entry: dict[str, object], image_shape: tuple[in
         raise ValueError(f"invalid state array in {path}: {state.shape} {state.dtype}")
     if action.shape != (frames, EXPECTED_ACTION_DIM) or action.dtype != np.float32:
         raise ValueError(f"invalid action array in {path}: {action.shape} {action.dtype}")
-    if not np.isfinite(state).all() or not np.isfinite(action).all() or np.max(np.abs(action)) > 1.000001:
+    if not np.isfinite(state).all() or not np.isfinite(action).all() or np.max(np.abs(action)) > 2.0 * np.pi:
         raise ValueError(f"non-finite or out-of-range values in {path}")
+    max_abs_waist_roll_pitch = float(np.max(np.abs(state[:, 1:3])))
+    if max_abs_waist_roll_pitch > MAX_ABS_WAIST_ROLL_PITCH_RAD:
+        raise ValueError(
+            f"non-upright waist in {path}: {max_abs_waist_roll_pitch:.6f} rad exceeds "
+            f"{MAX_ABS_WAIST_ROLL_PITCH_RAD:.6f} rad"
+        )
     if not np.array_equal(frame_index, np.arange(frames, dtype=np.int64)):
         raise ValueError(f"non-contiguous frame indices in {path}")
     if not np.allclose(timestamp, np.arange(frames, dtype=np.float64) / EXPECTED_FPS, atol=1.0e-6):

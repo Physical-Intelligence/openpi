@@ -553,6 +553,9 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+    # Optional wall-clock limit for the actual optimization loop. A final
+    # checkpoint is written when this deadline is reached.
+    max_train_seconds: float | None = None
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -598,6 +601,8 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.max_train_seconds is not None and self.max_train_seconds <= 0:
+            raise ValueError("max_train_seconds must be positive when set.")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -994,8 +999,8 @@ _CONFIGS = [
     ),
     TrainConfig(
         # Vision-language-action policy for the Isaac/real Coke pickup contract:
-        # one rendered/head RGB view, 24 upper-body positions, and the existing
-        # seven normalized right-hand pose/grip commands.  Keeping action_dim=32
+        # one rendered/head RGB view, 24 upper-body positions, and 21 absolute
+        # arm/right-Dex3 joint targets. Keeping action_dim=32
         # preserves all pretrained pi0.5 checkpoint shapes.
         name="pi05_spark_g1_coke_pickup",
         model=pi0_config.Pi0Config(
@@ -1008,13 +1013,16 @@ _CONFIGS = [
         data=LeRobotG1DataConfig(
             repo_id=os.getenv("OPENPI_G1_COKE_DATASET_REPO_ID", "your_hf_username/g1_coke_pickup"),
             state_dim=24,
-            task_action_dim=7,
+            task_action_dim=21,
             base_config=DataConfig(prompt_from_task=True),
         ),
         pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
         pytorch_training_precision="bfloat16",
         batch_size=1,
-        num_workers=4,
+        # This bootstrap dataset contains a single recorded episode. Keep
+        # loading in-process so OpenCV is not imported concurrently by spawned
+        # workers during normalization on Spark.
+        num_workers=0,
         num_train_steps=20_000,
         log_interval=10,
         save_interval=1_000,
