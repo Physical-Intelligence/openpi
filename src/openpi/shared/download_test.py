@@ -1,4 +1,7 @@
+import datetime
+import os
 import pathlib
+import time
 
 import pytest
 
@@ -22,6 +25,24 @@ def test_download_local(tmp_path: pathlib.Path):
 
     with pytest.raises(FileNotFoundError):
         download.maybe_download("bogus")
+
+
+def test_get_mtime_is_utc():
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is not available")
+
+    original_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        expected = datetime.datetime(2025, 2, 17, tzinfo=datetime.UTC).timestamp()
+        assert download._get_mtime(2025, 2, 17) == expected
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
 
 
 def test_download_gs_dir():
