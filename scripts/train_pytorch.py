@@ -45,7 +45,7 @@ import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
-
+import openpi.models_pytorch.lora_pytorch as lora_utils
 
 def init_logging():
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
@@ -146,7 +146,7 @@ def get_model_parameters(model):
     )
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
+def save_checkpoint(model, optimizer, global_step, config, is_main, data_config, lora_enabled=False):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
         return
@@ -416,6 +416,23 @@ def train_loop(config: _config.TrainConfig):
         enable_gradient_checkpointing = False
         logging.info("Gradient checkpointing is not supported for this model")
 
+    # Check if LoRA is enabled
+    lora_enabled = hasattr(config, "lora_config") and config.lora_config is not None and config.lora_config.enabled
+
+    # Load weights from weight_loader if specified (for fine-tuning)
+    if config.pytorch_weight_path is not None:
+        logging.info(f"Loading weights from: {config.pytorch_weight_path}")
+
+        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
+        safetensors.torch.load_model(model, model_path)
+        logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
+
+    # Apply LoRA AFTER loading pretrained weights
+    if lora_enabled:
+        logging.info("Applying LoRA adapters to model...")
+        frozen_count, trainable_count = lora_utils.apply_lora_to_pi0_pytorch(model, config.lora_config)
+        logging.info(f"LoRA applied: {trainable_count:,} trainable params, {frozen_count:,} frozen params")
+
     # Log initial memory usage after model creation
     if is_main and torch.cuda.is_available():
         log_memory_usage(device, 0, "after_model_creation")
@@ -438,25 +455,22 @@ def train_loop(config: _config.TrainConfig):
             static_graph=world_size >= 8,  # Enable for 8+ GPUs
         )
 
-    # Load weights from weight_loader if specified (for fine-tuning)
-    if config.pytorch_weight_path is not None:
-        logging.info(f"Loading weights from: {config.pytorch_weight_path}")
-
-        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
-        )
-        logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
-
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
     peak_lr = config.lr_schedule.peak_lr
     decay_steps = config.lr_schedule.decay_steps
     end_lr = config.lr_schedule.decay_lr
 
+    # Get trainable parameters (respects LoRA freezing)
+    if lora_enabled:
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        logging.info(f"Optimizing {len(trainable_params)} parameter groups (LoRA mode)")
+    else:
+        trainable_params = model.parameters()
+
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
