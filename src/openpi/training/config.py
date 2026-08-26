@@ -582,6 +582,9 @@ class TrainConfig:
     checkpoint_reward_batches: int = 16
     checkpoint_reward_min: float = 0.0
     checkpoint_reward_min_delta: float = 1.0e-6
+    # Optional separate LeRobot repo used only to rank reward-gated
+    # checkpoints. It is loaded with the training repo's normalization stats.
+    checkpoint_eval_repo_id: str | None = None
     checkpoint_min_free_disk_gib: float = 256.0
     checkpoint_min_free_disk_fraction: float = 0.10
 
@@ -1075,6 +1078,10 @@ _CONFIGS = [
         checkpoint_reward_batches=8,
         checkpoint_reward_min=0.0,
         checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_eval_repo_id=os.getenv(
+            "OPENPI_G1_COKE_RGBD_EVAL_REPO_ID",
+            "local/g1_coke_pickup_real_rgbd_left_rcoke_3_16_eval_v1",
+        ),
         checkpoint_min_free_disk_gib=256.0,
         checkpoint_min_free_disk_fraction=0.10,
         ema_decay=None,

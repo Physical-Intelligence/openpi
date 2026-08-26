@@ -47,6 +47,8 @@ import openpi.models.pi0_config
 import openpi.models_pytorch.lora as _lora
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
+from openpi.training.checkpoint_evaluation import CheckpointEvaluationPlan
+from openpi.training.checkpoint_evaluation import resolve_checkpoint_evaluation
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
 from openpi.training.reward_checkpoints import RewardCheckpointStore
@@ -134,7 +136,7 @@ def build_datasets(config: _config.TrainConfig):
 
 
 def build_reward_batches(config: _config.TrainConfig):
-    """Materialize a deterministic, episode-spanning offline scoring set."""
+    """Materialize a deterministic, episode-spanning scoring set."""
     loader = _data.create_data_loader(config, framework="pytorch", shuffle=False)
     if not isinstance(loader, _data.DataLoaderImpl):
         raise TypeError("Offline reward checkpointing requires the finite PyTorch dataset loader")
@@ -190,6 +192,7 @@ def write_checkpoint_contents(
     reward_loss,
     config,
     data_config,
+    checkpoint_evaluation: CheckpointEvaluationPlan,
 ):
     target = unwrap_model(model)
     if config.pytorch_lora_rank is not None:
@@ -206,8 +209,11 @@ def write_checkpoint_contents(
         "config": dataclasses.asdict(config),
         "timestamp": time.time(),
         "checkpoint_kind": checkpoint_kind,
-        "checkpoint_metric": "offline_imitation_reward",
+        "checkpoint_metric": checkpoint_evaluation.metric_name,
+        "checkpoint_eval_repo_id": checkpoint_evaluation.source_repo_id,
+        "checkpoint_eval_uses_heldout_data": checkpoint_evaluation.uses_heldout_data,
         "checkpoint_reward": reward,
+        "checkpoint_eval_loss": reward_loss,
         "offline_imitation_loss": reward_loss,
     }
     torch.save(metadata, checkpoint_dir / "metadata.pt")
@@ -315,6 +321,7 @@ def train_loop(config: _config.TrainConfig):
     use_ddp, local_rank, device = setup_ddp()
     is_main = (not use_ddp) or (dist.get_rank() == 0)
     set_seed(config.seed, local_rank)
+    checkpoint_evaluation = resolve_checkpoint_evaluation(config)
 
     # Initialize checkpoint directory and wandb.
     resuming = False
@@ -338,7 +345,7 @@ def train_loop(config: _config.TrainConfig):
 
     checkpoint_store = RewardCheckpointStore(
         config.checkpoint_dir,
-        metric_name="offline_imitation_reward",
+        metric_name=checkpoint_evaluation.metric_name,
         minimum_reward=config.checkpoint_reward_min,
         minimum_delta=config.checkpoint_reward_min_delta,
         minimum_free_bytes=int(config.checkpoint_min_free_disk_gib * 1024**3),
@@ -369,7 +376,13 @@ def train_loop(config: _config.TrainConfig):
 
     # Pass the original batch size to data loader - it will handle DDP splitting internally
     loader, data_config = build_datasets(config)
-    reward_batches = build_reward_batches(config)
+    reward_batches = build_reward_batches(checkpoint_evaluation.loader_config)
+    logging.info(
+        "Checkpoint evaluation dataset: repo_id=%s heldout=%s metric=%s",
+        checkpoint_evaluation.source_repo_id,
+        checkpoint_evaluation.uses_heldout_data,
+        checkpoint_evaluation.metric_name,
+    )
 
     # Log sample images to wandb on first batch
     if is_main and config.wandb_enabled and not resuming:
@@ -538,8 +551,10 @@ def train_loop(config: _config.TrainConfig):
             "training_started_epoch": training_started_at,
             "deadline_epoch": deadline_epoch,
             "tensorboard_dir": str(tensorboard_dir),
-            "checkpoint_metric": "offline_imitation_reward",
+            "checkpoint_metric": checkpoint_evaluation.metric_name,
             "checkpoint_metric_is_task_reward": False,
+            "checkpoint_eval_repo_id": checkpoint_evaluation.source_repo_id,
+            "checkpoint_eval_uses_heldout_data": checkpoint_evaluation.uses_heldout_data,
             "last_offline_imitation_reward": last_reward,
             "last_offline_imitation_loss": last_reward_loss,
             "last_reward_eval_step": last_reward_eval_step,
@@ -573,8 +588,8 @@ def train_loop(config: _config.TrainConfig):
             baseline_reward_loss,
         )
         if tensorboard is not None:
-            tensorboard.add_scalar("eval/offline_imitation_reward", baseline_reward, global_step)
-            tensorboard.add_scalar("eval/offline_imitation_loss", baseline_reward_loss, global_step)
+            tensorboard.add_scalar(checkpoint_evaluation.reward_log_key, baseline_reward, global_step)
+            tensorboard.add_scalar(checkpoint_evaluation.loss_log_key, baseline_reward_loss, global_step)
             tensorboard.flush()
     write_run_state("TRAINING_RUNNING")
     start_time = time.time()
@@ -628,6 +643,7 @@ def train_loop(config: _config.TrainConfig):
                 reward_loss=reward_loss,
                 config=config,
                 data_config=data_config,
+                checkpoint_evaluation=checkpoint_evaluation,
             ),
         )
         logging.info(
@@ -639,8 +655,8 @@ def train_loop(config: _config.TrainConfig):
             result.reason,
         )
         if tensorboard is not None:
-            tensorboard.add_scalar("eval/offline_imitation_reward", reward, global_step)
-            tensorboard.add_scalar("eval/offline_imitation_loss", reward_loss, global_step)
+            tensorboard.add_scalar(checkpoint_evaluation.reward_log_key, reward, global_step)
+            tensorboard.add_scalar(checkpoint_evaluation.loss_log_key, reward_loss, global_step)
             tensorboard.add_scalar("checkpoint/saved", float(result.saved), global_step)
             if result.best_reward is not None:
                 tensorboard.add_scalar("checkpoint/best_reward", result.best_reward, global_step)
@@ -648,8 +664,8 @@ def train_loop(config: _config.TrainConfig):
         if config.wandb_enabled:
             wandb.log(
                 {
-                    "offline_imitation_reward": reward,
-                    "offline_imitation_loss": reward_loss,
+                    checkpoint_evaluation.metric_name: reward,
+                    checkpoint_evaluation.loss_log_key.removeprefix("eval/"): reward_loss,
                     "checkpoint_saved": int(result.saved),
                 },
                 step=global_step,
