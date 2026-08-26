@@ -27,4 +27,4 @@ python3 scripts/train_pytorch.py pi05_spark_g1_coke_rgbd_arm14 \
     --exp-name "${experiment}" \
     --num-train-steps 4000
 
-python3 -c 'import json,sys,time; p=json.load(open(sys.argv[1])); p.update(state="TRAINING_COMPLETE",completed_epoch=int(time.time())); json.dump(p, open(sys.argv[1],"w"), sort_keys=True)' "${run_state_path}"
+python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); assert p.get("state") == "TRAINING_STEPS_COMPLETE", p.get("state")' "${run_state_path}"

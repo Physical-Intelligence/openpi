@@ -12,6 +12,7 @@ run_dir="${data_root}/training/pi05_spark_g1_coke_rgbd_arm14/${experiment}"
 report_dir="${data_root}/reports/${experiment}"
 video_dir="${data_root}/videos/${experiment}"
 session_path="${run_dir}/session_state.json"
+qualification_path="${report_dir}/qualification.json"
 
 if [[ "${session_seconds}" -lt 10800 ]]; then
     echo "RGB-D session must allow at least three hours for qualification" >&2
@@ -23,12 +24,29 @@ if [[ "${evaluation_interval_seconds}" -lt 900 ]]; then
 fi
 mkdir -p "${run_dir}" "${report_dir}" "${video_dir}"
 
-started_epoch="$(date +%s)"
-deadline_epoch="$((started_epoch + session_seconds))"
-python3 -c '
+recovery_mode=false
+if python3 scripts/spark/recover_g1_coke_rgbd_qualification.py \
+    --run-dir "${run_dir}" \
+    --session-state "${session_path}" \
+    --qualification-report "${qualification_path}" \
+    --check >/dev/null 2>&1; then
+    recovery_mode=true
+    read -r started_epoch deadline_epoch < <(
+        python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["started_epoch"], p["deadline_epoch"])' "${session_path}"
+    )
+    python3 scripts/spark/recover_g1_coke_rgbd_qualification.py \
+        --run-dir "${run_dir}" \
+        --session-state "${session_path}" \
+        --qualification-report "${qualification_path}" \
+        --apply
+else
+    started_epoch="$(date +%s)"
+    deadline_epoch="$((started_epoch + session_seconds))"
+    python3 -c '
 import json,sys
 json.dump({"state":"QUALIFICATION_RUNNING","started_epoch":int(sys.argv[2]),"deadline_epoch":int(sys.argv[3]),"dataset_repo_id":sys.argv[4],"checkpoint_eval_repo_id":sys.argv[5]},open(sys.argv[1],"w"),sort_keys=True)
 ' "${session_path}" "${started_epoch}" "${deadline_epoch}" "${OPENPI_G1_COKE_RGBD_DATASET_REPO_ID}" "${OPENPI_G1_COKE_RGBD_EVAL_REPO_ID}"
+fi
 
 on_error() {
     local exit_code="$?"
@@ -64,19 +82,21 @@ evaluate_checkpoint() {
         --denoise-steps 5
 }
 
-bash scripts/spark/train_g1_coke_rgbd_4k.sh
+if [[ "${recovery_mode}" == false ]]; then
+    bash scripts/spark/train_g1_coke_rgbd_4k.sh
+fi
 checkpoint="$(best_checkpoint)"
 step="$(basename "${checkpoint}")"
 evaluate_checkpoint "${checkpoint}" "qualification_checkpoint_${step}"
 python3 scripts/spark/qualify_g1_coke_rgbd_run.py \
     --run-dir "${run_dir}" \
     --evaluation-report "${report_dir}/qualification_checkpoint_${step}.json" \
-    --output "${report_dir}/qualification.json"
+    --output "${qualification_path}"
 
 python3 -c '
 import json,sys,time
 path=sys.argv[1]; payload=json.load(open(path)); payload.update(state="QUALIFIED_CONTINUATION_RUNNING",qualified_epoch=int(time.time()),qualification_report=sys.argv[2]); json.dump(payload,open(path,"w"),sort_keys=True)
-' "${session_path}" "${report_dir}/qualification.json"
+' "${session_path}" "${qualification_path}"
 
 while [[ "$(date +%s)" -lt "${deadline_epoch}" ]]; do
     remaining="$((deadline_epoch - $(date +%s)))"
