@@ -1100,6 +1100,60 @@ _CONFIGS = [
         wandb_enabled=False,
     ),
     TrainConfig(
+        # Strict physical-left policy. The right arm is absent from both the
+        # observation and supervised target: RGB-D + waist3 + left-arm7 +
+        # measured physical-left Dex3 -> seven exact applied left-arm targets.
+        # The hand remains a deterministic staged controller until recordings
+        # contain its exact applied commands.
+        name="pi05_spark_g1_coke_rgbd_left_arm7",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv(
+                "OPENPI_G1_COKE_LEFT_ONLY_DATASET_REPO_ID",
+                "local/g1_coke_pickup_real_rgbd_left_only_rcoke_3_16_train_v1",
+            ),
+            state_dim=17,
+            task_action_dim=7,
+            use_depth_image=True,
+            augment_rgbd=True,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        pytorch_lora_rank=16,
+        pytorch_lora_alpha=16.0,
+        pytorch_lora_action_expert_rank=32,
+        pytorch_lora_action_expert_alpha=32.0,
+        pytorch_lora_dropout=0.0,
+        pytorch_lora_train_action_heads=True,
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=4_000,
+        log_interval=10,
+        save_interval=200,
+        keep_period=None,
+        checkpoint_reward_batches=32,
+        checkpoint_reward_min=0.0,
+        checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_eval_repo_id=os.getenv(
+            "OPENPI_G1_COKE_LEFT_ONLY_EVAL_REPO_ID",
+            "local/g1_coke_pickup_real_rgbd_left_only_rcoke_3_16_eval_v1",
+        ),
+        checkpoint_min_free_disk_gib=256.0,
+        checkpoint_min_free_disk_fraction=0.10,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="g1_coke_rgbd_left_arm7_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
         # Vision-language-action policy for the Isaac/real Coke pickup contract:
         # one rendered/head RGB view, 24 upper-body positions, and 21 absolute
         # arm/right-Dex3 joint targets. Keeping action_dim=32

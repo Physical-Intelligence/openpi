@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import av
+from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 import numpy as np
@@ -95,11 +96,25 @@ def main() -> None:
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--output-video", type=Path, required=True)
     parser.add_argument("--config-name", default="pi05_spark_g1_coke_rgbd_arm14")
+    parser.add_argument("--expected-contract", choices=("arm14", "left-arm7"), default="arm14")
     parser.add_argument("--samples", type=int, default=32)
     parser.add_argument("--denoise-steps", type=int, default=5)
     args = parser.parse_args()
     if args.samples < 1 or args.denoise_steps < 1:
         raise ValueError("samples and denoise steps must be positive")
+
+    conversion_path = HF_LEROBOT_HOME / args.repo_id / "meta" / "wendy-rgbd-conversion.json"
+    conversion = json.loads(conversion_path.read_text(encoding="utf-8"))
+    if conversion.get("contract") != args.expected_contract:
+        raise ValueError(
+            f"held-out dataset contract {conversion.get('contract')!r} does not match "
+            f"{args.expected_contract!r}"
+        )
+    if args.expected_contract == "left-arm7":
+        if conversion.get("state", {}).get("right_arm_included") is not False:
+            raise ValueError("left-arm7 held-out state unexpectedly includes the right arm")
+        if conversion.get("action", {}).get("right_arm_included") is not False:
+            raise ValueError("left-arm7 held-out action unexpectedly includes the right arm")
 
     metadata = LeRobotDatasetMetadata(args.repo_id)
     dataset = LeRobotDataset(
@@ -110,6 +125,14 @@ def main() -> None:
         raise ValueError("held-out dataset is empty")
 
     config = training_config.get_config(args.config_name)
+    action_dim = int(config.data.task_action_dim)
+    expected_action_dim = 7 if args.expected_contract == "left-arm7" else 14
+    if action_dim != expected_action_dim:
+        raise ValueError(
+            f"config {args.config_name!r} has {action_dim} actions, expected {expected_action_dim}"
+        )
+    arm_min_rad = ARM_MIN_RAD[:action_dim]
+    arm_max_rad = ARM_MAX_RAD[:action_dim]
     policy = policy_config.create_trained_policy(
         config,
         args.checkpoint_dir,
@@ -123,7 +146,7 @@ def main() -> None:
     max_errors: list[float] = []
     inference_ms: list[float] = []
     temporal_steps: list[float] = []
-    joint_error_sum = np.zeros(14, dtype=np.float64)
+    joint_error_sum = np.zeros(action_dim, dtype=np.float64)
     joint_error_count = 0
     hard_limit_violations = 0
 
@@ -156,9 +179,9 @@ def main() -> None:
                 noise=noise_rng.standard_normal((10, 32), dtype=np.float32),
             )
             predicted = np.asarray(result["actions"], dtype=np.float32)
-            if predicted.shape != (10, 14) or not np.isfinite(predicted).all():
+            if predicted.shape != (10, action_dim) or not np.isfinite(predicted).all():
                 raise ValueError(f"checkpoint returned invalid actions {predicted.shape}")
-            if teacher.shape != (10, 14) or not np.isfinite(teacher).all():
+            if teacher.shape != (10, action_dim) or not np.isfinite(teacher).all():
                 raise ValueError(f"held-out sample has invalid actions {teacher.shape}")
 
             error = np.abs(predicted - teacher)
@@ -168,7 +191,9 @@ def main() -> None:
             joint_error_count += error.shape[0]
             temporal_steps.append(float(np.max(np.abs(np.diff(predicted, axis=0)))))
             hard_limit_violations += int(
-                np.count_nonzero((predicted < ARM_MIN_RAD[None, :]) | (predicted > ARM_MAX_RAD[None, :]))
+                np.count_nonzero(
+                    (predicted < arm_min_rad[None, :]) | (predicted > arm_max_rad[None, :])
+                )
             )
             inference_ms.append(float(result.get("policy_timing", {}).get("infer_ms", np.nan)))
 
@@ -195,6 +220,12 @@ def main() -> None:
     report = {
         "status": "passed" if hard_limit_violations == 0 else "failed",
         "kind": "g1_coke_rgbd_heldout_policy_evaluation_v1",
+        "config": args.config_name,
+        "contract": args.expected_contract,
+        "state_dim": int(config.data.state_dim),
+        "action_dim": action_dim,
+        "right_arm_inputs": args.expected_contract != "left-arm7",
+        "right_arm_actions": args.expected_contract != "left-arm7",
         "checkpoint": str(args.checkpoint_dir),
         "checkpoint_model_sha256": _sha256(args.checkpoint_dir / "model.safetensors"),
         "repo_id": args.repo_id,

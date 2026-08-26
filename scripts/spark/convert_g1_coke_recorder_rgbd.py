@@ -2,15 +2,19 @@
 """Convert recorder RGB-D kinesthetic Coke demonstrations into LeRobot splits.
 
 The source recordings contain exact applied upper-body Teach commands, but the
-Dex3 values are measured observations.  This converter therefore exports a
-24D state (waist, both arms, observed hand) and only the command-grounded 14D
-arm target.  It never relabels the observed hand trajectory as a policy action.
+Dex3 values are measured observations.  The historical ``arm14`` contract
+exports waist, both arms, and the observed hand.  The ``left-arm7`` contract
+strictly removes the right arm from both observation and action: its 17D state
+is waist, left arm, and observed physical-left hand; its 7D action is the exact
+applied left-arm target.  Neither contract relabels observed hand motion as a
+policy action.
 """
 
 from __future__ import annotations
 
 import argparse
 from bisect import bisect_left
+from dataclasses import dataclass
 import hashlib
 import itertools
 import json
@@ -26,12 +30,9 @@ from PIL import Image
 
 BATCH_SCHEMA = "wendy.g1.mujoco-trial-batch.v1"
 TRIAL_SCHEMA_VERSION = 4
-OUTPUT_SCHEMA = "wendy.g1.coke-rgbd-arm14-conversion.v1"
 OUTPUT_FPS = 15
 BODY_DIM = 17
 HAND_DIM = 7
-STATE_DIM = BODY_DIM + HAND_DIM
-ACTION_DIM = 14
 IMAGE_HEIGHT = 240
 IMAGE_WIDTH = 320
 # One source episode contains a single roughly 0.26 s camera dropout.  Offline
@@ -40,10 +41,77 @@ IMAGE_WIDTH = 320
 # inference retains its independent stale-frame rejection.
 MAX_CAMERA_GRID_SKEW_S = 0.135
 MAX_ROBOT_CAMERA_SYNC_SKEW_MS = 20.0
+MAX_ABS_WAIST_ROLL_PITCH_RAD = math.radians(5.0)
 NEAR_DEPTH_M = 0.20
 FAR_DEPTH_M = 2.00
 TASK = "Grasp the Coke can, lift it, and present it in front of the robot."
 DEFAULT_HOLDOUT_NAMES = ("RCokeGrabbing4", "RCokeGrabbing9", "RCokeGrabbing15")
+
+BODY_JOINT_NAMES = (
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+)
+LEFT_HAND_JOINT_NAMES = (
+    "left_hand_thumb_0_joint",
+    "left_hand_thumb_1_joint",
+    "left_hand_thumb_2_joint",
+    "left_hand_middle_0_joint",
+    "left_hand_middle_1_joint",
+    "left_hand_index_0_joint",
+    "left_hand_index_1_joint",
+)
+
+
+@dataclass(frozen=True)
+class TaskContract:
+    name: str
+    output_schema: str
+    state_body_indices: tuple[int, ...]
+    action_body_indices: tuple[int, ...]
+    state_names: tuple[str, ...]
+    action_names: tuple[str, ...]
+
+    @property
+    def state_dim(self) -> int:
+        return len(self.state_names)
+
+    @property
+    def action_dim(self) -> int:
+        return len(self.action_names)
+
+
+ARM14_CONTRACT = TaskContract(
+    name="arm14",
+    output_schema="wendy.g1.coke-rgbd-arm14-conversion.v1",
+    state_body_indices=tuple(range(BODY_DIM)),
+    action_body_indices=tuple(range(3, BODY_DIM)),
+    state_names=BODY_JOINT_NAMES + LEFT_HAND_JOINT_NAMES,
+    action_names=BODY_JOINT_NAMES[3:],
+)
+LEFT_ARM7_CONTRACT = TaskContract(
+    name="left-arm7",
+    output_schema="wendy.g1.coke-rgbd-left-arm7-conversion.v1",
+    state_body_indices=tuple(range(10)),
+    action_body_indices=tuple(range(3, 10)),
+    state_names=BODY_JOINT_NAMES[:10] + LEFT_HAND_JOINT_NAMES,
+    action_names=BODY_JOINT_NAMES[3:10],
+)
+CONTRACTS = {contract.name: contract for contract in (ARM14_CONTRACT, LEFT_ARM7_CONTRACT)}
 
 
 def _sha256(path: Path) -> str:
@@ -69,6 +137,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-dir", type=Path, required=True)
     parser.add_argument("--train-repo-id", type=_repo_id, required=True)
     parser.add_argument("--eval-repo-id", type=_repo_id, required=True)
+    parser.add_argument(
+        "--contract",
+        choices=tuple(CONTRACTS),
+        default=ARM14_CONTRACT.name,
+        help="Explicit state/action embodiment contract; use left-arm7 for the physical-left task",
+    )
     parser.add_argument(
         "--holdout-name",
         action="append",
@@ -133,7 +207,11 @@ def _load_trial(raw_dir: Path, entry: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError(f"{name} robot timestamps are not finite and strictly increasing")
     for frame_index, frame in enumerate(frames):
-        _finite_vector(frame.get("measured_q_rad"), BODY_DIM, f"{name} frame {frame_index} body state")
+        body_state = _finite_vector(
+            frame.get("measured_q_rad"), BODY_DIM, f"{name} frame {frame_index} body state"
+        )
+        if float(np.max(np.abs(body_state[1:3]))) > MAX_ABS_WAIST_ROLL_PITCH_RAD:
+            raise ValueError(f"{name} frame {frame_index} is not an upright waist observation")
         hand_frame = frame.get("hand")
         if not isinstance(hand_frame, dict):
             raise ValueError(f"{name} frame {frame_index} is missing measured hand state")
@@ -184,7 +262,9 @@ def _load_trial(raw_dir: Path, entry: dict[str, Any]) -> dict[str, Any]:
     return trial
 
 
-def _interpolate_robot(trial: dict[str, Any], source_time_s: float) -> tuple[np.ndarray, np.ndarray]:
+def _interpolate_robot(
+    trial: dict[str, Any], source_time_s: float, contract: TaskContract = ARM14_CONTRACT
+) -> tuple[np.ndarray, np.ndarray]:
     frames = trial["frames"]
     timestamps = [float(frame["t_s"]) for frame in frames]
     right_index = bisect_left(timestamps, source_time_s)
@@ -220,9 +300,11 @@ def _interpolate_robot(trial: dict[str, Any], source_time_s: float) -> tuple[np.
         BODY_DIM,
         "Teach command",
     )
-    state = np.concatenate((body, hand)).astype(np.float32, copy=False)
-    action = applied_teach[3:].astype(np.float32, copy=False)
-    if state.shape != (STATE_DIM,) or action.shape != (ACTION_DIM,):
+    state = np.concatenate((body[list(contract.state_body_indices)], hand)).astype(
+        np.float32, copy=False
+    )
+    action = applied_teach[list(contract.action_body_indices)].astype(np.float32, copy=False)
+    if state.shape != (contract.state_dim,) or action.shape != (contract.action_dim,):
         raise RuntimeError("internal G1 state/action slicing error")
     return state, action
 
@@ -289,7 +371,9 @@ def _load_depth(path: Path, depth_scale_m: float) -> tuple[np.ndarray, float]:
     return depth_rgb, valid_fraction
 
 
-def _samples(raw_dir: Path, trial: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, float]]:
+def _samples(
+    raw_dir: Path, trial: dict[str, Any], contract: TaskContract = ARM14_CONTRACT
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
     pairs = _camera_pairs(trial)
     first_time_s = pairs[0]["t_s"]
     last_time_s = min(pairs[-1]["t_s"], float(trial["frames"][-1]["t_s"]))
@@ -307,7 +391,7 @@ def _samples(raw_dir: Path, trial: dict[str, Any]) -> tuple[list[dict[str, Any]]
         source_time_s = first_time_s + frame_index / OUTPUT_FPS
         pair, camera_grid_skew_s = _nearest_camera_pair(pairs, source_time_s)
         maximum_camera_grid_skew_s = max(maximum_camera_grid_skew_s, camera_grid_skew_s)
-        state, action = _interpolate_robot(trial, source_time_s)
+        state, action = _interpolate_robot(trial, source_time_s, contract)
         rgb = _load_rgb(raw_dir / pair["rgb"])
         depth, valid_fraction = _load_depth(raw_dir / pair["depth"], depth_scale_m)
         minimum_depth_valid_fraction = min(minimum_depth_valid_fraction, valid_fraction)
@@ -326,7 +410,7 @@ def _samples(raw_dir: Path, trial: dict[str, Any]) -> tuple[list[dict[str, Any]]
     }
 
 
-def _create_dataset(repo_id: str, *, overwrite: bool) -> LeRobotDataset:
+def _create_dataset(repo_id: str, contract: TaskContract, *, overwrite: bool) -> LeRobotDataset:
     output_path = HF_LEROBOT_HOME / repo_id
     if output_path.exists():
         if not overwrite:
@@ -349,12 +433,12 @@ def _create_dataset(repo_id: str, *, overwrite: bool) -> LeRobotDataset:
             },
             "observation.state": {
                 "dtype": "float32",
-                "shape": (STATE_DIM,),
+                "shape": (contract.state_dim,),
                 "names": ["state"],
             },
             "action": {
                 "dtype": "float32",
-                "shape": (ACTION_DIM,),
+                "shape": (contract.action_dim,),
                 "names": ["action"],
             },
         },
@@ -372,7 +456,14 @@ def _write_conversion_metadata(repo_id: str, metadata: dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
+    contract = CONTRACTS[args.contract]
     raw_dir = args.raw_dir.expanduser().resolve()
+    if args.train_repo_id == args.eval_repo_id:
+        raise ValueError("train and held-out evaluation repo ids must differ")
+    if contract is LEFT_ARM7_CONTRACT and any(
+        "left_only" not in repo_id for repo_id in (args.train_repo_id, args.eval_repo_id)
+    ):
+        raise ValueError("left-arm7 datasets must use distinct repo ids containing 'left_only'")
     manifest = _load_batch(raw_dir)
     holdout_names = set(args.holdout_names or DEFAULT_HOLDOUT_NAMES)
     available_names = {str(entry["name"]) for entry in manifest["trials"]}
@@ -382,13 +473,13 @@ def main() -> None:
     if len(holdout_names) >= len(available_names):
         raise ValueError("holdout split leaves no training episodes")
 
-    train_dataset = _create_dataset(args.train_repo_id, overwrite=args.overwrite)
-    eval_dataset = _create_dataset(args.eval_repo_id, overwrite=args.overwrite)
+    train_dataset = _create_dataset(args.train_repo_id, contract, overwrite=args.overwrite)
+    eval_dataset = _create_dataset(args.eval_repo_id, contract, overwrite=args.overwrite)
     split_records: dict[str, list[dict[str, Any]]] = {"train": [], "eval": []}
     for entry in manifest["trials"]:
         trial = _load_trial(raw_dir, entry)
         split = "eval" if trial["name"] in holdout_names else "train"
-        samples, quality = _samples(raw_dir, trial)
+        samples, quality = _samples(raw_dir, trial, contract)
         dataset = eval_dataset if split == "eval" else train_dataset
         for sample in samples:
             dataset.add_frame(sample)
@@ -405,7 +496,8 @@ def main() -> None:
         )
 
     metadata = {
-        "schema": OUTPUT_SCHEMA,
+        "schema": contract.output_schema,
+        "contract": contract.name,
         "source_batch_manifest_sha256": _sha256(raw_dir / "manifest.json"),
         "fps": OUTPUT_FPS,
         "task": TASK,
@@ -419,13 +511,25 @@ def main() -> None:
             },
         },
         "state": {
-            "width": STATE_DIM,
-            "source": "17D measured upper body plus 7D measured physical-left Dex3",
+            "width": contract.state_dim,
+            "names": list(contract.state_names),
+            "source": (
+                "measured waist and left arm plus measured physical-left Dex3"
+                if contract is LEFT_ARM7_CONTRACT
+                else "17D measured upper body plus 7D measured physical-left Dex3"
+            ),
+            "right_arm_included": contract is ARM14_CONTRACT,
         },
         "action": {
-            "width": ACTION_DIM,
-            "source": "applied rt/arm_sdk Teach q_rad indices 3 through 16",
+            "width": contract.action_dim,
+            "names": list(contract.action_names),
+            "source": (
+                "applied rt/arm_sdk Teach q_rad indices 3 through 9"
+                if contract is LEFT_ARM7_CONTRACT
+                else "applied rt/arm_sdk Teach q_rad indices 3 through 16"
+            ),
             "waist_excluded": True,
+            "right_arm_included": contract is ARM14_CONTRACT,
             "measured_hand_as_action": False,
         },
         "splits": split_records,
@@ -436,6 +540,7 @@ def main() -> None:
         json.dumps(
             {
                 "status": "passed",
+                "contract": contract.name,
                 "train_repo_id": args.train_repo_id,
                 "eval_repo_id": args.eval_repo_id,
                 "train_episodes": len(split_records["train"]),

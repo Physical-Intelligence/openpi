@@ -56,6 +56,31 @@ def test_g1_inputs_use_aligned_depth_in_auxiliary_image_slot():
     assert result["actions"].shape == (10, 14)
 
 
+def test_g1_left_only_rgbd_contract_uses_17_state_and_7_actions():
+    transform = g1_policy.G1Inputs(
+        model_type=_model.ModelType.PI05,
+        state_dim=17,
+        task_action_dim=7,
+        use_depth_image=True,
+    )
+
+    result = transform(
+        {
+            "head_image": np.zeros((240, 320, 3), dtype=np.uint8),
+            "depth_image": np.zeros((240, 320, 3), dtype=np.uint8),
+            "state": np.zeros(17, dtype=np.float32),
+            "actions": np.zeros((10, 7), dtype=np.float32),
+            "prompt": "grasp the Coke can, lift it, and present it",
+        }
+    )
+
+    assert result["state"].shape == (17,)
+    assert result["actions"].shape == (10, 7)
+    assert g1_policy.G1Outputs(task_action_dim=7)(
+        {"actions": np.zeros((10, 32), dtype=np.float32)}
+    )["actions"].shape == (10, 7)
+
+
 def test_rgbd_augmentation_shares_spatial_translation() -> None:
     feature = np.zeros((32, 48, 3), dtype=np.uint8)
     feature[10:14, 20:24] = 255
