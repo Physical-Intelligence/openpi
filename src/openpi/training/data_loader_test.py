@@ -2,9 +2,24 @@ import dataclasses
 
 import jax
 
+from openpi import transforms as _transforms
 from openpi.models import pi0_config
 from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
+
+
+class _OneItemDataset:
+    def __getitem__(self, _index):
+        return {"marker": 0}
+
+    def __len__(self):
+        return 1
+
+
+class _MarkTraining:
+    def __call__(self, data):
+        data["marker"] += 1
+        return data
 
 
 def test_torch_data_loader():
@@ -21,6 +36,23 @@ def test_torch_data_loader():
     assert len(batches) == 2
     for batch in batches:
         assert all(x.shape[0] == 4 for x in jax.tree.leaves(batch))
+
+
+def test_training_transforms_are_excluded_from_evaluation() -> None:
+    data_config = _config.DataConfig(
+        repo_id="fake",
+        training_transforms=_transforms.Group(inputs=[_MarkTraining()]),
+    )
+
+    train = _data_loader.transform_dataset(
+        _OneItemDataset(), data_config, skip_norm_stats=True, training=True
+    )
+    evaluation = _data_loader.transform_dataset(
+        _OneItemDataset(), data_config, skip_norm_stats=True, training=False
+    )
+
+    assert train[0]["marker"] == 1
+    assert evaluation[0]["marker"] == 0
 
 
 def test_torch_data_loader_infinite():

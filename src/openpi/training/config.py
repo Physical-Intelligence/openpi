@@ -81,6 +81,9 @@ class DataConfig:
     data_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # Model specific transforms. Will be applied after the data is normalized.
     model_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
+    # Stochastic transforms used only by shuffled training loaders. They are
+    # excluded from normalization, checkpoint evaluation, and policy inference.
+    training_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantile_norm: bool = False
 
@@ -471,6 +474,7 @@ class LeRobotG1DataConfig(DataConfigFactory):
     state_dim: int = 29
     task_action_dim: int = 21
     use_depth_image: bool = False
+    augment_rgbd: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -496,6 +500,9 @@ class LeRobotG1DataConfig(DataConfigFactory):
             ],
             outputs=[g1_policy.G1Outputs(task_action_dim=self.task_action_dim)],
         )
+        training_transforms = _transforms.Group(
+            inputs=[g1_policy.G1RgbdAugment()] if self.augment_rgbd else []
+        )
         model_transforms = ModelTransformFactory()(model_config)
 
         return dataclasses.replace(
@@ -503,6 +510,7 @@ class LeRobotG1DataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            training_transforms=training_transforms,
             action_sequence_keys=("action",),
         )
 
@@ -1059,6 +1067,7 @@ _CONFIGS = [
             state_dim=24,
             task_action_dim=14,
             use_depth_image=True,
+            augment_rgbd=True,
             base_config=DataConfig(prompt_from_task=True),
         ),
         pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",

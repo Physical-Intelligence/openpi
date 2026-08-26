@@ -169,7 +169,13 @@ def create_rlds_dataset(
     )
 
 
-def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
+def transform_dataset(
+    dataset: Dataset,
+    data_config: _config.DataConfig,
+    *,
+    skip_norm_stats: bool = False,
+    training: bool = False,
+) -> Dataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
     if data_config.repo_id != "fake" and not skip_norm_stats:
@@ -185,6 +191,7 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
         [
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
+            *(data_config.training_transforms.inputs if training else ()),
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
         ],
@@ -300,7 +307,7 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
-    dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, training=shuffle)
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
