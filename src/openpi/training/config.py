@@ -470,20 +470,20 @@ class LeRobotG1DataConfig(DataConfigFactory):
 
     state_dim: int = 29
     task_action_dim: int = 21
+    use_depth_image: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_mapping = {
+            "head_image": "observation.images.head",
+            "state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        }
+        if self.use_depth_image:
+            repack_mapping["depth_image"] = "observation.images.depth"
         repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "head_image": "observation.images.head",
-                        "state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
+            inputs=[_transforms.RepackTransform(repack_mapping)]
         )
         data_transforms = _transforms.Group(
             inputs=[
@@ -491,6 +491,7 @@ class LeRobotG1DataConfig(DataConfigFactory):
                     model_type=model_config.model_type,
                     state_dim=self.state_dim,
                     task_action_dim=self.task_action_dim,
+                    use_depth_image=self.use_depth_image,
                 )
             ],
             outputs=[g1_policy.G1Outputs(task_action_dim=self.task_action_dim)],
@@ -1031,6 +1032,55 @@ _CONFIGS = [
         checkpoint_base_dir="/openpi_assets/training",
         assets_base_dir="/openpi_assets/assets",
         exp_name="fruit_ninja_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # Kinesthetic RGB-D demonstrations recorded on the real G1.  The
+        # observed 7D Dex3 pose remains in state, but is deliberately not used
+        # as an action label.  Only the exact 14 arm targets accepted on
+        # rt/arm_sdk enter supervised action chunks; hand closure is owned by
+        # the deterministic grasp stage at runtime.
+        name="pi05_spark_g1_coke_rgbd_arm14",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv(
+                "OPENPI_G1_COKE_RGBD_DATASET_REPO_ID",
+                "local/g1_coke_pickup_real_rgbd_left_rcoke_3_16_train_v1",
+            ),
+            state_dim=24,
+            task_action_dim=14,
+            use_depth_image=True,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        pytorch_lora_rank=16,
+        pytorch_lora_alpha=16.0,
+        pytorch_lora_action_expert_rank=32,
+        pytorch_lora_action_expert_alpha=32.0,
+        pytorch_lora_dropout=0.0,
+        pytorch_lora_train_action_heads=True,
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=4_000,
+        log_interval=10,
+        save_interval=100,
+        keep_period=None,
+        checkpoint_reward_batches=8,
+        checkpoint_reward_min=0.0,
+        checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_min_free_disk_gib=256.0,
+        checkpoint_min_free_disk_fraction=0.10,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="g1_coke_rgbd_arm14_pi05",
         wandb_enabled=False,
     ),
     TrainConfig(

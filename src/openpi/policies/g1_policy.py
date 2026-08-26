@@ -22,15 +22,32 @@ def _parse_image(image) -> np.ndarray:
 
 @dataclasses.dataclass(frozen=True)
 class G1Inputs(transforms.DataTransformFn):
-    """Map one G1 head camera and low-dimensional state into pi0.5 slots."""
+    """Map G1 RGB-D and low-dimensional state into pi0.5 image slots.
+
+    The optional aligned depth image is an 8-bit, three-channel inverse-depth
+    visualization produced by the dataset/runtime adapter.  It occupies a
+    pretrained auxiliary image slot so the pi0.5 checkpoint shape does not
+    change.  Missing depth is accepted only for RGB-only configurations.
+    """
 
     model_type: _model.ModelType
     state_dim: int = 29
     task_action_dim: int = 21
+    use_depth_image: bool = False
 
     def __call__(self, data: dict) -> dict:
         state = np.asarray(data["state"], dtype=np.float32)
         head_image = _parse_image(data["head_image"])
+        depth_image = None
+        if self.use_depth_image:
+            if "depth_image" not in data:
+                raise ValueError("Expected an aligned G1 depth image")
+            depth_image = _parse_image(data["depth_image"])
+            if depth_image.shape != head_image.shape:
+                raise ValueError(
+                    "G1 RGB and aligned depth images must share one shape, got "
+                    f"{head_image.shape} and {depth_image.shape}"
+                )
 
         if state.shape != (self.state_dim,):
             raise ValueError(f"Expected {self.state_dim} G1 state values, got shape {state.shape}")
@@ -44,12 +61,12 @@ class G1Inputs(transforms.DataTransformFn):
             "state": state,
             "image": {
                 "base_0_rgb": head_image,
-                "left_wrist_0_rgb": np.zeros_like(head_image),
+                "left_wrist_0_rgb": depth_image if depth_image is not None else np.zeros_like(head_image),
                 "right_wrist_0_rgb": np.zeros_like(head_image),
             },
             "image_mask": {
                 "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.False_,
+                "left_wrist_0_rgb": np.True_ if depth_image is not None else np.False_,
                 "right_wrist_0_rgb": np.False_,
             },
         }

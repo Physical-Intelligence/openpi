@@ -28,6 +28,51 @@ def test_g1_inputs_use_head_camera_and_mask_padding(image_shape):
     assert result["actions"].shape == (10, 21)
 
 
+def test_g1_inputs_use_aligned_depth_in_auxiliary_image_slot():
+    transform = g1_policy.G1Inputs(
+        model_type=_model.ModelType.PI05,
+        state_dim=24,
+        task_action_dim=14,
+        use_depth_image=True,
+    )
+
+    depth = np.full((240, 320, 3), 73, dtype=np.uint8)
+    result = transform(
+        {
+            "head_image": np.zeros((240, 320, 3), dtype=np.uint8),
+            "depth_image": depth,
+            "state": np.zeros(24, dtype=np.float32),
+            "actions": np.zeros((10, 14), dtype=np.float32),
+            "prompt": "grasp the Coke can, lift it, and present it",
+        }
+    )
+
+    np.testing.assert_array_equal(result["image"]["left_wrist_0_rgb"], depth)
+    assert result["image_mask"] == {
+        "base_0_rgb": np.True_,
+        "left_wrist_0_rgb": np.True_,
+        "right_wrist_0_rgb": np.False_,
+    }
+    assert result["actions"].shape == (10, 14)
+
+
+def test_g1_rgbd_contract_requires_depth():
+    transform = g1_policy.G1Inputs(
+        model_type=_model.ModelType.PI05,
+        state_dim=24,
+        task_action_dim=14,
+        use_depth_image=True,
+    )
+
+    with pytest.raises(ValueError, match="aligned G1 depth"):
+        transform(
+            {
+                "head_image": np.zeros((240, 320, 3), dtype=np.uint8),
+                "state": np.zeros(24, dtype=np.float32),
+            }
+        )
+
+
 def test_g1_outputs_drop_pi_padding():
     outputs = g1_policy.G1Outputs(task_action_dim=21)
 
@@ -36,25 +81,25 @@ def test_g1_outputs_drop_pi_padding():
     assert result["actions"].shape == (10, 21)
 
 
-def test_g1_coke_contract_uses_24_state_and_7_actions():
-    transform = g1_policy.G1Inputs(model_type=_model.ModelType.PI05, state_dim=24, task_action_dim=7)
+def test_g1_coke_contract_uses_24_state_and_21_actions():
+    transform = g1_policy.G1Inputs(model_type=_model.ModelType.PI05, state_dim=24, task_action_dim=21)
 
     result = transform(
         {
             "head_image": np.zeros((240, 320, 3), dtype=np.uint8),
             "state": np.zeros(24, dtype=np.float32),
-            "actions": np.zeros((10, 7), dtype=np.float32),
+            "actions": np.zeros((10, 21), dtype=np.float32),
             "prompt": "pick up the Coke can and hold it upright",
         }
     )
 
     assert result["state"].shape == (24,)
-    assert result["actions"].shape == (10, 7)
-    assert g1_policy.G1Outputs(task_action_dim=7)({"actions": np.zeros((10, 32))})["actions"].shape == (10, 7)
+    assert result["actions"].shape == (10, 21)
+    assert g1_policy.G1Outputs(task_action_dim=21)({"actions": np.zeros((10, 32))})["actions"].shape == (10, 21)
 
 
 def test_g1_contract_rejects_wrong_state_width():
-    transform = g1_policy.G1Inputs(model_type=_model.ModelType.PI05, state_dim=24, task_action_dim=7)
+    transform = g1_policy.G1Inputs(model_type=_model.ModelType.PI05, state_dim=24, task_action_dim=21)
 
     with pytest.raises(ValueError, match="Expected 24 G1 state"):
         transform(
