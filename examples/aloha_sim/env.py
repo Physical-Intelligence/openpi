@@ -25,6 +25,7 @@ class AlohaSimEnvironment(_environment.Environment):
         self._last_obs = self._convert_observation(gym_obs)  # type: ignore
         self._done = False
         self._episode_reward = 0.0
+        # breakpoint()
 
     @override
     def is_episode_complete(self) -> bool:
@@ -46,7 +47,7 @@ class AlohaSimEnvironment(_environment.Environment):
 
     def _convert_observation(self, gym_obs: dict) -> dict:
         img = gym_obs["pixels"]["top"]
-        img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img, 224, 224))
+        img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img, 640, 640))
         # Convert axis order from [H, W, C] --> [C, H, W]
         img = np.transpose(img, (2, 0, 1))
 

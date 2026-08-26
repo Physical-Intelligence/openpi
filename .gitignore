@@ -3,6 +3,7 @@ assets/
 checkpoints/
 data/
 wandb/
+lerobot/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
