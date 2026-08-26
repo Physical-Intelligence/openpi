@@ -555,6 +555,8 @@ def train_loop(config: _config.TrainConfig):
             "checkpoint_metric_is_task_reward": False,
             "checkpoint_eval_repo_id": checkpoint_evaluation.source_repo_id,
             "checkpoint_eval_uses_heldout_data": checkpoint_evaluation.uses_heldout_data,
+            "baseline_checkpoint_reward": baseline_reward,
+            "baseline_checkpoint_loss": baseline_reward_loss,
             "last_offline_imitation_reward": last_reward,
             "last_offline_imitation_loss": last_reward_loss,
             "last_reward_eval_step": last_reward_eval_step,
