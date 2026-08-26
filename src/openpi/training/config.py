@@ -20,10 +20,10 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.hsr_policy as hsr_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
-import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
@@ -94,8 +94,8 @@ class DataConfig:
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
-    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
-    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
+    # Path to the data filter file for DROID dataset
+    filter_dict_path: str | None = None
 
 
 class GroupFactory(Protocol):
@@ -367,16 +367,8 @@ class RLDSDroidDataConfig(DataConfigFactory):
     # Filtering options. Can pass a path to a dictionary that maps episodes to timestep ranges
     # to tuples denoting ranges of time steps to keep (start, end). Episodes are uniquely identified with
     # f"{recording_folderpath}--{file_path}", both of which are present in the RLDS episode metadata.
-
-    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
-    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = (
-        droid_rlds_dataset.RLDSDataset(
-            name="droid",
-            version="1.0.1",
-            weight=1.0,
-            filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
-        ),
-    )
+    # Path to the filter dictionary file.
+    filter_dict_path: str | None = "gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -419,7 +411,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
-            datasets=self.datasets,
+            filter_dict_path=self.filter_dict_path,
         )
 
 
@@ -460,7 +452,155 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
         )
+        
+@dataclasses.dataclass(frozen=True)
+class LeRobotHSRDataConfig(DataConfigFactory):
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
 
+    # If true, this will convert the joint and gripper values from the HSR space to
+    # the space used by the pi internal runtime (trossen mobile) which was used to train the base model. People who
+    # use the HSR data should set this to true.
+    adapt_to_pi: bool = True
+
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action.state_diff", "action.relative")
+
+    # Select which action source to use.
+    # - "relative": use only action.relative
+    # - "absolute_arm_head_relative_gripper_base": use arm/head from action.absolute and gripper/base from action.relative
+    # - "state_diff_arm_head_relative_gripper_base": use arm/head from action.state_diff and gripper/base from action.relative
+    action_mode: str = "relative"
+
+    # If true, apply gripper conversion between HSR and pi0 angular space.
+    convert_gripper: bool = False
+
+    # Base action dimension appended from action.relative when action_mode is state_diff_with_base.
+    base_action_dim: int = 3
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+
+        if self.action_mode == "relative":
+            action_sequence_keys = ("actions",)
+            repack_transform = _transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "head_rgb": "head_rgb",
+                            "hand_rgb": "hand_rgb",
+                            "state": "state",
+                            "actions": "actions",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            )
+            data_transforms = _transforms.Group(
+                inputs=[
+                    hsr_policy.HSRInputs(
+                        action_dim=model_config.action_dim,
+                        adapt_to_pi=self.adapt_to_pi,
+                        convert_gripper=self.convert_gripper,
+                    ),
+                    hsr_policy.ProprioDropout(drop_rate=0.4),
+                ],
+                outputs=[
+                    hsr_policy.HSROutputs(
+                        adapt_to_pi=self.adapt_to_pi,
+                        convert_gripper=self.convert_gripper,
+                    )
+                ],
+            )
+        elif self.action_mode == "absolute_arm_head_relative_gripper_base":
+            action_sequence_keys = ("action.absolute", "action.relative")
+            repack_transform = _transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "head_rgb": "observation.image.head",
+                            "hand_rgb": "observation.image.hand",
+                            "state": "observation.state",
+                            "actions_absolute": "action.absolute",
+                            "actions_relative": "action.relative",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            )
+            data_transforms = _transforms.Group(
+                inputs=[
+                    _transforms.CombineStateDiffArmHeadRelativeGripperBase(
+                        state_diff_key="actions_absolute",
+                        relative_key="actions_relative",
+                        base_dim=self.base_action_dim,
+                    ),
+                    hsr_policy.HSRInputs(
+                        action_dim=model_config.action_dim,
+                        adapt_to_pi=self.adapt_to_pi,
+                        convert_gripper=self.convert_gripper,
+                    )
+                ],
+                outputs=[
+                    hsr_policy.HSROutputs(
+                        adapt_to_pi=self.adapt_to_pi,
+                        convert_gripper=self.convert_gripper,
+                    )
+                ],
+            )
+        elif self.action_mode == "state_diff_arm_head_relative_gripper_base":
+            action_sequence_keys = ("action.state_diff", "action.relative")
+            repack_transform = _transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "head_rgb": "observation.image.head",
+                            "hand_rgb": "observation.image.hand",
+                            "state": "observation.state",
+                            "actions_state_diff": "action.state_diff",
+                            "actions_relative": "action.relative",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            )
+            data_transforms = _transforms.Group(
+                inputs=[
+                    _transforms.CombineStateDiffArmHeadRelativeGripperBase(
+                        base_dim=self.base_action_dim
+                    ),
+                    hsr_policy.HSRInputs(
+                        action_dim=model_config.action_dim,
+                        adapt_to_pi=self.adapt_to_pi,
+                        convert_gripper=self.convert_gripper,
+                    ),
+                ],
+                outputs=[
+                    hsr_policy.HSROutputs(
+                        adapt_to_pi=self.adapt_to_pi,
+                        convert_gripper=self.convert_gripper,
+                    )
+                ],
+            )
+        else:
+            raise ValueError(
+                "Invalid action_mode. Expected 'relative', "
+                "'absolute_arm_head_relative_gripper_base', or "
+                "'state_diff_arm_head_relative_gripper_base'."
+            )
+
+        # Prepare data for policy training
+        # Convert images to uint8 numpy arrays, add masks
+        # Model transforms include things like tokenizing the prompt and action targets
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs,model_config=model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=action_sequence_keys,
+        )
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -484,6 +624,9 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    
+    # sample the first batch and send to the wandb
+    pytorch_sample_data: bool = False
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -676,6 +819,25 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="pi0_hsr",
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotHSRDataConfig(
+            repo_id="processed/2025-05-06-07-v3.1-success-only",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m"
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_workers=8,
+        batch_size=256,
+        num_train_steps=200_000,
+        pytorch_weight_path="/home/user_00103_25b505/shared-storage/dev/models/pi0",
+    ),
+    TrainConfig(
         name="pi0_libero_low_mem_finetune",
         # Here is an example of loading a pi0 model for LoRA fine-tuning.
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
@@ -740,6 +902,7 @@ _CONFIGS = [
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
+
     TrainConfig(
         name="pi05_libero",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
@@ -765,7 +928,7 @@ _CONFIGS = [
     # Fine-tuning Aloha configs.
     #
     # This is a test config that is used to illustate how train on a custom LeRobot dataset.
-    # For instructions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
+    # For instuctions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
     TrainConfig(
         name="pi0_aloha_pen_uncap",
         model=pi0_config.Pi0Config(),
@@ -916,6 +1079,128 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+    TrainConfig(
+        name="pi05_hsr",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # pi05 is trained with 32-dim actions
+            action_horizon=16,
+        ),
+        data=LeRobotHSRDataConfig(
+            repo_id="processed/2025-05-06-07-v3.1-success-only",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=200_000,
+        batch_size=512,
+        num_workers=8, # Increase num_workers to speed up data loading with larger datasets.
+        pytorch_weight_path="/home/user_00103_25b505/shared-storage/dev/models/pi05",
+    ),
+    #
+    # HSR AIRoA — Aligned with eval repo (adapt_to_pi, action_horizon=32, LR decay).
+    #
+    TrainConfig(
+        name="pi05_hsr_airoa",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=32,
+        ),
+        data=LeRobotHSRDataConfig(
+            repo_id="airoa/hsr",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=2_000,
+            peak_lr=5e-5,
+            decay_steps=50_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.99,
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=16,
+        log_interval=100,
+        save_interval=5000,
+        keep_period=10_000,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="pi0_task8",
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotHSRDataConfig(
+            repo_id="lerobot_datasets/task8",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule( # batch 512
+            warmup_steps=1_000,
+            peak_lr=1.0e-4,    # 2.5e-5 × √16 = 1.0e-4
+            decay_steps=80_000,
+            decay_lr=1.0e-5,   # 2.5e-6 × √16 = 1.0e-5
+        ),
+        batch_size=512,
+        num_workers=16,
+        num_train_steps=80_000,
+        # lr_schedule=_optimizer.CosineDecaySchedule( # batch 128
+        #     warmup_steps=1_000,
+        #     peak_lr=5.0e-5,     # 2.5e-5 × 2 = 5.0e-5
+        #     decay_steps=320_000,  # Match num_train_steps.
+        #     decay_lr=5.0e-6,    # 2.5e-6 × 2 = 5.0e-6
+        # ),
+        # batch_size=128,
+        # num_workers=4,
+        # num_train_steps=320_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_task8",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # pi05 is trained with 32-dim actions
+            action_horizon=16,
+        ),
+        data=LeRobotHSRDataConfig(
+            repo_id="lerobot_datasets/task8",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_task8",
+                asset_id="lerobot_datasets/task8",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule( # batch 512
+            warmup_steps=1_000,
+            peak_lr=1.0e-4,    # 2.5e-5 × √16 = 1.0e-4
+            decay_steps=80_000,
+            decay_lr=1.0e-5,   # 2.5e-6 × √16 = 1.0e-5
+        ),
+        batch_size=512,
+        num_workers=16,
+        num_train_steps=80_000,
+        # lr_schedule=_optimizer.CosineDecaySchedule( # batch 128
+        #     warmup_steps=1_000,
+        #     peak_lr=5.0e-5,     # 2.5e-5 × 2 = 5.0e-5
+        #     decay_steps=320_000,  # Match num_train_steps.
+        #     decay_lr=5.0e-6,    # 2.5e-6 × 2 = 5.0e-6
+        # ),
+        # batch_size=128,
+        # num_workers=4,
+        # num_train_steps=320_000,
+    ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
@@ -965,9 +1250,41 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    # RoboArena & PolaRiS configs.
+    #
+    # RoboArena configs.
+    #
     *roboarena_config.get_roboarena_configs(),
-    *polaris_config.get_polaris_configs(),
+    #
+    # Sample checkpoint config
+    #
+    TrainConfig(
+        name="pi05_hsr_task6891011_level12_v2.5_train_adaptive",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # pi05 is trained with 32-dim actions
+            action_horizon=16,
+        ),
+        data=LeRobotHSRDataConfig(
+            repo_id="lerobot_datasets/task6891011_level12_v2.5_train",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_hsr_task6891011_level12_v2.5_train_adaptive",
+                asset_id="lerobot_datasets/task6891011_level12_v2.5_train",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule( # batch 64
+            warmup_steps=1_000,
+            peak_lr=3.5e-5,     # 2.5e-5 × √2 = 3.5e-5
+            decay_steps=1_300_000,  # Match num_train_steps.
+            decay_lr=3.5e-6,    # 2.5e-6 × √2 = 3.5e-6
+        ),
+        batch_size=64,
+        num_workers=8,
+        num_train_steps=1_300_000,
+    ),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
