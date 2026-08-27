@@ -169,7 +169,13 @@ def create_rlds_dataset(
     )
 
 
-def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
+def transform_dataset(
+    dataset: Dataset,
+    data_config: _config.DataConfig,
+    *,
+    skip_norm_stats: bool = False,
+    training: bool = False,
+) -> Dataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
     if data_config.repo_id != "fake" and not skip_norm_stats:
@@ -185,6 +191,7 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
         [
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
+            *(data_config.training_transforms.inputs if training else ()),
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
         ],
@@ -300,7 +307,7 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
-    dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, training=shuffle)
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
@@ -538,3 +545,20 @@ class DataLoaderImpl(DataLoader):
     def __iter__(self):
         for batch in self._data_loader:
             yield _model.Observation.from_dict(batch), batch["actions"]
+
+    def evenly_spaced_batches(self, *, num_batches: int, batch_size: int):
+        """Materialize deterministic random-access batches spanning the dataset."""
+        if not isinstance(self._data_loader, TorchDataLoader):
+            raise TypeError("Evenly spaced evaluation batches require a TorchDataLoader")
+        dataset = self._data_loader.torch_loader.dataset
+        sample_count = min(len(dataset), num_batches * batch_size)
+        indices = np.linspace(0, len(dataset) - 1, sample_count, dtype=np.int64)
+        batches = []
+        for start in range(0, sample_count, batch_size):
+            batch_indices = indices[start : start + batch_size]
+            if len(batch_indices) < batch_size:
+                break
+            batch = _collate_fn([dataset[int(index)] for index in batch_indices])
+            batch = jax.tree.map(torch.as_tensor, batch)
+            batches.append((_model.Observation.from_dict(batch), batch["actions"]))
+        return batches

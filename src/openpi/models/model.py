@@ -17,6 +17,7 @@ import orbax.checkpoint as ocp
 import safetensors
 import torch
 
+from openpi.models_pytorch import lora as _lora
 from openpi.models_pytorch import pi0_pytorch
 from openpi.shared import image_tools
 import openpi.shared.array_typing as at
@@ -243,7 +244,25 @@ class BaseModelConfig(abc.ABC):
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
-        safetensors.torch.load_model(model, weight_path)
+        if train_config.pytorch_lora_rank is None:
+            safetensors.torch.load_model(model, weight_path)
+            return model
+
+        if train_config.pytorch_weight_path is None:
+            raise ValueError("A PyTorch base-weight path is required to load a LoRA checkpoint")
+        base_weight_path = pathlib.Path(train_config.pytorch_weight_path) / "model.safetensors"
+        safetensors.torch.load_model(model, base_weight_path)
+        _lora.apply_pi0_lora(
+            model,
+            paligemma_rank=train_config.pytorch_lora_rank,
+            action_expert_rank=train_config.pytorch_lora_action_expert_rank or train_config.pytorch_lora_rank,
+            paligemma_alpha=train_config.pytorch_lora_alpha,
+            action_expert_alpha=train_config.pytorch_lora_action_expert_alpha,
+            dropout=train_config.pytorch_lora_dropout,
+            train_action_heads=train_config.pytorch_lora_train_action_heads,
+        )
+        adapter_state = safetensors.torch.load_file(weight_path, device="cpu")
+        _lora.load_trainable_state_dict(model, adapter_state)
         return model
 
     @abc.abstractmethod

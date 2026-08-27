@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -19,6 +20,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.g1_policy as g1_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -79,6 +81,9 @@ class DataConfig:
     data_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # Model specific transforms. Will be applied after the data is normalized.
     model_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
+    # Stochastic transforms used only by shuffled training loaders. They are
+    # excluded from normalization, checkpoint evaluation, and policy inference.
+    training_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantile_norm: bool = False
 
@@ -463,6 +468,54 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotG1DataConfig(DataConfigFactory):
+    """LeRobot contract for one G1 head camera and a task-level controller."""
+
+    state_dim: int = 29
+    task_action_dim: int = 21
+    use_depth_image: bool = False
+    augment_rgbd: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_mapping = {
+            "head_image": "observation.images.head",
+            "state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        }
+        if self.use_depth_image:
+            repack_mapping["depth_image"] = "observation.images.depth"
+        repack_transform = _transforms.Group(
+            inputs=[_transforms.RepackTransform(repack_mapping)]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[
+                g1_policy.G1Inputs(
+                    model_type=model_config.model_type,
+                    state_dim=self.state_dim,
+                    task_action_dim=self.task_action_dim,
+                    use_depth_image=self.use_depth_image,
+                )
+            ],
+            outputs=[g1_policy.G1Outputs(task_action_dim=self.task_action_dim)],
+        )
+        training_transforms = _transforms.Group(
+            inputs=[g1_policy.G1RgbdAugment()] if self.augment_rgbd else []
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            training_transforms=training_transforms,
+            action_sequence_keys=("action",),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -484,6 +537,16 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+
+    # Optional dependency-free PyTorch LoRA. When enabled, the pretrained
+    # vision tower and base weights remain frozen; LoRA residuals are inserted
+    # into both transformers and the task action heads remain trainable.
+    pytorch_lora_rank: int | None = None
+    pytorch_lora_alpha: float = 16.0
+    pytorch_lora_action_expert_rank: int | None = None
+    pytorch_lora_action_expert_alpha: float = 32.0
+    pytorch_lora_dropout: float = 0.0
+    pytorch_lora_train_action_heads: bool = True
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -509,6 +572,9 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+    # Optional wall-clock limit for the actual optimization loop. A final
+    # checkpoint is written when this deadline is reached.
+    max_train_seconds: float | None = None
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -516,6 +582,19 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+
+    # PyTorch reward-gated checkpointing. The current trainer defines the
+    # offline reward as exp(-deterministic imitation loss); it is explicitly
+    # not a simulator task reward. A checkpoint is written only when this
+    # reward improves by at least checkpoint_reward_min_delta.
+    checkpoint_reward_batches: int = 16
+    checkpoint_reward_min: float = 0.0
+    checkpoint_reward_min_delta: float = 1.0e-6
+    # Optional separate LeRobot repo used only to rank reward-gated
+    # checkpoints. It is loaded with the training repo's normalization stats.
+    checkpoint_eval_repo_id: str | None = None
+    checkpoint_min_free_disk_gib: float = 256.0
+    checkpoint_min_free_disk_fraction: float = 0.10
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -554,6 +633,24 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.max_train_seconds is not None and self.max_train_seconds <= 0:
+            raise ValueError("max_train_seconds must be positive when set.")
+        if self.pytorch_lora_rank is not None and self.pytorch_lora_rank <= 0:
+            raise ValueError("pytorch_lora_rank must be positive when set.")
+        if self.pytorch_lora_action_expert_rank is not None and self.pytorch_lora_action_expert_rank <= 0:
+            raise ValueError("pytorch_lora_action_expert_rank must be positive when set.")
+        if self.pytorch_lora_alpha <= 0 or self.pytorch_lora_action_expert_alpha <= 0:
+            raise ValueError("PyTorch LoRA alpha values must be positive.")
+        if not 0.0 <= self.pytorch_lora_dropout < 1.0:
+            raise ValueError("pytorch_lora_dropout must be in [0, 1).")
+        if self.checkpoint_reward_batches <= 0:
+            raise ValueError("checkpoint_reward_batches must be positive.")
+        if self.checkpoint_reward_min_delta < 0:
+            raise ValueError("checkpoint_reward_min_delta cannot be negative.")
+        if self.checkpoint_min_free_disk_gib < 0:
+            raise ValueError("checkpoint_min_free_disk_gib cannot be negative.")
+        if not 0.0 <= self.checkpoint_min_free_disk_fraction < 1.0:
+            raise ValueError("checkpoint_min_free_disk_fraction must be in [0, 1).")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -916,6 +1013,193 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+    TrainConfig(
+        # Spark-ready full pi0.5 fine-tuning contract for the existing 21-D G1
+        # Fruit Ninja task controller. Override data.repo_id with the recorded
+        # LeRobot dataset before computing stats or starting training.
+        name="pi05_spark_g1_fruit_ninja",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv("OPENPI_G1_DATASET_REPO_ID", "your_hf_username/g1_fruit_ninja"),
+            state_dim=29,
+            task_action_dim=21,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        batch_size=1,
+        num_workers=4,
+        num_train_steps=20_000,
+        log_interval=10,
+        save_interval=1_000,
+        keep_period=5_000,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="fruit_ninja_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # Kinesthetic RGB-D demonstrations recorded on the real G1.  The
+        # observed 7D Dex3 pose remains in state, but is deliberately not used
+        # as an action label.  Only the exact 14 arm targets accepted on
+        # rt/arm_sdk enter supervised action chunks; hand closure is owned by
+        # the deterministic grasp stage at runtime.
+        name="pi05_spark_g1_coke_rgbd_arm14",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv(
+                "OPENPI_G1_COKE_RGBD_DATASET_REPO_ID",
+                "local/g1_coke_pickup_real_rgbd_left_rcoke_3_16_train_v1",
+            ),
+            state_dim=24,
+            task_action_dim=14,
+            use_depth_image=True,
+            augment_rgbd=True,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        pytorch_lora_rank=16,
+        pytorch_lora_alpha=16.0,
+        pytorch_lora_action_expert_rank=32,
+        pytorch_lora_action_expert_alpha=32.0,
+        pytorch_lora_dropout=0.0,
+        pytorch_lora_train_action_heads=True,
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=4_000,
+        log_interval=10,
+        save_interval=200,
+        keep_period=None,
+        checkpoint_reward_batches=32,
+        checkpoint_reward_min=0.0,
+        checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_eval_repo_id=os.getenv(
+            "OPENPI_G1_COKE_RGBD_EVAL_REPO_ID",
+            "local/g1_coke_pickup_real_rgbd_left_rcoke_3_16_eval_v1",
+        ),
+        checkpoint_min_free_disk_gib=256.0,
+        checkpoint_min_free_disk_fraction=0.10,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="g1_coke_rgbd_arm14_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # Strict physical-left policy. The right arm is absent from both the
+        # observation and supervised target: RGB-D + waist3 + left-arm7 +
+        # measured physical-left Dex3 -> seven exact applied left-arm targets.
+        # The hand remains a deterministic staged controller until recordings
+        # contain its exact applied commands.
+        name="pi05_spark_g1_coke_rgbd_left_arm7",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv(
+                "OPENPI_G1_COKE_LEFT_ONLY_DATASET_REPO_ID",
+                "local/g1_coke_pickup_real_rgbd_left_only_rcoke_3_16_train_v1",
+            ),
+            state_dim=17,
+            task_action_dim=7,
+            use_depth_image=True,
+            augment_rgbd=True,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        pytorch_lora_rank=16,
+        pytorch_lora_alpha=16.0,
+        pytorch_lora_action_expert_rank=32,
+        pytorch_lora_action_expert_alpha=32.0,
+        pytorch_lora_dropout=0.0,
+        pytorch_lora_train_action_heads=True,
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=4_000,
+        log_interval=10,
+        save_interval=200,
+        keep_period=None,
+        checkpoint_reward_batches=32,
+        checkpoint_reward_min=0.0,
+        checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_eval_repo_id=os.getenv(
+            "OPENPI_G1_COKE_LEFT_ONLY_EVAL_REPO_ID",
+            "local/g1_coke_pickup_real_rgbd_left_only_rcoke_3_16_eval_v1",
+        ),
+        checkpoint_min_free_disk_gib=256.0,
+        checkpoint_min_free_disk_fraction=0.10,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="g1_coke_rgbd_left_arm7_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # Vision-language-action policy for the Isaac/real Coke pickup contract:
+        # one rendered/head RGB view, 24 upper-body positions, and 21 absolute
+        # arm/right-Dex3 joint targets. Keeping action_dim=32
+        # preserves all pretrained pi0.5 checkpoint shapes.
+        name="pi05_spark_g1_coke_pickup",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotG1DataConfig(
+            repo_id=os.getenv("OPENPI_G1_COKE_DATASET_REPO_ID", "your_hf_username/g1_coke_pickup"),
+            state_dim=24,
+            task_action_dim=21,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        pytorch_lora_rank=16,
+        pytorch_lora_alpha=16.0,
+        pytorch_lora_action_expert_rank=32,
+        pytorch_lora_action_expert_alpha=32.0,
+        pytorch_lora_dropout=0.0,
+        pytorch_lora_train_action_heads=True,
+        batch_size=4,
+        # This bootstrap dataset contains a single recorded episode. Keep
+        # loading in-process so OpenCV is not imported concurrently by spawned
+        # workers during normalization on Spark.
+        num_workers=0,
+        num_train_steps=20_000,
+        log_interval=10,
+        save_interval=100,
+        keep_period=None,
+        checkpoint_reward_batches=8,
+        checkpoint_reward_min=0.0,
+        checkpoint_reward_min_delta=1.0e-6,
+        checkpoint_min_free_disk_gib=256.0,
+        checkpoint_min_free_disk_fraction=0.10,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        assets_base_dir="/openpi_assets/assets",
+        exp_name="g1_coke_pickup_pi05",
+        wandb_enabled=False,
+    ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
@@ -963,6 +1247,34 @@ _CONFIGS = [
         num_train_steps=10,
         overwrite=True,
         exp_name="debug_pi05",
+        wandb_enabled=False,
+    ),
+    # NVIDIA DGX Spark / GB10 compatibility smoke test. Unlike debug_pi05, this
+    # deliberately instantiates and updates the full pi0.5 model. The matching
+    # NVIDIA PyTorch runtime and converted checkpoint are provided by
+    # scripts/docker/spark_gb10.Dockerfile and scripts/spark/prepare_pi05.sh.
+    TrainConfig(
+        name="pi05_spark_smoke",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            pytorch_compile_mode=None,
+        ),
+        data=FakeDataConfig(),
+        pytorch_weight_path="/openpi_assets/checkpoints/pi05_base_pytorch",
+        pytorch_training_precision="bfloat16",
+        batch_size=1,
+        num_workers=0,
+        num_train_steps=1,
+        log_interval=1,
+        save_interval=1,
+        keep_period=None,
+        ema_decay=None,
+        checkpoint_base_dir="/openpi_assets/training",
+        overwrite=True,
+        exp_name="gb10_full_model_smoke",
         wandb_enabled=False,
     ),
     # RoboArena & PolaRiS configs.
