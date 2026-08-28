@@ -242,7 +242,10 @@ class BaseModelConfig(abc.ABC):
 
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
-        model = pi0_pytorch.PI0Pytorch(config=train_config.model)
+        if self.model_type not in (ModelType.PI0, ModelType.PI05):
+            raise ValueError(f"PyTorch checkpoints are only supported for PI0/PI05 models, got {self.model_type}")
+        model_config = dataclasses.replace(self, dtype=train_config.pytorch_training_precision)
+        model = pi0_pytorch.PI0Pytorch(config=model_config)
         safetensors.torch.load_model(model, weight_path)
         return model
 
