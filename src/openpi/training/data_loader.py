@@ -17,6 +17,8 @@ from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
+_SUPPORTED_LEROBOT_DATASET_VERSION = "v2.1"
+_UNSUPPORTED_LEROBOT_DATASET_VERSION = (3, 0)
 
 
 class Dataset(Protocol[T_co]):
@@ -127,6 +129,33 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+def _parse_lerobot_dataset_version(version: str | None) -> tuple[int, int] | None:
+    if version is None:
+        return None
+
+    version_parts = version.lower().removeprefix("v").split(".")
+    try:
+        major = int(version_parts[0])
+        minor = int(version_parts[1]) if len(version_parts) > 1 else 0
+    except ValueError:
+        return None
+
+    return major, minor
+
+
+def check_lerobot_dataset_version(version: str | None, repo_id: str) -> None:
+    parsed_version = _parse_lerobot_dataset_version(version)
+    if parsed_version is None or parsed_version < _UNSUPPORTED_LEROBOT_DATASET_VERSION:
+        return
+
+    raise ValueError(
+        f"Dataset {repo_id} uses LeRobot dataset format {version}. openpi currently supports format "
+        f"{_SUPPORTED_LEROBOT_DATASET_VERSION} (see the pinned lerobot dependency in pyproject.toml). "
+        f"Re-create the dataset with lerobot format {_SUPPORTED_LEROBOT_DATASET_VERSION}, or convert it back "
+        f"to {_SUPPORTED_LEROBOT_DATASET_VERSION}, before training."
+    )
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -138,6 +167,7 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    check_lerobot_dataset_version(dataset_meta.info.get("codebase_version"), repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         delta_timestamps={

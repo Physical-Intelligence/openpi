@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "augmax>=0.3.4",
+    "datasets>=2.19.0,<4.0.0",
     "dm-tree>=0.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.8",
