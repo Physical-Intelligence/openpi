@@ -26,7 +26,10 @@ Example:
     python examples/convert_jax_model_to_pytorch.py --checkpoint_dir /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch
 """
 
+import dataclasses
 import json
+import logging
+import math
 import os
 import pathlib
 import shutil
@@ -45,6 +48,248 @@ import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
 from openpi.training import utils
 import openpi.training.config as _config
+
+logger = logging.getLogger(__name__)
+
+
+def _has_lora(model_config: openpi.models.pi0_config.Pi0Config) -> bool:
+    """Return True if either expert config declares LoRA adapters."""
+    paligemma_cfg = openpi.models.gemma.get_config(model_config.paligemma_variant)
+    action_expert_cfg = openpi.models.gemma.get_config(model_config.action_expert_variant)
+    return bool(getattr(paligemma_cfg, "lora_configs", None)) or bool(getattr(action_expert_cfg, "lora_configs", None))
+
+
+def _lora_scale(config) -> float:
+    """Replicate ``openpi.models.lora.LoRAConfig.scaling_value`` without instantiating it."""
+    if config is None:
+        return 1.0
+    rank = float(config.rank)
+    alpha = float(config.alpha)
+    if bool(getattr(config, "rslora", False)):
+        return alpha / math.sqrt(rank)
+    return alpha / rank
+
+
+def _merge_einsum_lora(
+    state_dict: dict,
+    *,
+    base_key: str,
+    lora_a_key: str,
+    lora_b_key: str,
+    einsum_expr: str,
+    scale: float,
+) -> None:
+    """Merge a pair of LoRA adapters into a base einsum weight in-place.
+
+    The merge is computed in float32 to avoid bfloat16 cancellation; the resulting
+    base weight is stored as float32 so the downstream slicing keeps full precision.
+    """
+    if lora_a_key not in state_dict or lora_b_key not in state_dict:
+        return
+    base = np.asarray(state_dict[base_key], dtype=np.float32)
+    lora_a = np.asarray(state_dict.pop(lora_a_key), dtype=np.float32)
+    lora_b = np.asarray(state_dict.pop(lora_b_key), dtype=np.float32)
+    delta = np.einsum(einsum_expr, lora_a, lora_b, optimize=True)
+    state_dict[base_key] = base + delta * scale
+
+
+def _merge_attn_vec_lora(
+    state_dict: dict,
+    *,
+    base_key: str,
+    lora_a_key: str,
+    lora_b_key: str,
+    scale: float,
+) -> None:
+    """Merge attn_vec_einsum LoRA with the openpi-specific sum-over-N correction.
+
+    In ``openpi.models.gemma.Attention``, the post-attention projection runs as
+    ``out_einsum("BTNH,NHD->BTD", encoded)``. ``openpi.models.lora.Einsum`` then
+    builds the LoRA path as two einsums::
+
+        lora = einsum("BTNH,NHL->BTL", x, lora_a)      # sums over N and H
+        lora = einsum("BTL,NLD->BTD", lora, lora_b)    # also sums over N
+
+    Because the second einsum sums over the head dimension ``N`` (it is present
+    in ``lora_b`` but absent from the output), the equivalent merged delta is::
+
+        delta[n, h, d] = sum_l lora_a[n, h, l] * (sum_{n'} lora_b[n', l, d])
+
+    i.e. ``lora_b`` is summed over ``N`` first. A standard per-head outer
+    product would not reproduce the runtime forward pass.
+    """
+    if lora_a_key not in state_dict or lora_b_key not in state_dict:
+        return
+    base = np.asarray(state_dict[base_key], dtype=np.float32)
+    lora_a = np.asarray(state_dict.pop(lora_a_key), dtype=np.float32)
+    lora_b = np.asarray(state_dict.pop(lora_b_key), dtype=np.float32)
+    # shapes: base (L, N, H, D), lora_a (L, N, H, rank), lora_b (L, N, rank, D)
+    lora_b_sum_n = np.sum(lora_b, axis=1)  # (L, rank, D)
+    delta = np.einsum("lnhr,lrd->lnhd", lora_a, lora_b_sum_n, optimize=True)
+    state_dict[base_key] = base + delta * scale
+
+
+def _merge_mlp_linear_lora(
+    state_dict: dict,
+    *,
+    base_key: str,
+    lora_a_key: str,
+    lora_b_key: str,
+    scale: float,
+) -> None:
+    """Merge LoRA into the MLP ``linear`` weight (shape ``(L, hidden, features)``)."""
+    if lora_a_key not in state_dict or lora_b_key not in state_dict:
+        return
+    base = np.asarray(state_dict[base_key], dtype=np.float32)
+    lora_a = np.asarray(state_dict.pop(lora_a_key), dtype=np.float32)
+    lora_b = np.asarray(state_dict.pop(lora_b_key), dtype=np.float32)
+    delta = np.einsum("lhr,lrf->lhf", lora_a, lora_b, optimize=True)
+    state_dict[base_key] = base + delta * scale
+
+
+def merge_lora_into_base(
+    flat_state_dict: dict,
+    model_config: openpi.models.pi0_config.Pi0Config,
+) -> dict:
+    """Merge any LoRA adapter weights in ``flat_state_dict`` into the base weights.
+
+    The flattened JAX checkpoint contains both base parameters (``.../w``,
+    ``.../gating_einsum``, ``.../linear``) and LoRA adapters (``.../lora_a``,
+    ``.../lora_b``, ``.../gating_einsum_lora_a``, ...). After this call, the
+    LoRA adapter keys are removed and the corresponding base keys contain
+    ``base + delta * scaling`` so the downstream slicing path produces a
+    PyTorch checkpoint that is numerically equivalent to the JAX runtime.
+
+    Two openpi-specific behaviors are reproduced here:
+
+    1. ``attn_vec_einsum`` uses ``sum_N(lora_b)`` (see ``_merge_attn_vec_lora``).
+    2. ``openpi.models.lora.FeedForward._dot`` adds the LoRA delta to the
+       MLP weights *without* applying the alpha/rank scaling factor, so the
+       merged MLP weights must omit it (``scale=1.0``).
+
+    This function is a no-op for non-LoRA configs (their gemma configs have
+    empty ``lora_configs`` dicts), so it is safe to call unconditionally.
+    """
+    paligemma_cfg = openpi.models.gemma.get_config(model_config.paligemma_variant)
+    action_expert_cfg = openpi.models.gemma.get_config(model_config.action_expert_variant)
+
+    # Match the suffix convention used by ``slice_paligemma_state_dict``: some
+    # checkpoints keep an extra ``/value`` leaf, others do not.
+    suffix = "/value" if "img/embedding/kernel/value" in flat_state_dict else ""
+
+    def _merge_attention(prefix: str, gemma_cfg) -> None:
+        lora_configs = getattr(gemma_cfg, "lora_configs", None) or {}
+        attn_cfg = lora_configs.get("attn")
+        if attn_cfg is None:
+            return
+        scale = _lora_scale(attn_cfg)
+        # Combined QKV: shape (L, 3, num_heads, width, head_dim) when num_heads == num_kv_heads.
+        qkv_key = f"{prefix}/qkv_einsum/w{suffix}"
+        if qkv_key in flat_state_dict:
+            _merge_einsum_lora(
+                flat_state_dict,
+                base_key=qkv_key,
+                lora_a_key=f"{prefix}/qkv_einsum/lora_a{suffix}",
+                lora_b_key=f"{prefix}/qkv_einsum/lora_b{suffix}",
+                einsum_expr="lqndr,lqnrh->lqndh",
+                scale=scale,
+            )
+        else:
+            # Separate Q and KV einsums.
+            _merge_einsum_lora(
+                flat_state_dict,
+                base_key=f"{prefix}/q_einsum/w{suffix}",
+                lora_a_key=f"{prefix}/q_einsum/lora_a{suffix}",
+                lora_b_key=f"{prefix}/q_einsum/lora_b{suffix}",
+                einsum_expr="lndr,lnrh->lndh",
+                scale=scale,
+            )
+            _merge_einsum_lora(
+                flat_state_dict,
+                base_key=f"{prefix}/kv_einsum/w{suffix}",
+                lora_a_key=f"{prefix}/kv_einsum/lora_a{suffix}",
+                lora_b_key=f"{prefix}/kv_einsum/lora_b{suffix}",
+                einsum_expr="labdr,labrh->labdh",
+                scale=scale,
+            )
+        _merge_attn_vec_lora(
+            flat_state_dict,
+            base_key=f"{prefix}/attn_vec_einsum/w{suffix}",
+            lora_a_key=f"{prefix}/attn_vec_einsum/lora_a{suffix}",
+            lora_b_key=f"{prefix}/attn_vec_einsum/lora_b{suffix}",
+            scale=scale,
+        )
+
+    def _merge_mlp(prefix: str, gemma_cfg) -> None:
+        lora_configs = getattr(gemma_cfg, "lora_configs", None) or {}
+        ffn_cfg = lora_configs.get("ffn")
+        if ffn_cfg is None:
+            return
+        # NOTE: openpi.models.lora.FeedForward._dot adds the LoRA delta without
+        # applying alpha/rank scaling, so the merged weight must do the same.
+        scale = 1.0
+        _merge_einsum_lora(
+            flat_state_dict,
+            base_key=f"{prefix}/gating_einsum{suffix}",
+            lora_a_key=f"{prefix}/gating_einsum_lora_a{suffix}",
+            lora_b_key=f"{prefix}/gating_einsum_lora_b{suffix}",
+            einsum_expr="lafr,larh->lafh",
+            scale=scale,
+        )
+        _merge_mlp_linear_lora(
+            flat_state_dict,
+            base_key=f"{prefix}/linear{suffix}",
+            lora_a_key=f"{prefix}/linear_lora_a{suffix}",
+            lora_b_key=f"{prefix}/linear_lora_b{suffix}",
+            scale=scale,
+        )
+
+    # PaliGemma expert (index 0).
+    _merge_attention("llm/layers/attn", paligemma_cfg)
+    _merge_mlp("llm/layers/mlp", paligemma_cfg)
+    # Action expert MLP lives under mlp_1 in the flattened tree.
+    _merge_mlp("llm/layers/mlp_1", action_expert_cfg)
+    # Action expert attention keys carry the _1 suffix on the einsum leaf name.
+    lora_configs = getattr(action_expert_cfg, "lora_configs", None) or {}
+    expert_attn_cfg = lora_configs.get("attn")
+    if expert_attn_cfg is not None:
+        scale = _lora_scale(expert_attn_cfg)
+        qkv_key = f"llm/layers/attn/qkv_einsum_1/w{suffix}"
+        if qkv_key in flat_state_dict:
+            _merge_einsum_lora(
+                flat_state_dict,
+                base_key=qkv_key,
+                lora_a_key=f"llm/layers/attn/qkv_einsum_1/lora_a{suffix}",
+                lora_b_key=f"llm/layers/attn/qkv_einsum_1/lora_b{suffix}",
+                einsum_expr="lqndr,lqnrh->lqndh",
+                scale=scale,
+            )
+        else:
+            _merge_einsum_lora(
+                flat_state_dict,
+                base_key=f"llm/layers/attn/q_einsum_1/w{suffix}",
+                lora_a_key=f"llm/layers/attn/q_einsum_1/lora_a{suffix}",
+                lora_b_key=f"llm/layers/attn/q_einsum_1/lora_b{suffix}",
+                einsum_expr="lndr,lnrh->lndh",
+                scale=scale,
+            )
+            _merge_einsum_lora(
+                flat_state_dict,
+                base_key=f"llm/layers/attn/kv_einsum_1/w{suffix}",
+                lora_a_key=f"llm/layers/attn/kv_einsum_1/lora_a{suffix}",
+                lora_b_key=f"llm/layers/attn/kv_einsum_1/lora_b{suffix}",
+                einsum_expr="labdr,labrh->labdh",
+                scale=scale,
+            )
+        _merge_attn_vec_lora(
+            flat_state_dict,
+            base_key=f"llm/layers/attn/attn_vec_einsum_1/w{suffix}",
+            lora_a_key=f"llm/layers/attn/attn_vec_einsum_1/lora_a{suffix}",
+            lora_b_key=f"llm/layers/attn/attn_vec_einsum_1/lora_b{suffix}",
+            scale=scale,
+        )
+
+    return flat_state_dict
 
 
 def slice_paligemma_state_dict(state_dict, config):
@@ -290,7 +535,7 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
     llm_mlp_linear = state_dict.pop(f"llm/layers/mlp_{num_expert}/linear{suffix}")
 
     # Check if we have Dense layers (for pi05/adaptive normalization) or scale layers (for regular pi0)
-    if "pi05" in checkpoint_dir:
+    if pi05:
         # Pi05 with adaptive normalization
         llm_input_layernorm_bias = state_dict.pop(f"llm/layers/pre_attention_norm_{num_expert}/Dense_0/bias{suffix}")
         llm_post_attention_layernorm_bias = state_dict.pop(f"llm/layers/pre_ffw_norm_{num_expert}/Dense_0/bias{suffix}")
@@ -345,7 +590,7 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
             i
         ].transpose()
 
-        if "pi05" in checkpoint_dir:
+        if pi05:
             # Pi05 with adaptive normalization - use Dense layer parameters directly
             state_dict[f"paligemma_with_expert.gemma_expert.model.layers.{i}.input_layernorm.dense.bias"] = (
                 llm_input_layernorm_bias[i]
@@ -369,7 +614,7 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
             )
 
     # Handle final norm layer
-    if "pi05" in checkpoint_dir:
+    if pi05:
         # Pi05 with adaptive normalization - use Dense layer parameters directly
         final_norm_bias = state_dict.pop(f"llm/final_norm_{num_expert}/Dense_0/bias{suffix}")
         final_norm_kernel = state_dict.pop(f"llm/final_norm_{num_expert}/Dense_0/kernel{suffix}")
@@ -427,15 +672,30 @@ def convert_pi0_checkpoint(
 
     Args:
         checkpoint_dir: Path to the JAX checkpoint
-        precision: Model precision (float32, bfloat16, float16)
+        precision: Model precision (float32, bfloat16)
         output_path: Path to save the converted PyTorch model
         model_config: Model config
     """
     print(f"Converting PI0 checkpoint from {checkpoint_dir} to {output_path}")
     print(f"Model config: {model_config}")
 
+    if precision not in ("float32", "bfloat16"):
+        raise ValueError(f"Invalid precision: {precision}")
+
     # Break down orbax ckpts by restoring via JAX to respect dtype
     initial_params = slice_initial_orbax_checkpoint(checkpoint_dir=checkpoint_dir, restore_precision="float32")
+
+    # Merge any LoRA adapters into the base weights before slicing. This is a
+    # no-op for non-LoRA configs. Without it, ``load_state_dict(..., strict=False)``
+    # below would silently drop the adapter weights and the converted checkpoint
+    # would diverge from the JAX runtime (see openpi issue #958).
+    if _has_lora(model_config):
+        logger.info(
+            "LoRA detected in %s / %s; merging adapters before conversion.",
+            model_config.paligemma_variant,
+            model_config.action_expert_variant,
+        )
+        initial_params["paligemma_params"] = merge_lora_into_base(initial_params["paligemma_params"], model_config)
 
     # Process projection params
     if model_config.pi05:
@@ -471,8 +731,9 @@ def convert_pi0_checkpoint(
         projection_params[pytorch_weight_key] = torch.from_numpy(np.array(weight)).T
         projection_params[pytorch_bias_key] = torch.from_numpy(np.array(bias))
 
-    # Create configs based on checkpoint path
-    # All models use the same PaliGemma config structure
+    # Create bridge configs from the selected model config.
+    paligemma_text_config = openpi.models.gemma.get_config(model_config.paligemma_variant)
+
     class PaliGemmaConfig:
         def __init__(self):
             self.vision_config = type(
@@ -491,16 +752,16 @@ def convert_pi0_checkpoint(
                 "obj",
                 (object,),
                 {
-                    "hidden_size": 2048,
-                    "num_hidden_layers": 18,
-                    "num_attention_heads": 8,
-                    "head_dim": 256,
-                    "intermediate_size": 16384,
+                    "hidden_size": paligemma_text_config.width,
+                    "num_hidden_layers": paligemma_text_config.depth,
+                    "num_attention_heads": paligemma_text_config.num_heads,
+                    "head_dim": paligemma_text_config.head_dim,
+                    "intermediate_size": paligemma_text_config.mlp_dim,
                 },
             )()
 
     paligemma_config = PaliGemmaConfig()
-    action_expert_config = openpi.models.gemma.get_config("gemma_300m")
+    action_expert_config = openpi.models.gemma.get_config(model_config.action_expert_variant)
 
     # Process PaliGemma weights
     paligemma_params, expert_params = slice_paligemma_state_dict(initial_params["paligemma_params"], paligemma_config)
@@ -510,21 +771,31 @@ def convert_pi0_checkpoint(
         expert_params, action_expert_config, num_expert=1, checkpoint_dir=checkpoint_dir, pi05=model_config.pi05
     )
 
-    # Instantiate model
-    pi0_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_config)
+    # Instantiate with the target dtype so load_state_dict does not quantize
+    # float32 source tensors into the config default before saving.
+    pi0_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(
+        dataclasses.replace(model_config, dtype=precision)
+    )
 
     # Combine all parameters (no prefix needed for our model structure)
     all_params = {**paligemma_params, **gemma_params, **projection_params}
 
-    # Load state dict
-    pi0_model.load_state_dict(all_params, strict=False)
+    # Load state dict.
+    load_result = pi0_model.load_state_dict(all_params, strict=False)
+    # If LoRA adapters were not merged correctly they would show up here as
+    # unexpected_keys containing ``lora_a``/``lora_b``. Surface that clearly
+    # rather than silently producing a divergent checkpoint.
+    lora_unexpected = [k for k in load_result.unexpected_keys if "lora" in k.lower()]
+    if lora_unexpected:
+        raise RuntimeError(
+            "LoRA adapter weights remain after conversion; merge_lora_into_base() did not "
+            f"consume them. Unexpected keys: {lora_unexpected[:8]}" + ("..." if len(lora_unexpected) > 8 else "")
+        )
 
     if precision == "float32":
         pi0_model = pi0_model.to(torch.float32)
     elif precision == "bfloat16":
         pi0_model = pi0_model.to(torch.bfloat16)
-    else:
-        raise ValueError(f"Invalid precision: {precision}")
 
     # Save the converted model using safetensors
     os.makedirs(output_path, exist_ok=True)
@@ -559,7 +830,7 @@ def main(
     checkpoint_dir: str,
     config_name: str,
     output_path: str | None = None,
-    precision: Literal["float32", "bfloat16", "float16"] = "bfloat16",
+    precision: Literal["float32", "bfloat16"] | None = None,
     *,
     inspect_only: bool = False,
 ):
@@ -568,12 +839,29 @@ def main(
     Args:
         checkpoint_dir: Path to the JAX checkpoint directory
         output_path: Path to save converted PyTorch model (required for conversion)
-        precision: Precision for model conversion
+        precision: Precision for model conversion. When omitted, defaults to
+            ``float32`` for LoRA-adapted configs and ``bfloat16`` otherwise;
+            bfloat16 storage of merged LoRA weights drifts ~10x against the
+            JAX original, so float32 is the safe default in that case.
         inspect_only: Only inspect parameter keys, don't convert
     """
     model_config = _config.get_config(config_name).model
     if not isinstance(model_config, openpi.models.pi0_config.Pi0Config):
         raise ValueError(f"Config {config_name} is not a Pi0Config")
+
+    has_lora = _has_lora(model_config)
+    if precision is None:
+        precision = "float32" if has_lora else "bfloat16"
+    elif has_lora and precision != "float32":
+        logger.warning(
+            "Converting a LoRA-adapted checkpoint with --precision=%s. The merged LoRA "
+            "weights have a wider dynamic range than the base weights; storing them as "
+            "%s typically introduces ~10x more numerical drift versus the JAX original. "
+            "Use --precision float32 for parity.",
+            precision,
+            precision,
+        )
+
     if inspect_only:
         load_jax_model_and_print_keys(checkpoint_dir)
     else:
