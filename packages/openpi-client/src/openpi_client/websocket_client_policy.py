@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from typing_extensions import override
 import websockets.sync.client
@@ -46,6 +46,23 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     @override
     def infer(self, obs: Dict) -> Dict:  # noqa: UP006
         data = self._packer.pack(obs)
+        return self._send_and_recv(data)
+
+    @override
+    def infer_batch(self, obs_batch: Sequence[Dict]) -> Dict:  # noqa: UP006
+        if isinstance(obs_batch, (dict, str, bytes)):
+            raise TypeError("obs_batch must be a non-empty sequence of observation dictionaries")
+
+        obs_batch = list(obs_batch)
+        if not obs_batch:
+            raise ValueError("obs_batch must contain at least one observation")
+        if not all(isinstance(obs, dict) for obs in obs_batch):
+            raise TypeError("obs_batch must contain only observation dictionaries")
+
+        data = self._packer.pack({"batch": obs_batch})
+        return self._send_and_recv(data)
+
+    def _send_and_recv(self, data: bytes) -> Dict:
         self._ws.send(data)
         response = self._ws.recv()
         if isinstance(response, str):

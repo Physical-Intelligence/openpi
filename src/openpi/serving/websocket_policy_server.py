@@ -58,7 +58,7 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = infer_policy_request(self._policy, obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
@@ -88,3 +88,9 @@ def _health_check(connection: _server.ServerConnection, request: _server.Request
         return connection.respond(http.HTTPStatus.OK, "OK\n")
     # Continue with the normal request handling.
     return None
+
+
+def infer_policy_request(policy: _base_policy.BasePolicy, request: dict) -> dict:
+    if isinstance(request, dict) and set(request.keys()) == {"batch"}:
+        return policy.infer_batch(request["batch"])
+    return policy.infer(request)
