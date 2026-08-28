@@ -35,6 +35,10 @@ class Args:
     api_key: str | None = None
     # Number of steps to run the policy for.
     num_steps: int = 20
+    # Print a compact preview of the returned action chunk on each step.
+    show_action_chunk: bool = False
+    # Maximum number of action rows to print when --show-action-chunk is enabled.
+    max_action_rows: int = 3
     # Path to save the timings to a parquet file. (e.g., timing.parquet)
     timing_file: pathlib.Path | None = None
     # Environment to run the policy in.
@@ -139,6 +143,8 @@ def main(args: Args) -> None:
         inference_start = time.time()
         action = policy.infer(obs_fn())
         timing_recorder.record("client_infer_ms", 1000 * (time.time() - inference_start))
+        if args.show_action_chunk:
+            _print_action_chunk(action, max_rows=args.max_action_rows)
         for key, value in action.get("server_timing", {}).items():
             timing_recorder.record(f"server_{key}", value)
         for key, value in action.get("policy_timing", {}).items():
@@ -148,6 +154,22 @@ def main(args: Args) -> None:
 
     if args.timing_file is not None:
         timing_recorder.write_parquet(args.timing_file)
+
+
+def _print_action_chunk(action: dict, *, max_rows: int) -> None:
+    actions = action.get("actions")
+    if actions is None:
+        rich.print("[yellow]Response did not include an 'actions' field.[/yellow]")
+        return
+
+    actions = np.asarray(actions)
+    rich.print(f"[bold]actions[/bold] shape={actions.shape}")
+    if actions.ndim == 0:
+        rich.print(actions)
+        return
+
+    rows = actions[: max(1, max_rows)]
+    rich.print(np.array2string(rows, precision=3, suppress_small=True))
 
 
 def _random_observation_aloha() -> dict:
