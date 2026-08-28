@@ -103,16 +103,22 @@ class Pi0(_model.BaseModel):
         self.deterministic = True
 
     @at.typecheck
-    def embed_prefix(
+    def _embed_images(
         self, obs: _model.Observation
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+    ) -> tuple[at.Float[at.Array, "b si emb"], at.Bool[at.Array, "b si"], at.Bool[at.Array, " si"]]:
+        """Image-only portion of the prefix.
+
+        Factored out of embed_prefix so subclasses (e.g. Pi0WithLocCE) can run
+        SigLIP ONCE and reuse the resulting image tokens across two different
+        language conditionings (π0.5 template + detect prompt). The image
+        tokens, image input mask, and image ar mask are identical to what
+        embed_prefix would have computed for its image-half.
+        """
         input_mask = []
         ar_mask = []
         tokens = []
-        # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
             tokens.append(image_tokens)
             input_mask.append(
                 einops.repeat(
@@ -123,17 +129,43 @@ class Pi0(_model.BaseModel):
             )
             # image tokens attend to each other
             ar_mask += [False] * image_tokens.shape[1]
-
-        # add language (aka tokenized inputs)
-        if obs.tokenized_prompt is not None:
-            tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
-            tokens.append(tokenized_inputs)
-            input_mask.append(obs.tokenized_prompt_mask)
-            # full attention between image and language inputs
-            ar_mask += [False] * tokenized_inputs.shape[1]
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
+        return tokens, input_mask, ar_mask
+
+    @at.typecheck
+    def _embed_language(
+        self,
+        tokenized_prompt: at.Int[at.Array, "b l"],
+        tokenized_prompt_mask: at.Bool[at.Array, "b l"],
+    ) -> tuple[at.Float[at.Array, "b l emb"], at.Bool[at.Array, "b l"], at.Bool[at.Array, " l"]]:
+        """Embed a tokenized prompt into the LLM's embedding space.
+
+        Returns language tokens + input mask + ar mask (all-bidirectional w.r.t.
+        the rest of the prefix), so callers can concatenate them with image
+        tokens however they like.
+        """
+        lang = self.PaliGemma.llm(tokenized_prompt, method="embed")
+        # full attention between image and language inputs (same convention as
+        # embed_prefix's original block)
+        ar_mask = jnp.zeros((lang.shape[1],), dtype=jnp.bool_)
+        return lang, tokenized_prompt_mask, ar_mask
+
+    @at.typecheck
+    def embed_prefix(
+        self, obs: _model.Observation
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+        """Image + language prefix. Backward-compatible signature."""
+        img_tokens, img_mask, img_ar = self._embed_images(obs)
+        if obs.tokenized_prompt is None:
+            return img_tokens, img_mask, img_ar
+        lang_tokens, lang_mask, lang_ar = self._embed_language(
+            obs.tokenized_prompt, obs.tokenized_prompt_mask
+        )
+        tokens = jnp.concatenate([img_tokens, lang_tokens], axis=1)
+        input_mask = jnp.concatenate([img_mask, lang_mask], axis=1)
+        ar_mask = jnp.concatenate([img_ar, lang_ar], axis=0)
         return tokens, input_mask, ar_mask
 
     @at.typecheck

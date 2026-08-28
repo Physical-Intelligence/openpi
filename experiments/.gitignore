@@ -1,0 +1,15 @@
+# Exported results (metrics, plots, checkpoints)
+results/
+
+# Processed datasets (generated from raw)
+data/processed/
+
+# Raw dataset symlinks
+data/raw/
+
+# Training and eval logs
+train/*.log
+eval/*.log
+
+# Excel tracker (generated)
+experiment_tracker.xlsx
