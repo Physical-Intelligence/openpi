@@ -1,5 +1,7 @@
 from flax import nnx
 import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from openpi.models import model as _model
@@ -7,6 +9,28 @@ from openpi.models import pi0_config
 from openpi.models import pi0_fast
 from openpi.shared import download
 from openpi.shared import nnx_utils
+
+
+def test_preprocess_observation_augmentation_consistent_across_cameras():
+    batch_size = 2
+    image = jnp.linspace(-1.0, 1.0, batch_size * 224 * 224 * 3, dtype=jnp.float32).reshape(batch_size, 224, 224, 3)
+    obs = _model.Observation(
+        images=dict.fromkeys(_model.IMAGE_KEYS, image),
+        image_masks={key: jnp.ones((batch_size,), dtype=jnp.bool) for key in _model.IMAGE_KEYS},
+        state=jnp.zeros((batch_size, 1), dtype=jnp.float32),
+    )
+
+    augmented = _model.preprocess_observation(jax.random.key(0), obs, train=True)
+
+    np.testing.assert_array_equal(augmented.images["base_0_rgb"], augmented.images["left_wrist_0_rgb"])
+    np.testing.assert_array_equal(augmented.images["base_0_rgb"], augmented.images["right_wrist_0_rgb"])
+    assert not np.array_equal(np.asarray(augmented.images["base_0_rgb"]), np.asarray(image))
+    assert jnp.min(augmented.images["base_0_rgb"]) >= -1.0 - 1e-6
+    assert jnp.max(augmented.images["base_0_rgb"]) <= 1.0 + 1e-6
+
+    not_augmented = _model.preprocess_observation(jax.random.key(0), obs, train=False)
+    for key in _model.IMAGE_KEYS:
+        np.testing.assert_array_equal(not_augmented.images[key], image)
 
 
 def test_pi0_model():
