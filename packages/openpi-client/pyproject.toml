@@ -5,7 +5,7 @@ requires-python = ">=3.7"
 dependencies = [
     "dm-tree>=0.1.8",
     "msgpack>=1.0.5",
-    "numpy>=1.22.4,<2.0.0",
+    "numpy>=1.22.4,<3.0.0",
     "pillow>=9.0.0",
     "websockets>=11.0",
 ]
