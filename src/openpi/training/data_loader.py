@@ -127,8 +127,27 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+class LeRobotDatasetWithDummyVideos(lerobot_dataset.LeRobotDataset):
+    """LeRobot dataset that replaces decoded video frames with tiny placeholders."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs["download_videos"] = False
+        super().__init__(*args, **kwargs)
+
+    def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:
+        del ep_idx
+        return {
+            key: torch.zeros((len(timestamps), 3, 1, 1), dtype=torch.uint8).squeeze(0)
+            for key, timestamps in query_timestamps.items()
+        }
+
+
 def create_torch_dataset(
-    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+    data_config: _config.DataConfig,
+    action_horizon: int,
+    model_config: _model.BaseModelConfig,
+    *,
+    skip_video_decoding: bool = False,
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
@@ -138,7 +157,8 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
+    dataset_cls = LeRobotDatasetWithDummyVideos if skip_video_decoding else lerobot_dataset.LeRobotDataset
+    dataset = dataset_cls(
         data_config.repo_id,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
