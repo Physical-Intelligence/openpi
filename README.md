@@ -88,7 +88,7 @@ By default, checkpoints are automatically downloaded from `gs://openpi-assets` a
 
 ## Running Inference for a Pre-Trained Model
 
-Our pre-trained model checkpoints can be run with a few lines of code (here our $\pi_0$-FAST-DROID model):
+Our pre-trained model checkpoints can be run with a few lines of code (here our $\pi_{0.5}$-DROID model):
 ```python
 from openpi.training import config as _config
 from openpi.policies import policy_config
