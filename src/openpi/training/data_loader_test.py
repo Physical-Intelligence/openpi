@@ -1,10 +1,28 @@
 import dataclasses
 
 import jax
+import torch
 
 from openpi.models import pi0_config
 from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
+
+
+def test_dummy_video_dataset_skips_video_download_and_decoding(monkeypatch):
+    captured_kwargs = {}
+
+    def mock_init(self, *args, **kwargs):
+        del self, args
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr(_data_loader.lerobot_dataset.LeRobotDataset, "__init__", mock_init)
+    dataset = _data_loader.LeRobotDatasetWithDummyVideos("test")
+
+    frames = dataset._query_videos({"camera": [0.0, 0.1]}, ep_idx=0)  # noqa: SLF001
+
+    assert captured_kwargs["download_videos"] is False
+    assert frames["camera"].shape == (2, 3, 1, 1)
+    assert frames["camera"].dtype == torch.uint8
 
 
 def test_torch_data_loader():
