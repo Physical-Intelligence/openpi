@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.ur5_twinwrist_policy as ur5_twinwrist_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -352,6 +353,39 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotUR5TwinWristDataConfig(DataConfigFactory):
+    """Locked LeRobot schema for 6D TCP velocity + 2 wrist targets + gripper."""
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation.state": "observation.state",
+                        "observation.images.front": "observation.images.front",
+                        "observation.images.side": "observation.images.side",
+                        "observation.images.top": "observation.images.top",
+                        "action": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data = _transforms.Group(
+            inputs=[ur5_twinwrist_policy.UR5TwinWristInputs(model_type=model_config.model_type)],
+            outputs=[ur5_twinwrist_policy.UR5TwinWristOutputs()],
+        )
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack,
+            data_transforms=data,
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=("action",),
         )
 
 
@@ -964,6 +998,19 @@ _CONFIGS = [
         overwrite=True,
         exp_name="debug_pi05",
         wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="pi05_ur5_twinwrist",
+        model=pi0_config.Pi0Config(pi05=True, action_dim=32, action_horizon=10),
+        data=LeRobotUR5TwinWristDataConfig(
+            repo_id="local/ur5_twinwrist",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=16,
+        num_train_steps=10_000,
+        save_interval=1000,
+        exp_name="pi05_ur5_twinwrist",
     ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
