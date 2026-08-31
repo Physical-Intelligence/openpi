@@ -57,8 +57,10 @@ def typecheck(t: T) -> T:
 def disable_typechecking():
     initial = config.jaxtyping_disable
     config.update("jaxtyping_disable", True)  # noqa: FBT003
-    yield
-    config.update("jaxtyping_disable", initial)
+    try:
+        yield
+    finally:
+        config.update("jaxtyping_disable", initial)
 
 
 def check_pytree_equality(*, expected: PyTree, got: PyTree, check_shapes: bool = False, check_dtypes: bool = False):
