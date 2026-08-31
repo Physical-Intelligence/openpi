@@ -13,6 +13,8 @@ def test_fake_hdf5_atomic(tmp_path: Path):
     assert not list(tmp_path.glob("*.tmp.hdf5"))
     with h5py.File(path, "r") as f:
         assert f["action"].shape == (3, 9)
+        assert f.attrs["wrist_coordinate"] == "yaml_servo_zero_relative_raw"
+    assert validate_episode(path, expected_wrist_servo_zero_raw=(3278, 2547)) == []
 
 
 def test_validation_failures(tmp_path: Path):
@@ -40,3 +42,9 @@ def test_validator_detects_length_repeat_black_and_bounds(tmp_path: Path):
     assert any("black" in error for error in errors)
     assert any("state out" in error for error in errors)
     assert any("action out" in error for error in errors)
+
+
+def test_validator_detects_unexpected_image_shape(tmp_path: Path):
+    path = record_fake(tmp_path, 2)
+    errors = validate_episode(path, expected_image_shape=(48, 64, 3))
+    assert any("image shape" in error for error in errors)

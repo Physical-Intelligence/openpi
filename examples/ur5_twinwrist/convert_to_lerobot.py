@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import cv2
@@ -11,12 +12,41 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 import matplotlib.pyplot as plt
 import numpy as np
 
+WRIST_COORDINATE = "yaml_servo_zero_relative_raw"
+ACTION_SPACE = "tcp_speedL_6+wrist_j1_j2_yaml_zero_relative_raw_2+gripper_absolute_1"
+
+
+def _validate_source_contract(paths: list[Path]) -> None:
+    """在创建 LeRobot 目录前拒绝旧角度腕数据或混合 action space。"""
+
+    for path in paths:
+        with h5py.File(path, "r") as episode:
+            if not bool(episode.attrs.get("success", False)):
+                raise ValueError(f"{path} 不是 success episode")
+            if episode.attrs.get("wrist_coordinate") != WRIST_COORDINATE:
+                raise ValueError(f"{path} 的 wrist_coordinate 不是 {WRIST_COORDINATE}")
+            if episode.attrs.get("action_space") != ACTION_SPACE:
+                raise ValueError(f"{path} 的 action_space 与当前项目不一致")
+            try:
+                zero = [int(value) for value in json.loads(str(episode.attrs["wrist_servo_zero_raw"]))]
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{path} 缺少合法 wrist_servo_zero_raw") from exc
+            if len(zero) != 2 or any(not 0 <= value <= 4095 for value in zero):
+                raise ValueError(f"{path} 的 wrist_servo_zero_raw 非法")
+            qpos = episode.get("observations/qpos")
+            action = episode.get("action")
+            if qpos is None or action is None or qpos.ndim != 2 or action.ndim != 2:
+                raise ValueError(f"{path} 缺少二维 qpos/action")
+            if qpos.shape[1] != 9 or action.shape[1] != 9 or len(qpos) != len(action) or not len(action):
+                raise ValueError(f"{path} 的 qpos/action shape 或长度不符合 9 维合同")
+
 
 def convert(source: str | Path, repo_id: str, output_root: str | Path | None = None) -> Path:
     dataset_root = None if output_root is None else Path(output_root).resolve() / repo_id
     paths = sorted(Path(source).glob("episode_*.hdf5"))
     if not paths:
         raise FileNotFoundError(f"no completed episodes in {source}")
+    _validate_source_contract(paths)
     with h5py.File(paths[0], "r") as sample:
         image_shape = tuple(sample["observations/images/front"].shape[1:])
         fps = int(sample.attrs["fps"])

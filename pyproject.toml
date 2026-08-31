@@ -54,6 +54,15 @@ dev = [
     "matplotlib>=3.10.0",
     "pynvml>=12.0.0",
 ]
+# 4090 真机端可选依赖。训练服务器不需要安装这个组，但两台机器仍共享
+# 完全相同的 pyproject.toml 和 uv.lock。版本来自已验证工作的旧数采环境，
+# 避免无意安装最新版或升级 JAX / Torch / NumPy / Transformers / LeRobot。
+hardware = [
+    "pyserial==3.5",
+    "pyrealsense2==2.56.5.9235",
+    "pyyaml==6.0.2",
+    "ur-rtde==1.6.3",
+]
 rlds = [
     # NOTE: tensorflow-cpu 2.15.0 only ships cp311 wheels on PyPI.
     # Use `uv venv --python 3.11` before `uv sync --group rlds`.

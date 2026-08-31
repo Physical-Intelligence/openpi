@@ -1,8 +1,8 @@
-"""Fail-closed stress test for the selected legacy serial gripper.
+# ruff: noqa: RUF001, RUF002
+"""当前项目夹爪的 fail-closed 压力测试。
 
-The default invocation is a dry-run: it reads configuration and prints the
-exact test plan, but it does not import a driver or open a serial port. Real
-motion requires both ``--enable-motion`` and the exact confirmation phrase.
+默认仅读取项目 YAML 并打印计划，不导入 pyserial、不开串口、不运动。
+真实测试必须同时给出 ``--enable-motion`` 和精确确认短语。
 """
 
 from __future__ import annotations
@@ -25,13 +25,18 @@ import tempfile
 import time
 from typing import Any
 
+if __package__:
+    from .config_loader import DEFAULT_CONFIG_DIR
+    from .config_loader import config_hash
+    from .config_loader import load_project_config
+else:  # 支持 uv run examples/ur5_twinwrist/gripper_stress_test.py
+    from config_loader import DEFAULT_CONFIG_DIR
+    from config_loader import config_hash
+    from config_loader import load_project_config
+
 CONFIRMATION = "I_UNDERSTAND_REAL_ROBOT_MOTION"
-DEFAULT_LEGACY_ROOT = Path("/home/user/shiyi/slai-manipulation")
-_LEGACY_CHILD_ENV = "OPENPI_UR5_GRIPPER_STRESS_LEGACY_CHILD"
-_BACKEND_TO_DRIVER = {
-    "hiwonder": "hiwonder",
-    "feetech": "feetech_sts3215",
-}
+OPENPI_ROOT = Path(__file__).resolve().parents[2]
+_BACKENDS = ("hiwonder", "feetech")
 _USB_JOURNAL_PATTERN = re.compile(
     r"(?:usb.*(?:disconnect|reset)|(?:disconnect|reset).*usb|tty(?:USB|ACM).*(?:disconnect|reset))",
     re.IGNORECASE,
@@ -58,22 +63,16 @@ class StressSettings:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--legacy-root", type=Path, default=DEFAULT_LEGACY_ROOT)
     parser.add_argument(
-        "--hardware-config",
+        "--config-dir",
         type=Path,
-        default=Path("configs/hardware.yaml"),
-        help="Legacy hardware YAML; a relative path is resolved under --legacy-root.",
-    )
-    parser.add_argument(
-        "--legacy-python",
-        type=Path,
-        help="Legacy venv Python (default: <legacy-root>/.venv-lerobot-v3/bin/python).",
+        default=DEFAULT_CONFIG_DIR,
+        help="项目 YAML 目录，默认 examples/ur5_twinwrist/config。",
     )
     parser.add_argument(
         "--backend",
-        choices=tuple(_BACKEND_TO_DRIVER),
-        help="Override the backend selected in hardware.yaml.",
+        choices=_BACKENDS,
+        help="覆盖 hardware.yaml 选择的 hiwonder/feetech 后端。",
     )
     parser.add_argument("--cycles", type=int, default=100)
     parser.add_argument("--hold-every", type=int, default=10)
@@ -152,53 +151,35 @@ def _settings(args: argparse.Namespace) -> StressSettings:
     )
 
 
-def _resolve_under(root: Path, value: Path) -> Path:
-    return value.absolute() if value.is_absolute() else (root / value).absolute()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    try:
-        import yaml
-    except ImportError as exc:
-        raise SystemExit("PyYAML is required to read the legacy hardware config") from exc
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise SystemExit(f"cannot read hardware config {path}: {exc}") from exc
-    if not isinstance(loaded, dict):
-        raise SystemExit(f"hardware config must contain a mapping: {path}")
-    return loaded
-
-
-def _selected_gripper_config(hardware: Mapping[str, Any], backend: str | None) -> dict[str, Any]:
+def _selected_gripper_config(project: Mapping[str, Any], backend: str | None) -> dict[str, Any]:
+    hardware = project.get("hardware")
+    if not isinstance(hardware, Mapping):
+        raise SystemExit("project config is missing hardware.yaml data")
     value = hardware.get("gripper")
     if not isinstance(value, Mapping) or value.get("enabled") is not True:
         raise SystemExit("hardware.gripper must be a mapping with enabled: true")
-    selected = copy.deepcopy(dict(value))
-    requested = backend or str(selected.get("driver", "")).strip().lower()
-    if requested == "feetech_sts3215":
-        requested = "feetech"
-    if requested not in _BACKEND_TO_DRIVER:
-        available = ", ".join(_BACKEND_TO_DRIVER)
+    requested = backend or str(value.get("backend", "")).strip().lower()
+    if requested not in _BACKENDS:
+        available = ", ".join(_BACKENDS)
         raise SystemExit(f"unsupported gripper backend {requested!r}; choose {available}")
-    canonical = _BACKEND_TO_DRIVER[requested]
-    adapters = selected.get("adapters")
-    if isinstance(adapters, Mapping):
-        adapter = adapters.get(canonical, adapters.get(requested))
-        if not isinstance(adapter, Mapping):
-            raise SystemExit(f"gripper.adapters has no settings for {canonical!r}")
-        selected.update(copy.deepcopy(dict(adapter)))
-    selected["driver"] = canonical
+    adapters = value.get("adapters")
+    if not isinstance(adapters, Mapping):
+        raise SystemExit("hardware.gripper.adapters must be a mapping")
+    adapter = adapters.get(requested)
+    if not isinstance(adapter, Mapping):
+        raise SystemExit(f"gripper.adapters has no settings for {requested!r}")
+    selected = copy.deepcopy(dict(adapter))
+    selected["backend"] = requested
     port = str(selected.get("port", ""))
     if not port:
-        raise SystemExit(f"no serial port configured for {canonical}")
+        raise SystemExit(f"no serial port configured for {requested}")
     selected["port"] = port
     return selected
 
 
 def _public_config(config: Mapping[str, Any]) -> dict[str, Any]:
     keys = (
-        "driver",
+        "backend",
         "port",
         "servo_id",
         "baud",
@@ -221,9 +202,8 @@ def _plan(
     *,
     args: argparse.Namespace,
     settings: StressSettings,
-    legacy_root: Path,
-    hardware_path: Path,
-    legacy_python: Path,
+    config_dir: Path,
+    project_config: Mapping[str, Any],
     gripper_config: Mapping[str, Any],
 ) -> dict[str, Any]:
     output_json = args.output_json.absolute()
@@ -232,9 +212,9 @@ def _plan(
     return {
         "app": "ur5_twinwrist_gripper_stress_test",
         "mode": "motion-enabled" if args.enable_motion else "dry-run-no-device-open",
-        "legacy_root": str(legacy_root),
-        "hardware_config": str(hardware_path),
-        "legacy_python": str(legacy_python),
+        "config_dir": str(config_dir),
+        "config_sha256": config_hash(dict(project_config)),
+        "python_prefix": str(Path(sys.prefix).resolve()),
         "gripper": _public_config(gripper_config),
         "serial_by_id": str(port).startswith("/dev/serial/by-id/"),
         "serial_device_exists": port.exists(),
@@ -249,36 +229,96 @@ def _require_motion_confirmation(args: argparse.Namespace) -> None:
         raise SystemExit(f"real gripper motion requires --enable-motion --confirm {CONFIRMATION}")
 
 
-def _in_requested_legacy_venv(legacy_python: Path) -> bool:
-    expected_prefix = legacy_python.absolute().parent.parent
-    return Path(sys.prefix).absolute() == expected_prefix
-
-
-def _reexec_in_legacy_venv(raw_argv: Sequence[str], legacy_python: Path) -> int:
-    if not legacy_python.is_file():
-        raise SystemExit(f"legacy Python does not exist: {legacy_python}")
-    env = os.environ.copy()
-    env[_LEGACY_CHILD_ENV] = "1"
-    command = [str(legacy_python), str(Path(__file__).absolute()), *raw_argv]
+def _require_official_hardware_env() -> None:
+    """真实测试只允许在当前仓库安装了 hardware 组的 .venv 中运行。"""
+    expected = (OPENPI_ROOT / ".venv").resolve()
+    actual = Path(sys.prefix).resolve()
+    if actual != expected:
+        raise SystemExit(f"real gripper test must use {expected}; run: uv sync --group hardware")
     try:
-        completed = subprocess.run(command, cwd=Path.cwd(), env=env, check=False)
-    except OSError as exc:
-        raise SystemExit(f"failed to start legacy Python {legacy_python}: {exc}") from exc
-    return int(completed.returncode)
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version
+
+        pyserial_version = version("pyserial")
+    except PackageNotFoundError as exc:
+        raise SystemExit("hardware group is missing pyserial; run: uv sync --group hardware") from exc
+    if pyserial_version != "3.5":
+        raise SystemExit(f"expected locked pyserial 3.5, found {pyserial_version}")
 
 
-def _load_real_factory(legacy_root: Path, gripper_config: Mapping[str, Any]) -> Callable[[], Any]:
-    legacy_src = legacy_root / "src"
-    openpi_root = Path(__file__).absolute().parents[2]
-    for entry in (str(legacy_src), str(openpi_root)):
-        if entry not in sys.path:
-            sys.path.insert(0, entry)
-    try:
-        from slai_mi.devices.gripper import create_gripper
-    except ImportError as exc:
-        raise RuntimeError(f"cannot import legacy create_gripper from {legacy_src}") from exc
+@dataclass(frozen=True)
+class _WorkerState:
+    """将项目内统一状态转换成现有单-owner worker 的缓存契约。"""
+
+    position: int
+    normalized_position: float
+    target_position: int
+    normalized_target_position: float
+    binary_state: int
+    temperature_c: int
+    voltage_v: float
+    load_enabled: bool
+    host_timestamp_s: float
+    sequence: int
+    speed_raw: int | None
+    load_raw: int | None
+    current_raw: int | None
+    moving: bool | None
+
+
+class _LocalGripperAdapter:
+    """把 controller.gripper 的新接口接到 SingleOwnerGripper。"""
+
+    def __init__(self, device: Any) -> None:
+        self._device = device
+        self.driver_name = str(device.driver_name)
+        self.port = str(device.config.port)
+        self.servo_id = int(device.config.servo_id)
+        self.open_position = int(device.config.open_position)
+        self.closed_position = int(device.config.closed_position)
+
+    def open(self) -> None:
+        self._device.connect()
+
+    def close(self) -> None:
+        self._device.close()
+
+    def command_position(self, value: float) -> None:
+        self._device.set_position(value)
+
+    def unload(self) -> None:
+        self._device.stop()
+
+    def read_state(self, *, enforce_safety: bool = True) -> _WorkerState:
+        del enforce_safety  # 项目内驱动的 get() 永远执行安全检查。
+        state = self._device.get()
+        return _WorkerState(
+            position=int(state.raw_position),
+            normalized_position=float(state.position),
+            target_position=int(state.raw_target),
+            normalized_target_position=float(state.target),
+            binary_state=int(float(state.position) >= 0.5),
+            temperature_c=int(state.temperature_c),
+            voltage_v=float(state.voltage_v),
+            load_enabled=bool(state.torque_enabled),
+            host_timestamp_s=int(state.host_monotonic_ns) / 1e9,
+            sequence=int(state.sequence),
+            speed_raw=state.speed_raw,
+            load_raw=state.load_raw,
+            current_raw=state.current_raw,
+            moving=state.moving,
+        )
+
+
+def _load_real_factory(gripper_config: Mapping[str, Any]) -> Callable[[], Any]:
+    """延迟导入项目内驱动；调用 factory 本身仍不会打开串口。"""
+    if __package__:
+        from .controller.gripper import create_gripper
+    else:
+        from controller.gripper import create_gripper
+
     config = copy.deepcopy(dict(gripper_config))
-    return lambda: create_gripper(config)
+    return lambda: _LocalGripperAdapter(create_gripper(config))
 
 
 def _exception_flags(exc: BaseException) -> dict[str, bool]:
@@ -331,7 +371,10 @@ class _StressRunner:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        from examples.ur5_twinwrist.gripper_worker import SingleOwnerGripper
+        if __package__:
+            from .gripper_worker import SingleOwnerGripper
+        else:
+            from gripper_worker import SingleOwnerGripper
 
         self._factory = factory
         self._settings = settings
@@ -689,7 +732,7 @@ def _text_report(report: Mapping[str, Any]) -> str:
         f"status: {result['status']}",
         f"started: {report['started_at']}",
         f"finished: {report['finished_at']}",
-        f"backend: {report['plan']['gripper']['driver']}",
+        f"backend: {report['plan']['gripper']['backend']}",
         f"port: {report['plan']['gripper']['port']}",
         f"cycles requested: {report['plan']['settings']['cycles']}",
         f"successful command transactions: {counts['successful_transactions']}",
@@ -770,22 +813,19 @@ def execute_stress_test(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    args = build_parser().parse_args(raw_argv)
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     settings = _settings(args)
-    legacy_root = args.legacy_root.absolute()
-    hardware_path = _resolve_under(legacy_root, args.hardware_config)
-    legacy_python = (
-        args.legacy_python.absolute() if args.legacy_python is not None else legacy_root / ".venv-lerobot-v3/bin/python"
-    )
-    hardware = _load_yaml(hardware_path)
-    gripper_config = _selected_gripper_config(hardware, args.backend)
+    config_dir = args.config_dir.expanduser().resolve()
+    try:
+        project_config = load_project_config(config_dir)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    gripper_config = _selected_gripper_config(project_config, args.backend)
     plan = _plan(
         args=args,
         settings=settings,
-        legacy_root=legacy_root,
-        hardware_path=hardware_path,
-        legacy_python=legacy_python,
+        config_dir=config_dir,
+        project_config=project_config,
         gripper_config=gripper_config,
     )
     if not args.enable_motion:
@@ -795,12 +835,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     port = str(gripper_config["port"])
     if not port.startswith("/dev/serial/by-id/"):
         raise SystemExit(f"refusing non-persistent serial device path: {port}")
-    child = os.environ.get(_LEGACY_CHILD_ENV) == "1"
-    if not child:
-        return _reexec_in_legacy_venv(raw_argv, legacy_python)
-    if not _in_requested_legacy_venv(legacy_python):
-        raise SystemExit(f"motion child is not running in requested legacy venv: {legacy_python.parent.parent}")
-    factory = _load_real_factory(legacy_root, gripper_config)
+    _require_official_hardware_env()
+    factory = _load_real_factory(gripper_config)
     output_json = args.output_json.absolute()
     output_text = (args.output_text or output_json.with_suffix(".txt")).absolute()
     return execute_stress_test(

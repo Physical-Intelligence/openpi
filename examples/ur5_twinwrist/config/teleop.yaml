@@ -1,0 +1,57 @@
+# SpaceMouse 的轴、键位和 episode 生命周期。此文件由本项目 config_loader 实际读取。
+schema_version: 1
+
+axes:
+  raw_order: [x, y, z, rx, ry, rz]
+  output_order: [tcp_x, tcp_y, tcp_z, tcp_rx, tcp_ry, tcp_rz]
+  raw_full_scale: 500.0
+  clip: 1.0
+  deadzone: 0.12
+  mapping:
+    tcp_x: {source: z, sign: -1}
+    tcp_y: {source: x, sign: 1}
+    tcp_z: {source: y, sign: 1}
+    tcp_rx: {source: rz, sign: -1}
+    tcp_ry: {source: rx, sign: 1}
+    tcp_rz: {source: ry, sign: 1}
+
+modes:
+  translation:
+    modifier: null
+    linear_speed_m_s: 0.107
+  rotation:
+    modifier: shift
+    angular_speed_rad_s: 0.54
+  wrist:
+    modifier: ctrl
+    deadzone: 0.18
+    max_speed_deg_s: 45.0
+    cap_x_to_axis: j2
+    cap_x_sign: -1
+    cap_y_to_axis: j1
+    cap_y_sign: 1
+
+# YAML key 是程序实际查询的 canonical 名称；code 是 SpaceMouse 驱动上报的
+# bnum。要重绑按键只改 code，label/action 只用于人读，不能被程序当成键名。
+buttons:
+  menu: {code: 0, label: Menu, action: full_home_open_then_start_episode}
+  fit: {code: 1, label: Fit, action: save_then_full_home_or_idle_full_home}
+  t: {code: 2, label: T, action: idle_full_home}
+  rear: {code: 4, label: R, action: disabled}
+  front: {code: 5, label: F, action: disabled}
+  roll_cw: {code: 8, label: Roll, action: disabled}
+  one: {code: 12, label: "1", action: idle_j6_negative_while_held}
+  two: {code: 13, label: "2", action: idle_j6_positive_while_held}
+  three: {code: 14, label: "3", action: binary_close_while_held}
+  four: {code: 15, label: "4", action: binary_open_while_held}
+  esc: {code: 22, label: Esc, action: reject_then_full_home}
+  alt: {code: 23, label: Alt, action: disabled}
+  shift: {code: 24, label: Shift, action: ur_rotation_mode}
+  ctrl: {code: 25, label: Ctrl, action: wrist_velocity_override}
+  rotation_lock: {code: 26, label: RotationLock, action: reject_active_then_exit}
+
+episode:
+  # 第一版不实现组合键开关，避免与 Menu/Fit 的清晰单键语义冲突。
+  physical_toggle_chord_enabled: false
+  # 禁止把 speedJ/J6 jog 混进 TCP speedL 训练 action。
+  reject_joint_jog_during_recording: true

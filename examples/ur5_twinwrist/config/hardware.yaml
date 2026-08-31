@@ -1,0 +1,121 @@
+# 本文件只放“设备是谁、接在哪里”。速度、限位和 Home 分别在 safety.yaml、poses.yaml。
+schema_version: 1
+
+ur5:
+  enabled: true
+  host: 192.168.1.106
+  backend: ur_rtde
+  control_hz: 125
+
+spacemouse:
+  enabled: true
+  backend: libspnav
+  # libspnav 通过本机 spacenavd 读取 SpaceMouse，不需要 Python spnav 包。
+  daemon_service: spacenavd
+  stale_timeout_ms: 250
+  max_events_per_read: 256
+
+wrist:
+  enabled: true
+  backend: openrb_servo_position
+  control_mode: servo_position_open_loop
+  coordinate: yaml_servo_zero_relative_raw
+  # ESP32 主腕：只读取操作者手腕姿态。
+  master_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B90160584-if00
+  # OpenRB 从腕：发送 J1/J2 舵机位置目标，并直接读取舵机 raw 反馈。
+  controller_port: /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_E261BD20503059384C2E3120FF08262F-if00
+  baud: 115200
+  # ESP32 readline 超时、命令完整应答超时，以及 TELE 数据最大年龄。
+  serial_timeout_s: 0.05
+  response_timeout_s: 2.0
+  source_max_age_s: 0.20
+  # ESP32 主腕 100 Hz 发 TELE；上层按 50 Hz 发从腕目标，10 Hz 读取舵机状态。
+  stream_period_ms: 10
+  command_hz: 50.0
+  state_hz: 10.0
+  # 参考 open_loop_record：Enc0→J1、Enc1→J2，均为同方向。
+  # raw_per_deg 只用于把主腕角位移换成从腕舵机 raw 目标；训练坐标直接是
+  # 从腕实际/目标 raw 减去 poses.yaml 的 servo_zero_raw。
+  master_mapping:
+    j1_source: enc0
+    j1_sign: 1
+    j1_raw_per_deg: 10.0
+    j2_source: enc1
+    j2_sign: 1
+    j2_raw_per_deg: 14.0
+    input_deadband_deg: 0.5
+  filter:
+    one_euro_min_cutoff: 1.8
+    one_euro_beta: 0.08
+    one_euro_d_cutoff: 1.0
+  dynamixel_profile:
+    velocity_raw: 50
+    acceleration_raw: 15
+  target_limiter:
+    deadband_raw: 2
+    max_velocity_raw_s: 900.0
+    max_accel_raw_s2: 4500.0
+    max_jerk_raw_s3: 30000.0
+  # Ctrl SpaceMouse 接管双轴腕时仍以 deg/s 表示人机速度，控制器会按
+  # J1/J2 raw_per_deg 换算成相对 raw/s。
+  # override_max_velocity_deg_s 必须与 teleop.yaml 的 wrist.max_speed_deg_s 相同。
+  override_max_velocity_deg_s: 45.0
+  override_lease_s: 0.10
+  override_accel_deg_s2: 300.0
+  override_decel_deg_s2: 500.0
+  # OpenRB 单次读反馈的串口超时；状态来自 GET_WRIST_STATE 的 j1_pos/j2_pos。
+  read_timeout_s: 0.20
+
+gripper:
+  enabled: true
+  # 可改成 feetech；对应参数必须从下面 adapters 中读取。
+  backend: hiwonder
+  command_hz: 30
+  state_source: measured
+  adapters:
+    hiwonder:
+      port: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+      servo_id: 1
+      baud: 115200
+      open_position: 630
+      closed_position: 860
+      feedback_position_bias: 19
+      binary_threshold: 745
+      full_stroke_time_ms: 1000
+      min_move_time_ms: 20
+      timeout_s: 0.30
+      max_temperature_c: 60
+    feetech:
+      port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79077317-if00
+      servo_id: 13
+      baud: 1000000
+      open_position: 100
+      closed_position: 3995
+      binary_threshold: 2048
+      speed: 250
+      acceleration: 8
+      timeout_s: 0.08
+      max_temperature_c: 70
+      max_load_raw: 750
+      max_current_raw: 600
+
+cameras:
+  enabled: true
+  width: 640
+  height: 480
+  fps: 30
+  pixel_format: rgb8
+  enable_depth: false
+  # 三线程启动/读取/退出以及同步队列参数；只影响相机，不发送机器人运动。
+  connect_timeout_s: 5.0
+  provider_wait_timeout_s: 0.25
+  stop_timeout_s: 3.0
+  queue_size: 8
+  # 必须按 serial 绑定，不允许依赖 USB 枚举顺序。
+  devices:
+    - role: front
+      serial: "254522076307"
+    - role: side
+      serial: "254522075176"
+    - role: top
+      serial: "260322279394"

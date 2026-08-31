@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -17,7 +18,6 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
-import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.policies.ur5_twinwrist_policy as ur5_twinwrist_policy
@@ -29,6 +29,15 @@ import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
+
+try:
+    import openpi.policies.aloha_policy as aloha_policy
+except ModuleNotFoundError as exc:
+    # This checkout intentionally omits the unrelated Aloha policy. Keep the
+    # UR5 custom configs importable, but never hide a different missing module.
+    if exc.name != "openpi.policies.aloha_policy":
+        raise
+    aloha_policy = None
 
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
@@ -257,6 +266,8 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        if aloha_policy is None:
+            raise RuntimeError("Aloha policy was intentionally omitted from this slim UR5 checkout")
         data_transforms = _transforms.Group(
             inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
             outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
@@ -1003,7 +1014,7 @@ _CONFIGS = [
         name="pi05_ur5_twinwrist",
         model=pi0_config.Pi0Config(pi05=True, action_dim=32, action_horizon=10),
         data=LeRobotUR5TwinWristDataConfig(
-            repo_id="local/ur5_twinwrist",
+            repo_id=os.environ.get("UR5_TWINWRIST_DATASET_REPO_ID", "local/ur5_twinwrist"),
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),

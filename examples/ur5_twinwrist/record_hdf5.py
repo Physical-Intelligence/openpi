@@ -12,8 +12,12 @@ import h5py
 import numpy as np
 
 try:
+    from .config_loader import config_hash
+    from .config_loader import load_project_config
     from .robot_runtime import FakeHardware
 except ImportError:
+    from config_loader import config_hash
+    from config_loader import load_project_config
     from robot_runtime import FakeHardware
 
 
@@ -114,18 +118,30 @@ def recover_stale_episodes(root: str | Path) -> list[Path]:
 
 
 def record_fake(root: str | Path, frames=12):
-    hardware = FakeHardware()
+    project = load_project_config()
+    servo_zero = tuple(int(value) for value in project["poses"]["wrist"]["servo_zero_raw"])
+    hardware = FakeHardware(servo_zero_raw=servo_zero)
     hardware.connect()
     obs = hardware.get_observation()
+    wrist_safety = project["safety"]["wrist"]
     attrs = {
         "task": "fake acceptance",
         "fps": 10,
         "git_commit": "test",
-        "camera_serials": ["fake"] * 3,
+        "camera_serials": {
+            str(item["role"]): str(item["serial"])
+            for item in project["hardware"]["cameras"]["devices"]
+        },
         "gripper_backend": "fake",
         "gripper_state_source": "commanded",
-        "action_space": "tcp_velocity+wrist_target+gripper",
-        "robot_config_hash": "fake",
+        "action_space": project["collection"]["action"]["semantics"],
+        "wrist_coordinate": project["poses"]["wrist"]["coordinate"],
+        "wrist_servo_zero_raw": servo_zero,
+        "wrist_raw_limits": {
+            "j1": [wrist_safety["j1_min_raw"], wrist_safety["j1_max_raw"]],
+            "j2": [wrist_safety["j2_min_raw"], wrist_safety["j2_max_raw"]],
+        },
+        "robot_config_hash": config_hash(project),
     }
     with EpisodeWriter(root, 0, obs["images"]["front"].shape, attrs) as writer:
         for _ in range(frames):
@@ -139,7 +155,7 @@ def main():
     parser.add_argument("--fake", action="store_true")
     args = parser.parse_args()
     if not args.fake:
-        raise SystemExit("real recording requires the configured legacy bridge")
+        raise SystemExit("真机数采请使用 teleop_collect.py; 本脚本只提供独立 Fake HDF5 验收")
     print(record_fake(args.output))
 
 

@@ -1,0 +1,44 @@
+schema_version: 1
+
+task:
+  id: task2_continuous
+  prompt: "完成 TASK2 操作任务"
+
+capture:
+  camera_fps: 30
+  record_hz: 10
+  image_shape: [480, 640, 3]
+  primary_camera: front
+
+storage:
+  raw_root: data/raw/ur5_twinwrist
+  temporary_suffix: .tmp.hdf5
+  rejected_directory: rejected
+  atomically_rename_success: true
+
+state:
+  dimension: 9
+  fields:
+    - ur5_actual_joint_0_rad
+    - ur5_actual_joint_1_rad
+    - ur5_actual_joint_2_rad
+    - ur5_actual_joint_3_rad
+    - ur5_actual_joint_4_rad
+    - ur5_actual_joint_5_rad
+    - wrist_j1_actual_relative_raw
+    - wrist_j2_actual_relative_raw
+    - gripper_actual_normalized
+
+action:
+  dimension: 9
+  semantics: tcp_speedL_6+wrist_j1_j2_yaml_zero_relative_raw_2+gripper_absolute_1
+  fields:
+    - tcp_vx_m_s
+    - tcp_vy_m_s
+    - tcp_vz_m_s
+    - tcp_wx_rad_s
+    - tcp_wy_rad_s
+    - tcp_wz_rad_s
+    - wrist_j1_target_relative_raw
+    - wrist_j2_target_relative_raw
+    - gripper_target_normalized

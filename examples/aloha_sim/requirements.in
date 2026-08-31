@@ -1,8 +1,0 @@
-gym-aloha
-imageio
-matplotlib
-msgpack
-numpy>=1.22.4,<2.0.0
-typing-extensions
-tyro
-websockets

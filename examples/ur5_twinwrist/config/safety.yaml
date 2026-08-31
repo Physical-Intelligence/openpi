@@ -1,0 +1,53 @@
+# 真实运动的统一安全门禁。未知现场参数宁可留 null 并阻止运动，不使用猜测值。
+schema_version: 1
+
+timing:
+  observation_timeout_ms: 200
+  policy_timeout_ms: 1000
+  camera_timeout_ms: 500
+  max_camera_skew_ms: 50
+  max_state_age_ms: 100
+  max_command_age_ms: 250
+
+ur5:
+  max_linear_m_s: 0.25
+  max_angular_rad_s: 0.60
+  teleop_linear_m_s: 0.107
+  teleop_angular_rad_s: 0.54
+  acceleration: 0.50
+  command_duration_s: 0.008
+  stop_deceleration: 1.0
+  prediction_horizon_s: 0.25
+  joint6_jog_speed_rad_s: 0.20
+  min_tcp_z_m: 0.08093
+  workspace_min_m: [-0.80, -0.80, 0.08093]
+  workspace_max_m: [0.80, 0.80, 1.20]
+  # 必须从当前 PolyScope 安全配置抄入后，real_ready 才能通过。
+  joint_min_rad: null
+  joint_max_rad: null
+  max_joint_step_rad: 0.02
+  max_joint_speed_rad_s: 0.50
+
+wrist:
+  coordinate: yaml_servo_zero_relative_raw
+  # 当前固件候选边界。连接后还必须查询 OpenRB GET_LIMITS；实际控制取
+  # YAML 与板端限位的交集，任何不一致或非法值都 fail-closed。
+  j1_min_raw: 2781
+  j1_max_raw: 3568
+  j2_min_raw: 1822
+  j2_max_raw: 3333
+  # 50 Hz、900 raw/s 对应每个发送周期最多约 18 raw。
+  max_step_raw: 18
+  feedback_timeout_s: 0.20
+  poll_period_s: 0.05
+  home_timeout_s: 30.0
+  settle_tolerance_raw: 30
+  settle_samples: 3
+  settle_timeout_s: 18.0
+
+gripper:
+  min_normalized: 0.0
+  max_normalized: 1.0
+  max_rate_per_s: 1.0
+  home_tolerance: 0.02
+  settle_time_ms: 400

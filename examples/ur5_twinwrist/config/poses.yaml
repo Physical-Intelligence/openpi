@@ -1,0 +1,41 @@
+# 所有“零位”必须写明语义；task_home 不是 UR5 机械零位。
+schema_version: 1
+
+ur5:
+  task_home_rad:
+    - 3.2977943420410156
+    - -1.5669592062579554
+    - -0.9337509314166468
+    - -2.2119277159320276
+    - 1.5755716562271118
+    - -1.0345171133624476
+  last_point_rad:
+    - 3.2988367081
+    - -1.3855517546
+    - -1.6734727065
+    - -1.6501811186
+    - 1.5775959492
+    - -1.0311530272
+  home_speed_rad_s: 0.50
+  home_proportional_gain: 1.50
+  home_tolerance_rad: 0.010
+  home_stable_s: 0.30
+  full_home_timeout_s: 120.0
+
+wrist:
+  # 装配相关的唯一手腕坐标原点。每次机械重新安装后，先断开舵机扭矩，
+  # 将手腕摆到希望的物理零位，再重新读取并填写 J1/J2 Dynamixel raw。
+  coordinate: yaml_servo_zero_relative_raw
+  zero_method: yaml_servo_raw
+  state_order: [j1, j2]
+  servo_zero_raw: [3278, 2547]
+  start_tolerance_raw: 30
+  home_target_relative_raw: [0, 0]
+  # AS5048A 绝对编码器只保留为诊断观测，不参与训练坐标、HOME 或推理控制。
+  encoder_diagnostic_order: [enc0, enc1]
+
+gripper:
+  value_contract: binary_normalized_position
+  open_value: 0.0
+  closed_value: 1.0
+  home_value: 0.0

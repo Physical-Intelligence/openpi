@@ -1,4 +1,9 @@
-"""Transforms for the UR5 + two-axis wrist + gripper platform."""
+"""UR5 + 双轴腕 + 夹爪的 π0.5 数据变换。
+
+第 6/7 维在训练和推理中始终是 ``[J1,J2]`` 舵机 raw 减去当前 YAML
+``servo_zero_raw`` 的相对值。本层不再做角度换算。真机驱动只在最终发送时
+把相对 raw 加回 YAML 零位。
+"""
 
 import dataclasses
 
@@ -9,6 +14,7 @@ from openpi import transforms
 from openpi.models import model as _model
 
 ACTION_DIM = 9
+WRIST_COORDINATE = "yaml_servo_zero_relative_raw"
 
 
 def _image(value: np.ndarray) -> np.ndarray:

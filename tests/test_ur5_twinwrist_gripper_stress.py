@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import threading
 
+import pytest
+
 import examples.ur5_twinwrist.gripper_stress_test as stress
 from examples.ur5_twinwrist.gripper_stress_test import StressSettings
 from examples.ur5_twinwrist.gripper_stress_test import _StressRunner
@@ -124,7 +126,7 @@ def test_fake_stress_run_writes_json_and_text_reports(tmp_path: Path, monkeypatc
     json_path = tmp_path / "report.json"
     text_path = tmp_path / "report.txt"
     plan = {
-        "gripper": {"driver": "fake", "port": "/dev/serial/by-id/fake"},
+        "gripper": {"backend": "fake", "port": "/dev/serial/by-id/fake"},
         "settings": asdict(settings),
         "reports": {"json": str(json_path), "text": str(text_path)},
     }
@@ -148,3 +150,122 @@ def test_fake_stress_run_writes_json_and_text_reports(tmp_path: Path, monkeypatc
     assert report["counts"]["serial_exceptions"] == 0
     assert "send_and_reply_ms" in report["run"]["operation_events"][0]
     assert "status: passed" in text_path.read_text(encoding="utf-8")
+
+
+def _project_config() -> dict:
+    return {
+        "hardware": {
+            "gripper": {
+                "enabled": True,
+                "backend": "hiwonder",
+                "adapters": {
+                    "hiwonder": {
+                        "port": "/dev/serial/by-id/fake-hiwonder",
+                        "servo_id": 1,
+                        "baud": 115_200,
+                        "open_position": 630,
+                        "closed_position": 860,
+                    },
+                    "feetech": {
+                        "port": "/dev/serial/by-id/fake-feetech",
+                        "servo_id": 13,
+                        "baud": 1_000_000,
+                        "open_position": 100,
+                        "closed_position": 3995,
+                    },
+                },
+            }
+        }
+    }
+
+
+def test_cli_uses_project_config_and_dry_run_never_builds_driver(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(stress, "load_project_config", lambda _path: _project_config())
+    monkeypatch.setattr(
+        stress,
+        "_load_real_factory",
+        lambda _config: pytest.fail("dry-run must not import/build a real driver"),
+    )
+
+    status = stress.main(["--config-dir", str(tmp_path), "--backend", "feetech"])
+
+    plan = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert plan["mode"] == "dry-run-no-device-open"
+    assert plan["config_dir"] == str(tmp_path.resolve())
+    assert plan["gripper"]["backend"] == "feetech"
+    assert plan["gripper"]["port"] == "/dev/serial/by-id/fake-feetech"
+    assert "legacy_root" not in plan
+    assert "legacy_python" not in plan
+
+
+def test_removed_legacy_cli_flags_are_rejected() -> None:
+    for flag in ("--legacy-root", "--legacy-python", "--hardware-config"):
+        with pytest.raises(SystemExit):
+            stress.build_parser().parse_args([flag, "unused"])
+
+
+def test_physical_stress_defaults_match_acceptance_protocol() -> None:
+    args = stress.build_parser().parse_args([])
+    assert args.cycles == 100
+    assert args.hold_every == 10
+    assert args.hold_duration_s == 10.0
+    assert not args.enable_motion
+    assert args.config_dir == stress.DEFAULT_CONFIG_DIR
+
+
+def test_motion_requires_exact_confirmation_before_env_or_driver(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(stress, "load_project_config", lambda _path: _project_config())
+    monkeypatch.setattr(
+        stress,
+        "_require_official_hardware_env",
+        lambda: pytest.fail("environment must not be checked before confirmation"),
+    )
+    monkeypatch.setattr(
+        stress,
+        "_load_real_factory",
+        lambda _config: pytest.fail("driver must not be built before confirmation"),
+    )
+
+    with pytest.raises(SystemExit, match=stress.CONFIRMATION):
+        stress.main(["--config-dir", str(tmp_path), "--enable-motion"])
+
+
+def test_confirmed_motion_runs_in_process_without_legacy_reexec(monkeypatch, tmp_path: Path) -> None:
+    owner_thread_ids: set[int] = set()
+    json_path = tmp_path / "motion.json"
+    text_path = tmp_path / "motion.txt"
+    env_checks: list[bool] = []
+    monkeypatch.setattr(stress, "load_project_config", lambda _path: _project_config())
+    monkeypatch.setattr(stress, "_require_official_hardware_env", lambda: env_checks.append(True))
+    monkeypatch.setattr(stress, "_load_real_factory", lambda _config: lambda: _FakeDelegate(owner_thread_ids))
+    monkeypatch.setattr(stress, "_collect_usb_journal", lambda _since: {"available": True, "clues": []})
+
+    status = stress.main(
+        [
+            "--config-dir",
+            str(tmp_path),
+            "--cycles",
+            "1",
+            "--hold-every",
+            "0",
+            "--hold-duration-s",
+            "0",
+            "--output",
+            str(json_path),
+            "--output-text",
+            str(text_path),
+            "--enable-motion",
+            "--confirm",
+            stress.CONFIRMATION,
+        ]
+    )
+
+    assert status == 0
+    assert env_checks == [True]
+    assert json.loads(json_path.read_text(encoding="utf-8"))["result"]["status"] == "passed"
+    assert len(owner_thread_ids) == 1

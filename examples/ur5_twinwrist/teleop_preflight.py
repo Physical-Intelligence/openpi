@@ -1,226 +1,241 @@
-"""Read-only preflight for the legacy TASK2 teleoperation station."""
+# ruff: noqa: E402, RUF001, RUF002, RUF003
+"""当前项目的只读真机预检：解析配置、枚举设备，但绝不发送运动。"""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
+from copy import deepcopy
+from importlib import metadata
 import json
+import os
 from pathlib import Path
+import socket
 import subprocess
+import sys
+from typing import Any
 
-import yaml
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-
-def _load(path: Path) -> dict:
-    value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(value, dict):
-        raise TypeError(f"expected YAML mapping: {path}")
-    return value
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+from examples.ur5_twinwrist.config_loader import CONFIG_FILES
+from examples.ur5_twinwrist.config_loader import DEFAULT_CONFIG_DIR
+from examples.ur5_twinwrist.config_loader import config_hash
+from examples.ur5_twinwrist.config_loader import load_project_config
+from examples.ur5_twinwrist.config_loader import validate_project_config
 
 
-def _command(command: list[str], *, cwd: Path, timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+def _git(command: list[str], root: Path) -> str:
+    result = subprocess.run(
+        ["git", *command],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else f"ERROR: {result.stderr.strip()}"
+
+
+def _service_active(name: str) -> tuple[bool, str]:
+    result = subprocess.run(
+        ["systemctl", "is-active", name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    detail = (result.stdout or result.stderr).strip()
+    return result.returncode == 0 and detail == "active", detail
+
+
+def _camera_serials() -> tuple[list[str], str | None]:
     try:
-        return subprocess.run(
-            command,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return subprocess.CompletedProcess(
-            command,
-            124,
-            stdout=str(exc.stdout or ""),
-            stderr=f"timeout after {timeout:.1f}s",
-        )
+        import pyrealsense2 as rs
+
+        devices = rs.context().query_devices()
+        serials = sorted(str(device.get_info(rs.camera_info.serial_number)) for device in devices)
+        return serials, None
+    except BaseException as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+
+
+def _tcp_reachable(host: str, port: int = 30004, timeout_s: float = 0.20) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True, f"{host}:{port} 可连接"
+    except OSError as exc:
+        return False, f"{host}:{port} 不可连接: {exc}"
+
+
+def _active_collectors() -> list[str]:
+    # 旧网页前端即使尚未启动 UR 控制，也可能常驻一个 SpaceMouse worker；
+    # 新 collector 与它同时读取 spacenavd 会造成按键/轴状态竞争，因此同样
+    # 视为互斥占用。这里只读进程表，不会停止任何用户进程。
+    conflict_pattern = (
+        "teleop_collect|collect_real|robot_runtime|"
+        "collection_frontend|slai_mi\\.devices\\.spacemouse\\.workers"
+    )
+    conflict_markers = (
+        "teleop_collect",
+        "collect_real",
+        "robot_runtime",
+        "collection_frontend",
+        "slai_mi.devices.spacemouse.workers",
+    )
+    result = subprocess.run(
+        ["pgrep", "-af", conflict_pattern],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    current_pid = str(os.getpid())
+    return [
+        line
+        for line in result.stdout.splitlines()
+        if line.split(maxsplit=1)[0] != current_pid
+        and "teleop_preflight" not in line
+        and "pgrep -af" not in line
+        and any(marker in line for marker in conflict_markers)
+    ]
 
 
 def inspect_station(
-    legacy_root: str | Path,
-    legacy_python: str | Path,
+    config_dir: str | Path = DEFAULT_CONFIG_DIR,
     gripper_backend: str | None = None,
-) -> dict:
-    root = Path(legacy_root).expanduser().resolve()
-    python = Path(legacy_python).expanduser().absolute()
-    hardware_path = root / "configs/hardware.yaml"
-    task_path = root / "configs/tasks/task2_continuous.yaml"
-    strategy_path = root / "configs/strategies/ur5e_wrist_gripper_9dof_collection.yaml"
-    hardware, task, strategy = map(_load, (hardware_path, task_path, strategy_path))
-    task_home = (task_path.parent / str(task["start_pose_ref"])).resolve()
-    control_profile = (task_path.parent / str(task["control_profile_ref"])).resolve()
-    pose, control = _load(task_home), _load(control_profile)
-    schema_path = (root / str(strategy["dataset"]["input_schema"])).resolve()
-    schema = _load(schema_path)
-    wrist_config = Path(str(hardware.get("wrist_sensor", {}).get("config", ""))).expanduser()
-    wrist_runtime = _load(wrist_config) if wrist_config.is_file() else {}
-    checks: list[dict[str, object]] = []
+    *,
+    enumerate_cameras: bool = True,
+) -> dict[str, Any]:
+    """返回机器可读预检报告; 本函数不会打开串口、相机流或 RTDE 控制。"""
 
-    def check(name: str, passed: object, detail: str) -> None:
-        checks.append({"name": name, "passed": bool(passed), "detail": detail})
+    root = Path(__file__).resolve().parents[2]
+    config_root = Path(config_dir).expanduser().resolve()
+    checks: list[dict[str, Any]] = []
 
-    check("hardware_configured", hardware.get("configured") is True, str(hardware_path))
-    check("legacy_python", python.is_file(), str(python))
+    def check(name: str, detail: Any, *, passed: bool, required: bool = True) -> None:
+        checks.append({"name": name, "passed": bool(passed), "required": required, "detail": detail})
+
+    try:
+        config = load_project_config(config_root)
+    except BaseException as exc:
+        return {
+            "ready": False,
+            "motion_started": False,
+            "config_dir": str(config_root),
+            "checks": [
+                {
+                    "name": "project_config",
+                    "passed": False,
+                    "required": True,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            ],
+        }
+
+    if gripper_backend is not None:
+        config = deepcopy(config)
+        config["hardware"]["gripper"]["backend"] = gripper_backend
+        validate_project_config(config)
+    check("project_config", "五份 YAML 结构与字段一致", passed=True)
+
+    try:
+        validate_project_config(config, require_real_ready=True)
+        real_ready_detail = "PolyScope 关节软限位已配置"
+        real_ready = True
+    except ValueError as exc:
+        real_ready_detail = str(exc)
+        real_ready = False
+    check("calibrated_safety_limits", real_ready_detail, passed=real_ready)
+
+    versions: dict[str, str] = {}
+    for package in ("pyserial", "pyrealsense2", "ur-rtde"):
+        try:
+            versions[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[package] = "未安装"
     check(
-        "continuous_strategy",
-        strategy.get("dataset", {}).get("state_schema") == "task2_9dof_continuous",
-        str(strategy_path),
+        "hardware_python_dependencies",
+        versions,
+        passed=versions == {"pyserial": "3.5", "pyrealsense2": "2.56.5.9235", "ur-rtde": "1.6.3"},
     )
-    check("task_home_pose", task_home.is_file() and pose.get("configured") is True, str(task_home))
-    check("control_profile", control_profile.is_file(), str(control_profile))
-    check("input_schema", schema_path.is_file(), str(schema_path))
-    check("wrist_runtime_config", wrist_config.is_file(), str(wrist_config))
-    ur5 = hardware.get("ur5", {})
-    check("ur_host", bool(str(ur5.get("host", "")).strip()), "hardware.ur5.host")
-    ur_driver_python = Path(str(ur5.get("driver_python", ""))).expanduser()
-    check("ur_driver_python", ur_driver_python.is_file(), str(ur_driver_python))
-    cameras = hardware.get("cameras", {}).get("devices", [])
-    serials = [str(item.get("serial", "")) for item in cameras]
-    check("three_unique_cameras", len(serials) == 3 and len(set(serials)) == 3 and all(serials), repr(serials))
-    selected = (
-        {"hiwonder": "hiwonder", "feetech": "feetech_sts3215"}[gripper_backend]
-        if gripper_backend is not None
-        else hardware.get("gripper", {}).get("driver")
-    )
-    selected_config = hardware.get("gripper", {}).get("adapters", {}).get(selected, {})
+
+    spacemouse_service, service_detail = _service_active(config["hardware"]["spacemouse"]["daemon_service"])
+    check("spacenavd_active", service_detail, passed=spacemouse_service)
+
+    gripper = config["hardware"]["gripper"]
+    selected_backend = str(gripper["backend"])
+    selected_gripper = gripper["adapters"][selected_backend]
     serial_paths = {
-        "gripper": str(selected_config.get("port", "")),
-        "wrist_master": str(hardware.get("wrist_sensor", {}).get("teleop_port", "")),
-        "wrist_openrb": str(hardware.get("wrist_sensor", {}).get("openrb_port", "")),
+        "wrist_master": str(config["hardware"]["wrist"]["master_port"]),
+        "wrist_controller": str(config["hardware"]["wrist"]["controller_port"]),
+        "gripper": str(selected_gripper["port"]),
     }
     for name, value in serial_paths.items():
-        check(f"{name}_uses_by_id", value.startswith("/dev/serial/by-id/"), value)
-        check(f"{name}_present", Path(value).exists(), value)
-    imports = subprocess.run(
-        [str(python), "-c", "import numpy, yaml, serial, pyrealsense2, lerobot, slai_mi"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    check("legacy_imports", imports.returncode == 0, imports.stderr.strip() or "ok")
-    service = _command(["systemctl", "--user", "is-active", "slai-wrist-collection.service"], cwd=root)
-    check(
-        "collection_service_inactive",
-        service.stdout.strip() != "active",
-        service.stdout.strip() or service.stderr.strip() or "unknown",
-    )
-    spacenavd = _command(["systemctl", "is-active", "spacenavd"], cwd=root)
-    check(
-        "spacenavd_active",
-        spacenavd.stdout.strip() == "active",
-        spacenavd.stdout.strip() or spacenavd.stderr.strip() or "unknown",
-    )
-    collectors = _command(["pgrep", "-fa", r"slai_mi\.apps\.collect_real.*--execute-real"], cwd=root)
-    check(
-        "no_other_real_collector",
-        collectors.returncode == 1,
-        collectors.stdout.strip() or "none",
-    )
-    camera_probe = _command(
-        [
-            str(python),
-            "-c",
-            (
-                "import json, pyrealsense2 as rs; "
-                "print(json.dumps([d.get_info(rs.camera_info.serial_number) "
-                "for d in rs.context().query_devices()]))"
-            ),
-        ],
-        cwd=root,
-        timeout=8.0,
-    )
-    try:
-        detected_camera_serials = json.loads(camera_probe.stdout) if camera_probe.returncode == 0 else []
-    except json.JSONDecodeError:
+        check(f"{name}_present", value, passed=Path(value).exists())
+
+    expected_camera_serials = {
+        str(item["role"]): str(item["serial"]) for item in config["hardware"]["cameras"]["devices"]
+    }
+    if enumerate_cameras:
+        detected_camera_serials, camera_error = _camera_serials()
+        camera_ok = set(expected_camera_serials.values()) <= set(detected_camera_serials)
+        check(
+            "configured_cameras_present",
+            {"expected": expected_camera_serials, "detected": detected_camera_serials, "error": camera_error},
+            passed=camera_ok,
+        )
+    else:
         detected_camera_serials = []
-    check(
-        "configured_cameras_present",
-        set(serials) <= set(detected_camera_serials),
-        repr(detected_camera_serials),
-    )
-    git_commit = _command(["git", "rev-parse", "HEAD"], cwd=root).stdout.strip() or "unknown"
-    git_status = _command(["git", "status", "--short"], cwd=root).stdout.splitlines()
-    service_workdir = _command(
-        [
-            "systemctl",
-            "--user",
-            "show",
-            "slai-wrist-collection.service",
-            "-p",
-            "WorkingDirectory",
-            "--value",
-        ],
-        cwd=root,
-    ).stdout.strip()
-    config_paths = (hardware_path, task_path, strategy_path, task_home, control_profile, schema_path, wrist_config)
-    relative_config_paths = [str(path.relative_to(root)) for path in config_paths if path.is_relative_to(root)]
-    relevant_status = _command(["git", "status", "--short", "--", *relative_config_paths], cwd=root).stdout.splitlines()
+        camera_error = "按调用方要求跳过枚举"
+        check("configured_cameras_present", camera_error, passed=True, required=False)
+
+    ur_host = str(config["hardware"]["ur5"]["host"])
+    ur_reachable, ur_detail = _tcp_reachable(ur_host)
+    check("ur_rtde_reachable", ur_detail, passed=ur_reachable)
+
+    collectors = _active_collectors()
+    check("no_other_collector", collectors or "未发现其他采集/推理进程", passed=not collectors)
+
+    config_files = {name: str(config_root / name) for name in CONFIG_FILES}
+    status = _git(["status", "--short"], root).splitlines()
+    required_checks = [item for item in checks if item["required"]]
     return {
+        "ready": all(item["passed"] for item in required_checks),
+        "motion_started": False,
         "backend": "jax",
-        "motion_enabled": False,
-        "paths": {
-            "legacy_root": str(root),
-            "hardware": str(hardware_path),
-            "task": str(task_path),
-            "strategy": str(strategy_path),
-            "task_home": str(task_home),
-            "control_profile": str(control_profile),
-            "input_schema": str(schema_path),
-            "wrist_runtime": str(wrist_config),
-        },
-        "legacy_git_commit": git_commit,
-        "legacy_git_dirty": bool(git_status),
-        "legacy_git_status_count": len(git_status),
-        "legacy_git_relevant_status": relevant_status,
-        "config_sha256": {str(path): _sha256(path) for path in config_paths if path.is_file()},
-        "task_home": {
-            "ur5_joint_rad": (pose.get("joint_positions") or [])[:6],
-            "wrist_fe_ru_rad": (pose.get("joint_positions") or [])[6:8],
-            "gripper_normalized": (pose.get("joint_positions") or [])[8:9],
-            "is_mechanical_zero": False,
-        },
-        "selected_gripper": selected,
-        "selected_gripper_parameters": selected_config,
-        "camera_roles": cameras,
-        "detected_camera_serials": detected_camera_serials,
-        "capture_parameters": schema.get("capture", {}),
+        "project_root": str(root),
+        "git_commit": _git(["rev-parse", "HEAD"], root),
+        "git_status_count": len(status),
+        "git_status": status,
+        "config_dir": str(config_root),
+        "config_files": config_files,
+        "config_sha256": config_hash(config),
+        "selected_gripper": selected_backend,
         "serial_paths": serial_paths,
-        "ur5_parameters": hardware.get("ur5", {}),
-        "motion_parameters": control.get("motion", {}),
-        "synchronization_parameters": schema.get("synchronization", {}),
-        "wrist_runtime_parameters": {
-            key: wrist_runtime.get(key, {})
-            for key in ("stream", "master_mapping", "target_limiter", "controller", "settling")
+        "expected_camera_serials": expected_camera_serials,
+        "detected_camera_serials": detected_camera_serials,
+        "camera_enumeration_error": camera_error,
+        "ur_host": ur_host,
+        "capture_parameters": {
+            "camera_fps": config["collection"]["capture"]["camera_fps"],
+            "record_hz": config["collection"]["capture"]["record_hz"],
+            "max_camera_skew_ms": config["safety"]["timing"]["max_camera_skew_ms"],
         },
-        "action_contract": {
-            "state": "UR actual_q[6] rad + wrist actual FE/RU[2] rad + gripper actual[1] normalized",
-            "action": "accepted speedL twist[6] (m/s,rad/s) + wrist absolute target[2] rad + gripper absolute target[1]",
-            "raw_spacemouse_is_training_action": False,
-        },
-        "service_working_directory": service_workdir,
-        "bindings_note": "controls YAML bindings are documentation only; runtime keys are hard-coded",
+        "task_home_rad": config["poses"]["ur5"]["task_home_rad"],
         "checks": checks,
-        "ready": all(bool(item["passed"]) for item in checks),
     }
 
 
 def main() -> int:
-    default = Path("/home/user/shiyi/slai-manipulation")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--legacy-root", default=str(default))
-    parser.add_argument("--legacy-python", default=str(default / ".venv-lerobot-v3/bin/python"))
+    parser.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR)
     parser.add_argument("--gripper-backend", choices=("hiwonder", "feetech"))
-    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--skip-camera-enumeration", action="store_true")
     args = parser.parse_args()
-    report = inspect_station(args.legacy_root, args.legacy_python, args.gripper_backend)
+    report = inspect_station(
+        args.config_dir,
+        args.gripper_backend,
+        enumerate_cameras=not args.skip_camera_enumeration,
+    )
     print(json.dumps(report, indent=2, ensure_ascii=False))
-    return 2 if args.strict and not report["ready"] else 0
+    return 0 if report["ready"] else 2
 
 
 if __name__ == "__main__":
