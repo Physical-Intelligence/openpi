@@ -62,7 +62,6 @@ class Runtime:
 
         while self._in_episode:
             self._step()
-            self._episode_steps += 1
 
             # Sleep to maintain the desired frame rate
             now = time.time()
@@ -86,6 +85,7 @@ class Runtime:
         for subscriber in self._subscribers:
             subscriber.on_step(observation, action)
 
+        self._episode_steps += 1
         if self._environment.is_episode_complete() or (
             self._max_episode_steps > 0 and self._episode_steps >= self._max_episode_steps
         ):
