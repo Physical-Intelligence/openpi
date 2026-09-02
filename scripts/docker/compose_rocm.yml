@@ -1,0 +1,41 @@
+# Training on AMD GPUs (ROCm). See docs/rocm.md.
+#
+# Start with:
+# docker compose -f scripts/docker/compose_rocm.yml up -d --build
+#
+# Then open a shell in the container:
+# docker compose -f scripts/docker/compose_rocm.yml exec openpi_rocm bash
+services:
+  openpi_rocm:
+    image: openpi_rocm
+    build:
+      context: ../..
+      dockerfile: scripts/docker/train_rocm.Dockerfile
+    init: true
+    tty: true
+    network_mode: host
+    # Keep the container up so that training can be launched with `exec`.
+    command: sleep infinity
+    volumes:
+      - $PWD:/app
+      - ${OPENPI_DATA_HOME:-~/.cache/openpi}:/openpi_assets
+    environment:
+      - OPENPI_DATA_HOME=/openpi_assets
+      - IS_DOCKER=true
+
+    # ROCm needs both device nodes plus membership in the video and render
+    # groups; unlike NVIDIA there is no container toolkit to inject them.
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    # Multi-GPU training runs one DataLoader worker set per rank, which needs
+    # far more shared memory than the 64 MB default.
+    ipc: host
+    shm_size: 64gb

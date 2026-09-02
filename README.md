@@ -31,6 +31,8 @@ To run the models in this repository, you will need an NVIDIA GPU with at least 
 
 The repo has been tested with Ubuntu 22.04, we do not currently support other operating systems.
 
+AMD GPUs are supported for PyTorch training through a separate ROCm Docker image; see [Training on AMD GPUs (ROCm)](docs/rocm.md).
+
 ## Installation
 
 When cloning this repo, make sure to update submodules:
@@ -51,7 +53,7 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 
 NOTE: `GIT_LFS_SKIP_SMUDGE=1` is needed to pull LeRobot as a dependency.
 
-**Docker**: As an alternative to uv installation, we provide instructions for installing openpi using Docker. If you encounter issues with your system setup, consider using Docker to simplify installation. See [Docker Setup](docs/docker.md) for more details.
+**Docker**: As an alternative to uv installation, we provide instructions for installing openpi using Docker. If you encounter issues with your system setup, consider using Docker to simplify installation. See [Docker Setup](docs/docker.md) for more details. On AMD GPUs, Docker is the only supported path — see [Training on AMD GPUs (ROCm)](docs/rocm.md).
 
 
 
