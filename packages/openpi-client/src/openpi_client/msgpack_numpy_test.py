@@ -43,3 +43,15 @@ def test_pack_unpack(data):
     packed = msgpack_numpy.packb(data)
     unpacked = msgpack_numpy.unpackb(packed)
     tree.map_structure(_check, data, unpacked)
+
+
+def test_numpy_2_round_trip_preserves_array_metadata():
+    payload = {
+        "float": np.asarray([1.5, 2.5], dtype=np.float32),
+        "int": np.asarray([1, 2], dtype=np.int64),
+        "bool": np.asarray([True, False], dtype=np.bool_),
+    }
+    decoded = msgpack_numpy.unpackb(msgpack_numpy.packb(payload))
+    for key, value in payload.items():
+        np.testing.assert_array_equal(decoded[key], value)
+        assert decoded[key].dtype == value.dtype
