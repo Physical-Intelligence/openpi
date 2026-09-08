@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import openpi.shared.normalize as normalize
 
@@ -13,6 +14,37 @@ def test_normalize_update():
 
     assert np.allclose(results.mean, np.mean(arr, axis=0))
     assert np.allclose(results.std, np.std(arr, axis=0))
+
+
+@pytest.mark.parametrize(
+    "new_extrema", [(2.0,), (-1.0,), (-1.0, 2.0), (2.0, 3.0), (-1.0, -2.0), (2.0, -1.0, 3.0, -2.0)]
+)
+def test_normalize_quantiles_with_expanding_range(new_extrema):
+    # Only the first feature expands. The others retain their range or remain constant.
+    arr = np.repeat([[0.0, 0.0, 5.0], [1.0, 1.0, 5.0]], 200, axis=0)
+    stats = normalize.RunningStats()
+    stats.update(arr)
+    for value in new_extrema:
+        batch = np.array([[value, 0.5, 5.0]])
+        stats.update(batch)
+        arr = np.concatenate([arr, batch])
+        results = stats.get_statistics()
+
+        # Allow for histogram quantization across repeated range expansions.
+        np.testing.assert_allclose(results.q01, np.quantile(arr, 0.01, axis=0), atol=0.005)
+        np.testing.assert_allclose(results.q99, np.quantile(arr, 0.99, axis=0), atol=0.005)
+        np.testing.assert_allclose(results.mean, np.mean(arr, axis=0))
+        np.testing.assert_allclose(results.std, np.std(arr, axis=0), atol=1e-7)
+
+
+def test_normalize_quantiles_after_constant_batch():
+    stats = normalize.RunningStats()
+    stats.update(np.zeros((100, 2)))
+    stats.update(np.array([[1.0, 0.0]]))
+    results = stats.get_statistics()
+
+    np.testing.assert_allclose(results.q01, [0.0, 0.0], atol=0.001)
+    np.testing.assert_allclose(results.q99, [0.0, 0.0], atol=0.001)
 
 
 def test_serialize_deserialize():
