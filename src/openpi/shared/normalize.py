@@ -89,7 +89,8 @@ class RunningStats:
         """Adjust histograms when min or max changes."""
         for i in range(len(self._histograms)):
             old_edges = self._bin_edges[i]
-            new_edges = np.linspace(self._min[i], self._max[i], self._num_quantile_bins + 1)
+            # Keep the initial padding so the old minimum bin's left edge stays in range.
+            new_edges = np.linspace(self._min[i] - 1e-10, self._max[i] + 1e-10, self._num_quantile_bins + 1)
 
             # Redistribute the existing histogram counts to the new bins
             new_hist, _ = np.histogram(old_edges[:-1], bins=new_edges, weights=self._histograms[i])
