@@ -24,11 +24,16 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
+        *,
+        send_tracebacks: bool = False,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
+        # When False, handler exceptions are logged server-side but only a generic message is sent
+        # to the client. Enable only for local debugging.
+        self._send_tracebacks = send_tracebacks
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -75,10 +80,18 @@ class WebsocketPolicyServer:
                 logger.info(f"Connection from {websocket.remote_address} closed")
                 break
             except Exception:
-                await websocket.send(traceback.format_exc())
+                logger.exception("Error handling inference request")
+                if self._send_tracebacks:
+                    await websocket.send(traceback.format_exc())
+                    close_reason = "Internal server error. Traceback included in previous frame."
+                else:
+                    # Keep internal details out of the client response; the full traceback is in the
+                    # server logs above. A string frame keeps the client's error-detection path working.
+                    await websocket.send("Internal server error.")
+                    close_reason = "Internal server error."
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,
-                    reason="Internal server error. Traceback included in previous frame.",
+                    reason=close_reason,
                 )
                 raise
 
