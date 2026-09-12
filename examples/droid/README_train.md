@@ -98,7 +98,7 @@ uv run examples/droid/convert_droid_data_to_lerobot.py --data_dir <your_target_p
 ## Step 2: Run fine-tuning with your custom dataset
 
 Now we can run fine-tuning with our converted custom dataset. We provide an example config for fine-tuning `pi05_droid` on the custom dataset we created. 
-You can modify the config easily to work with other base models, or use your custom DROID dataset in `config.py` (seach for `pi05_droid_finetune`).
+You can modify the config easily to work with other base models, or use your custom DROID dataset in `config.py` (search for `pi05_droid_finetune`).
 
 To launch training:
 ```
