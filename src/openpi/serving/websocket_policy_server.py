@@ -11,6 +11,13 @@ import websockets.frames
 
 logger = logging.getLogger(__name__)
 
+# Generous but bounded cap on a single incoming websocket message. A typical
+# observation (e.g. several 224x224x3 uint8 camera frames plus robot state)
+# is well under 1 MiB, so this leaves ample headroom for larger custom
+# observations while still preventing an unauthenticated client from forcing
+# the server to buffer an arbitrarily large message in memory.
+_DEFAULT_MAX_SIZE_BYTES = 50 * 1024 * 1024
+
 
 class WebsocketPolicyServer:
     """Serves a policy using the websocket protocol. See websocket_client_policy.py for a client implementation.
@@ -24,11 +31,13 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
+        max_size: int | None = _DEFAULT_MAX_SIZE_BYTES,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
+        self._max_size = max_size
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -40,7 +49,7 @@ class WebsocketPolicyServer:
             self._host,
             self._port,
             compression=None,
-            max_size=None,
+            max_size=self._max_size,
             process_request=_health_check,
         ) as server:
             await server.serve_forever()
