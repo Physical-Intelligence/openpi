@@ -1,7 +1,3 @@
-import os
-
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 from . import serve_policy
 
 

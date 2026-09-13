@@ -16,6 +16,10 @@ class WebsocketPolicyServer:
     """Serves a policy using the websocket protocol. See websocket_client_policy.py for a client implementation.
 
     Currently only implements the `load` and `infer` methods.
+
+    Note on `host`: the CLI entry point in `scripts/serve_policy.py` defaults to `127.0.0.1` (loopback).
+    This constructor still defaults to `0.0.0.0`, so callers instantiating this class directly are
+    exposed on all interfaces unless they pass `host` explicitly.
     """
 
     def __init__(
