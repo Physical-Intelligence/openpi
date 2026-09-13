@@ -46,10 +46,17 @@ class Args:
     # prompt.
     default_prompt: str | None = None
 
+    # Host to bind the policy server to. Defaults to loopback so the server is not exposed on the
+    # network unless this is set explicitly (e.g. `--host 0.0.0.0`).
+    host: str = "127.0.0.1"
     # Port to serve the policy on.
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
+
+    # If set, exception tracebacks are sent to the connecting client. The full traceback is always
+    # written to the server logs regardless of this setting; enable this only for local debugging.
+    debug_send_tracebacks: bool = False
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -106,13 +113,14 @@ def main(args: Args) -> None:
 
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
-    logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
+    logging.info("Creating server (host: %s, ip: %s), binding to %s:%d", hostname, local_ip, args.host, args.port)
 
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,
-        host="0.0.0.0",
+        host=args.host,
         port=args.port,
         metadata=policy_metadata,
+        send_tracebacks=args.debug_send_tracebacks,
     )
     server.serve_forever()
 
