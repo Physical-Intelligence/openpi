@@ -334,7 +334,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # transform based on whether your dataset uses ``absolute`` or ``delta`` actions out of the box.
 
         # LIBERO already represents actions as deltas, but we have some old Pi0 checkpoints that are trained with this
-        # extra delta transform.
+        # extra delta transform. For new training runs, leave it off (see pi0_fast_libero_no_delta_transform).
         if self.extra_delta_transform:
             delta_action_mask = _transforms.make_bool_mask(6, -1)
             data_transforms = data_transforms.push(
@@ -715,6 +715,20 @@ _CONFIGS = [
             extra_delta_transform=True,
         ),
         # Note that we load the pi0-FAST base model checkpoint here.
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_fast_libero_no_delta_transform",
+        # Same as pi0_fast_libero, but without the extra delta transform. LIBERO actions are already deltas, and
+        # applying the transform again substantially lowers LIBERO-10 success (see #1047). pi0_fast_libero keeps
+        # the transform because the released pi0_fast_libero checkpoint was trained with it.
+        model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
     ),
