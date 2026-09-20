@@ -97,7 +97,7 @@ class AlohaOutputs(transforms.DataTransformFn):
 
     def __call__(self, data: dict) -> dict:
         # Only return the first 14 dims.
-        actions = np.asarray(data["actions"][:, :14])
+        actions = np.asarray(data["actions"][..., :14])
         return {"actions": _encode_actions(actions, adapt_to_pi=self.adapt_to_pi)}
 
 
@@ -191,7 +191,7 @@ def _encode_actions(actions: np.ndarray, *, adapt_to_pi: bool = False) -> np.nda
     if adapt_to_pi:
         # Flip the joints.
         actions = _joint_flip_mask() * actions
-        actions[:, [6, 13]] = _gripper_from_angular(actions[:, [6, 13]])
+        actions[..., [6, 13]] = _gripper_from_angular(actions[..., [6, 13]])
     return actions
 
 
