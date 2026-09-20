@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import openpi.shared.normalize as normalize
 
@@ -41,3 +42,38 @@ def test_multiple_batch_dimensions():
 
     assert np.allclose(results.mean, expected_mean)
     assert np.allclose(results.std, expected_std)
+
+
+@pytest.mark.parametrize("batch_size", [1, 7, 100])
+@pytest.mark.parametrize(
+    ("dtype", "offset", "spread"),
+    [(np.float32, 1.0, 1e-4), (np.float32, 100.0, 0.01), (np.float64, 1e8, 1.0)],
+)
+def test_small_variance_with_nonzero_mean(dtype, offset, spread, batch_size):
+    arr = np.array([offset - spread, offset + spread] * 50, dtype=dtype)[:, None]
+    stats = normalize.RunningStats()
+    for start in range(0, len(arr), batch_size):
+        stats.update(arr[start : start + batch_size])
+    result = stats.get_statistics()
+    reference = arr.astype(np.float64)
+    np.testing.assert_allclose(result.mean, reference.mean(axis=0), rtol=1e-12)
+    np.testing.assert_allclose(result.std, reference.std(axis=0), rtol=1e-7)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.int16, np.float16])
+def test_moments_do_not_overflow_in_input_dtype(dtype):
+    arr = np.array([[200, 100], [220, 100], [240, 100]], dtype=dtype)
+    stats = normalize.RunningStats()
+    stats.update(arr)
+    reference = arr.astype(np.float64)
+    np.testing.assert_allclose(stats.get_statistics().std, reference.std(axis=0), atol=1e-12)
+
+
+def test_merging_batches_includes_difference_between_batch_means():
+    arr = np.array([[100, 7]] * 3 + [[102, 7]] * 17, dtype=np.float32)
+    stats = normalize.RunningStats()
+    stats.update(arr[:3])
+    stats.update(arr[3:])
+    result = stats.get_statistics()
+    np.testing.assert_allclose(result.mean, arr.astype(np.float64).mean(axis=0))
+    np.testing.assert_allclose(result.std, arr.astype(np.float64).std(axis=0), atol=1e-12)
