@@ -110,7 +110,8 @@ def init_train_state(
             tx=tx,
             opt_state=tx.init(params.filter(config.trainable_filter)),
             ema_decay=config.ema_decay,
-            ema_params=None if config.ema_decay is None else params,
+            # Frozen params never change, so only track EMA for trainable params.
+            ema_params=None if config.ema_decay is None else params.filter(config.trainable_filter),
         )
 
     train_state_shape = jax.eval_shape(init, init_rng)
@@ -170,7 +171,9 @@ def train_step(
         new_state = dataclasses.replace(
             new_state,
             ema_params=jax.tree.map(
-                lambda old, new: state.ema_decay * old + (1 - state.ema_decay) * new, state.ema_params, new_params
+                lambda old, new: state.ema_decay * old + (1 - state.ema_decay) * new,
+                state.ema_params,
+                new_params.filter(config.trainable_filter),
             ),
         )
 
