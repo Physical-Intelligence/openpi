@@ -7,6 +7,7 @@ import logging
 from typing import Protocol
 
 from etils import epath
+from flax import nnx
 import jax
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
@@ -104,7 +105,13 @@ def restore_state(
                 "params": {"params": params},
             },
         )
-    return _merge_params(restored["train_state"], restored["params"])
+        restored_state = _merge_params(restored["train_state"], restored["params"])
+        if state.ema_params is not None:
+            # The saved params also contain the frozen params (see `_split_params`). Keep only the params tracked by EMA.
+            flat_params = restored_state.ema_params.flat_state()
+            ema_params = nnx.State.from_flat_path({k: flat_params[k] for k in state.ema_params.flat_state()})
+            restored_state = dataclasses.replace(restored_state, ema_params=ema_params)
+    return restored_state
 
 
 def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
@@ -144,7 +151,8 @@ class CallbackRestore(ocp.args.CheckpointArgs): ...
 
 def _split_params(state: training_utils.TrainState) -> tuple[training_utils.TrainState, at.Params]:
     if state.ema_params is not None:
-        params = state.ema_params
+        # EMA params only cover trainable params. Fill in the frozen params so that the saved params are complete.
+        params = nnx.State.merge(state.params, state.ema_params)
         train_state = dataclasses.replace(state, ema_params=None)
     else:
         params = state.params
