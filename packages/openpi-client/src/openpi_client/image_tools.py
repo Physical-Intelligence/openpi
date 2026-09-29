@@ -29,6 +29,8 @@ def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BI
         return images
 
     original_shape = images.shape
+    if 0 in original_shape[:-3]:
+        return np.empty((*original_shape[:-3], height, width, original_shape[-1]), dtype=images.dtype)
 
     images = images.reshape(-1, *original_shape[-3:])
     resized = np.stack([_resize_with_pad_pil(Image.fromarray(im), height, width, method=method) for im in images])
@@ -46,8 +48,8 @@ def _resize_with_pad_pil(image: Image.Image, height: int, width: int, method: in
         return image  # No need to resize if the image is already the correct size.
 
     ratio = max(cur_width / width, cur_height / height)
-    resized_height = int(cur_height / ratio)
-    resized_width = int(cur_width / ratio)
+    resized_height = max(1, int(cur_height / ratio))
+    resized_width = max(1, int(cur_width / ratio))
     resized_image = image.resize((resized_width, resized_height), resample=method)
 
     zero_image = Image.new(resized_image.mode, (width, height), 0)
