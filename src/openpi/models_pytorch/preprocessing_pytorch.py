@@ -91,8 +91,9 @@ def preprocess_observation_pytorch(
                     sin_a = torch.sin(angle_rad)
 
                     # Apply rotation using grid_sample
-                    grid_x = torch.linspace(-1, 1, width, device=image.device)
-                    grid_y = torch.linspace(-1, 1, height, device=image.device)
+                    # Sample pixel centers for grid_sample's align_corners=False convention.
+                    grid_x = torch.linspace(-1 + 1 / width, 1 - 1 / width, width, device=image.device)
+                    grid_y = torch.linspace(-1 + 1 / height, 1 - 1 / height, height, device=image.device)
 
                     # Create meshgrid
                     grid_y, grid_x = torch.meshgrid(grid_y, grid_x, indexing="ij")
