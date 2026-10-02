@@ -99,6 +99,10 @@ class MobileBenchConditioner(nn.Module):
         d = cfg.d_model
         # Input projections / encoders.
         self.p_h = nn.Sequential(nn.LayerNorm(cfg.vlm_width), nn.Linear(cfg.vlm_width, d))  # P_H
+        # P_F, P_S: the decoders read projected memories (sec. 6.4 K^A, sec. 8.3 K^G); the
+        # stored memory state itself is left unprojected.
+        self.p_f = nn.Linear(d, d)
+        self.p_s = nn.Linear(d, d)
         self.state_enc = gelu_mlp_tokens(2 * cfg.state_dim, d, cfg.state_tokens)  # E_S: values + mask
         self.exec_enc = gelu_mlp_tokens(2 * cfg.exec_dim, d, cfg.exec_tokens)  # E_xi: values + mask
         self.gripper_enc = mlp(cfg.gripper_dim, d, d)  # E_g
@@ -164,8 +168,8 @@ class MobileBenchConditioner(nn.Module):
         memory = self.memory.reset(memory, inp.new_episode)
         memory, slow_written = self.memory(memory, h_tagged, inp.h_mask, x_tok, s_tok, inp.dt)
 
-        # Shared decoder context [H ; M^F ; M^S ; s_t], each with its source tag.
-        ctx = torch.cat([h_tagged, memory.fast + e_f, memory.slow + e_s, s_tok + e_st], dim=1)
+        # Shared decoder context [P_H H + e_H ; P_F M^F + e_F ; P_S M^S + e_S ; s_t], source-tagged.
+        ctx = torch.cat([h_tagged, self.p_f(memory.fast) + e_f, self.p_s(memory.slow) + e_s, s_tok + e_st], dim=1)
         ones = lambda n: torch.ones(b, n, dtype=torch.bool, device=dev)  # noqa: E731
         ctx_mask = torch.cat([inp.h_mask, ones(ctx.shape[1] - inp.h.shape[1])], dim=1)
 
