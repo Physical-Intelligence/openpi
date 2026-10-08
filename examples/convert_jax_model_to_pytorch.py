@@ -26,6 +26,7 @@ Example:
     python examples/convert_jax_model_to_pytorch.py --checkpoint_dir /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid --output_path /home/$USER/.cache/openpi/openpi-assets/checkpoints/pi05_droid_pytorch
 """
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -510,8 +511,8 @@ def convert_pi0_checkpoint(
         expert_params, action_expert_config, num_expert=1, checkpoint_dir=checkpoint_dir, pi05=model_config.pi05
     )
 
-    # Instantiate model
-    pi0_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_config)
+    # Load into float32 parameters to avoid rounding source weights before the requested output cast.
+    pi0_model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(dataclasses.replace(model_config, dtype="float32"))
 
     # Combine all parameters (no prefix needed for our model structure)
     all_params = {**paligemma_params, **gemma_params, **projection_params}
@@ -559,7 +560,7 @@ def main(
     checkpoint_dir: str,
     config_name: str,
     output_path: str | None = None,
-    precision: Literal["float32", "bfloat16", "float16"] = "bfloat16",
+    precision: Literal["float32", "bfloat16", "float16"] = "float32",
     *,
     inspect_only: bool = False,
 ):
@@ -568,7 +569,7 @@ def main(
     Args:
         checkpoint_dir: Path to the JAX checkpoint directory
         output_path: Path to save converted PyTorch model (required for conversion)
-        precision: Precision for model conversion
+        precision: Output weight precision. Defaults to float32 to preserve source precision for fine-tuning.
         inspect_only: Only inspect parameter keys, don't convert
     """
     model_config = _config.get_config(config_name).model
