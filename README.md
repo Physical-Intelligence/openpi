@@ -222,7 +222,7 @@ uv run examples/convert_jax_model_to_pytorch.py \
     --output_path /path/to/converted/pytorch/checkpoint
 ```
 
-Conversion defaults to `float32` so that float32 source weights retain their precision for downstream fine-tuning. Use `--precision bfloat16` explicitly for a smaller checkpoint (about half the weight storage), accepting the loss of weight precision. The checkpoint's storage precision is separate from the training or inference precision.
+Conversion defaults to `float32` to preserve float32 source weights for fine-tuning. Use `--precision bfloat16` for a smaller checkpoint (about half the weight storage), accepting the loss of weight precision. Conversion loads weights into a float32 model before applying the output precision, so allow memory for that float32 model even when exporting bfloat16.
 
 ### Running Inference with PyTorch
 
@@ -306,7 +306,9 @@ JAX and PyTorch implementations handle precision as follows:
 1. Inference: matches JAX -- most weights and computations in bfloat16, with a few weights converted to float32 for stability
 2. Training: supports either full bfloat16 (default) or full float32. You can change it by setting `pytorch_training_precision` in the config. bfloat16 uses less memory but exhibits higher losses compared to float32. Mixed precision is not yet supported.
 
-For float32 PyTorch fine-tuning, convert the original JAX checkpoint with `--precision float32` (the conversion default) and set `pytorch_training_precision="float32"`. Loading a bfloat16 checkpoint into a float32 training model uses float32 parameters and updates, but cannot recover precision lost during conversion. Older versions of the converter could also round weights through bfloat16 even when `--precision float32` was requested, because the model was constructed using the config's default bfloat16 dtype before loading. Reconvert the original JAX checkpoint with the updated converter to avoid that rounding; casting an already rounded checkpoint to float32 cannot undo it. Source weights already stored in bfloat16 cannot gain precision through conversion either.
+Checkpoint storage precision and training precision are separate settings. For float32 PyTorch fine-tuning, convert the original JAX checkpoint with `--precision float32` (the conversion default) and set `pytorch_training_precision="float32"`. Loading bfloat16 weights into a float32 training model enables float32 parameters and updates, but cannot recover the source precision lost to rounding.
+
+If you used an older converter, reconvert from the original JAX checkpoint. Even `--precision float32` could previously round weights through the model config's default bfloat16 dtype before saving. Casting an already rounded checkpoint to float32 cannot recover those values.
 
 With torch.compile, inference speed is comparable between JAX and PyTorch.
 
