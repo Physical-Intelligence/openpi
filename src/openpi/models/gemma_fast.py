@@ -29,11 +29,28 @@ import ml_collections
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 
-Variant = Literal["gemma_2b", "gemma_2b_lora"]
+Variant = Literal["dummy", "gemma_2b", "gemma_2b_lora"]
 
 
 def get_config(variant):
     """Returns config for specified gemma variant."""
+    if variant == "dummy":
+        # Tiny variant for tests. Mirrors `gemma.get_config("dummy")`.
+        return ml_collections.ConfigDict(
+            {
+                "variant": variant,
+                "width": 64,
+                "depth": 4,
+                "mlp_dim": 128,
+                "num_heads": 8,
+                "num_kv_heads": 1,
+                "head_dim": 16,
+                "norm_eps": 1e-6,
+                "vocab_size": 257_152,
+                "scan": True,
+                "remat_policy": "nothing_saveable",
+            }
+        )
     if variant == "gemma_2b":
         return ml_collections.ConfigDict(
             {
