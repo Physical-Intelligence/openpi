@@ -288,9 +288,11 @@ class Pi0FAST(_model.BaseModel):
             has_eos = jnp.any(token == PALIGEMMA_EOS_TOKEN, axis=-1)
             all_eos = jnp.all(has_eos)
 
-            # Decode one step
+            # Decode one step. The prefix occupies positions [0, prefill_len), so the token sampled at `step` is at
+            # position `prefill_len + step`, directly after the previous token. This matches training, where the
+            # action tokens immediately follow the prompt with contiguous positions.
             token_embedding = self.PaliGemma.llm(token, embed_only=True)
-            positions = prefill_len[:, None] + step + 1
+            positions = prefill_len[:, None] + step
             mask = jnp.logical_and(
                 jnp.arange(prefill_size + max_decoding_steps)[None, None, :] >= prefix_start[:, None, None],
                 jnp.arange(prefill_size + max_decoding_steps)[None, None, :]
