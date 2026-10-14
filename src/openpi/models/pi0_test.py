@@ -44,3 +44,39 @@ def test_pi0_all_lora():
     assert len(state) == 17
     assert all("lora" not in p for p in state)
     assert all("llm" in p for p in state)
+
+
+def test_pi05_gemma_lora():
+    # PaliGemma does not use adaRMS, so the frozen gemma leaf count matches pi0.
+    config = _pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora")
+    state = _get_frozen_state(config)
+    assert len(state) == 9
+    assert all("lora" not in p for p in state)
+    assert all("llm" in p for p in state)
+    assert all("_1" not in p for p in state)
+
+
+def test_pi05_action_expert_lora():
+    # pi05 action expert uses adaptive RMSNorm (Dense_0 kernel+bias) instead of scale,
+    # so there are 11 frozen leaves vs 8 for pi0 (3 extra Dense_0 bias leaves + 3 Dense_0
+    # kernels replace the 3 scale leaves: net +3).
+    config = _pi0_config.Pi0Config(pi05=True, action_expert_variant="gemma_300m_lora")
+    state = _get_frozen_state(config)
+    assert len(state) == 11
+    assert all("lora" not in p for p in state)
+    assert all("llm" in p for p in state)
+    assert all(any("_1" in p for p in path) for path in state)
+    # Adaptive RMSNorm Dense layers must be frozen with the action expert.
+    assert any(any("Dense_0" in p for p in path) for path in state)
+
+
+def test_pi05_all_lora():
+    config = _pi0_config.Pi0Config(
+        pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+    )
+    state = _get_frozen_state(config)
+    # sum of pi05 gemma_lora (9) and pi05 action_expert_lora (11).
+    assert len(state) == 20
+    assert all("lora" not in p for p in state)
+    assert all("llm" in p for p in state)
+    assert any(any("Dense_0" in p for p in path) for path in state)

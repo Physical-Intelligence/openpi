@@ -148,6 +148,8 @@ To fine-tune a base model on your own data, you need to define configs for data 
 
 We provide example fine-tuning configs for [π₀](src/openpi/training/config.py), [π₀-FAST](src/openpi/training/config.py), and [π₀.₅](src/openpi/training/config.py) on LIBERO data.
 
+For low-memory / single-GPU (~24GB) fine-tuning, use the corresponding `*_low_mem_finetune` configs (e.g. `pi0_libero_low_mem_finetune`, `pi0_fast_libero_low_mem_finetune`, `pi05_libero_low_mem_finetune`), which enable LoRA on the Gemma backbone and action expert.
+
 Before we can run training, we need to compute the normalization statistics for the training data. Run the script below with the name of your training config:
 
 ```bash
@@ -157,7 +159,11 @@ uv run scripts/compute_norm_stats.py --config-name pi05_libero
 Now we can kick off training with the following command (the `--overwrite` flag is used to overwrite existing checkpoints if you rerun fine-tuning with the same config):
 
 ```bash
+# Full fine-tuning (needs a large GPU / multi-GPU; see memory table above)
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_libero --exp-name=my_experiment --overwrite
+
+# LoRA fine-tuning on a single ~24GB GPU
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_libero_low_mem_finetune --exp-name=my_experiment --overwrite
 ```
 
 The command will log training progress to the console and save checkpoints to the `checkpoints` directory. You can also monitor training progress on the Weights & Biases dashboard. For maximally using the GPU memory, set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` before running training -- this enables JAX to use up to 90% of the GPU memory (vs. the default of 75%).
