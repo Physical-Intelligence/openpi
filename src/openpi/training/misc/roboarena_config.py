@@ -7,6 +7,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.droid_policy as droid_policy
+import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
 ModelType: TypeAlias = _model.ModelType
@@ -32,6 +33,7 @@ def get_roboarena_configs():
                 max_token_len=400,
                 fast_model_tokenizer=_tokenizer.BinningTokenizer,
             ),
+            weight_loader=weight_loaders.PaliGemmaWeightLoader(),
             data=SimpleDataConfig(
                 assets=AssetsConfig(asset_id="droid"),
                 data_transforms=lambda model: _transforms.Group(
@@ -47,6 +49,7 @@ def get_roboarena_configs():
             # Trained from PaliGemma, using FAST tokenizer (using universal FAST+ tokenizer).
             name="paligemma_fast_droid",
             model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=15),
+            weight_loader=weight_loaders.PaliGemmaWeightLoader(),
             data=SimpleDataConfig(
                 assets=AssetsConfig(asset_id="droid"),
                 data_transforms=lambda model: _transforms.Group(
@@ -67,6 +70,7 @@ def get_roboarena_configs():
                 fast_model_tokenizer=_tokenizer.FASTTokenizer,
                 fast_model_tokenizer_kwargs={"fast_tokenizer_path": "KarlP/fast_droid_specialist"},
             ),
+            weight_loader=weight_loaders.PaliGemmaWeightLoader(),
             data=SimpleDataConfig(
                 assets=AssetsConfig(asset_id="droid"),
                 data_transforms=lambda model: _transforms.Group(
@@ -87,6 +91,7 @@ def get_roboarena_configs():
                 fast_model_tokenizer=_tokenizer.FSQTokenizer,
                 fast_model_tokenizer_kwargs={"fsq_tokenizer_path": "gs://openpi-assets/tokenizers/droid_fsq_tokenizer"},
             ),
+            weight_loader=weight_loaders.PaliGemmaWeightLoader(),
             data=SimpleDataConfig(
                 assets=AssetsConfig(asset_id="droid"),
                 data_transforms=lambda model: _transforms.Group(
@@ -102,6 +107,7 @@ def get_roboarena_configs():
             # pi0-style diffusion / flow VLA, trained on DROID from PaliGemma.
             name="paligemma_diffusion_droid",
             model=pi0_config.Pi0Config(action_horizon=10, action_dim=8),
+            weight_loader=weight_loaders.PaliGemmaWeightLoader(),
             data=SimpleDataConfig(
                 assets=AssetsConfig(asset_id="droid"),
                 data_transforms=lambda model: _transforms.Group(
