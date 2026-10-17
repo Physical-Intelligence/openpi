@@ -89,6 +89,13 @@ def main(data_dir: str, *, push_to_hub: bool = False):
                     }
                 )
             dataset.save_episode()
+            # The pinned lerobot revision keeps every written episode in the in-memory
+            # `hf_dataset` table (`_save_episode_table` concatenates the new episode into
+            # it on each `save_episode`), so RSS grows by the size of every episode and
+            # long conversions eventually OOM. The conversion never reads `hf_dataset`,
+            # so reset it to an empty table after each episode; the parquet files already
+            # written to disk are unaffected. See https://github.com/Physical-Intelligence/openpi/issues/829
+            dataset.hf_dataset = dataset.create_hf_dataset()
 
     # Optionally push to the Hugging Face Hub
     if push_to_hub:
