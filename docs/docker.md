@@ -9,7 +9,7 @@ All of the examples in this repo provide instructions for being run normally, an
 - Docker Desktop is also incompatible with the NVIDIA runtime ([issue](https://github.com/NVIDIA/nvidia-container-toolkit/issues/229)). Docker Desktop can be uninstalled with `sudo apt remove docker-desktop`.
 
 
-If starting from scratch and your host machine is Ubuntu 22.04, you can use accomplish all of the above with the convenience scripts `scripts/docker/install_docker_ubuntu22.sh` and `scripts/docker/install_nvidia_container_toolkit.sh`.
+If starting from scratch and your host machine is Ubuntu 22.04, you can accomplish all of the above using the convenience scripts `scripts/docker/install_docker_ubuntu22.sh` and `scripts/docker/install_nvidia_container_toolkit.sh`.
 
 Build the Docker image and start the container with the following command:
 ```bash
