@@ -230,7 +230,9 @@ class DroidRldsDataset:
         weights = [dataset.weight for dataset in datasets]
 
         final_dataset = dl.DLataset.sample_from_datasets(all_datasets, weights=weights)
-        final_dataset = final_dataset.shuffle(shuffle_buffer_size)
+        # Honor the constructor `shuffle` flag (default True). Skip for deterministic evaluation.
+        if shuffle:
+            final_dataset = final_dataset.shuffle(shuffle_buffer_size)
         final_dataset = final_dataset.batch(batch_size)
         # Note =>> Seems to reduce memory usage without affecting speed?
         final_dataset = final_dataset.with_ram_budget(1)
