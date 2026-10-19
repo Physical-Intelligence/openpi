@@ -52,3 +52,11 @@ def test_download_fsspec():
 
     new_local_path = download.maybe_download(remote_path, gs={"token": "anon"})
     assert new_local_path == local_path
+
+
+def test_download_file_uri(tmp_path: pathlib.Path):
+    local_path = tmp_path / "local_via_file_uri"
+    local_path.touch()
+    uri = local_path.resolve().as_uri()  # file:///...
+    result = download.maybe_download(uri)
+    assert result == local_path.resolve()

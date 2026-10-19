@@ -48,9 +48,16 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
     # Don't use fsspec to parse the url to avoid unnecessary connection to the remote filesystem.
     parsed = urllib.parse.urlparse(url)
 
-    # Short circuit if this is a local path.
-    if parsed.scheme == "":
-        path = pathlib.Path(url)
+    # Short circuit if this is a local path (bare path or file:// URI).
+    # Without this, file:// URLs would be treated as remote and written under the cache dir.
+    if parsed.scheme in ("", "file"):
+        if parsed.scheme == "file":
+            # urlparse leaves path as /abs/path; support file://localhost/path as well.
+            if parsed.path == "":
+                raise FileNotFoundError(f"File not found at {url}")
+            path = pathlib.Path(parsed.path)
+        else:
+            path = pathlib.Path(url)
         if not path.exists():
             raise FileNotFoundError(f"File not found at {url}")
         return path.resolve()
