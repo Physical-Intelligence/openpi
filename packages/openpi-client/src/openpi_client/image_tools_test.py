@@ -35,3 +35,17 @@ def test_resize_with_pad_shapes():
     resized_images = image_tools.resize_with_pad(images, height, width)
     assert resized_images.shape == (1, height, width, 3)
     assert np.all(resized_images == 0)
+
+
+def test_convert_to_uint8_clips_out_of_range_floats():
+    img = np.array([[[-0.5, 0.0, 1.5]]], dtype=np.float32)
+    out = image_tools.convert_to_uint8(img)
+    assert out.dtype == np.uint8
+    assert out.tolist() == [[[0, 0, 255]]]
+
+
+def test_convert_to_uint8_passes_through_uint8():
+    img = np.array([[[10, 20, 30]]], dtype=np.uint8)
+    out = image_tools.convert_to_uint8(img)
+    assert out.dtype == np.uint8
+    assert np.array_equal(out, img)
