@@ -117,17 +117,32 @@ class FASTTokenizer:
         return np.asarray(tokens), np.asarray(token_mask), np.asarray(ar_mask), np.asarray(loss_mask)
 
     def extract_actions(self, tokens: np.ndarray, action_horizon: int, action_dim: int) -> np.ndarray:
-        # Decode predicted output tokens
-        decoded_tokens = self._paligemma_tokenizer.decode(tokens.tolist())
-
-        # Extract actions from FAST model outputs
-        if "Action: " not in decoded_tokens:
+        # Match the framing produced by tokenize(), preserving the original payload IDs.
+        # A text round trip is lossy: action tokens can decode to whitespace that is
+        # stripped or resegmented into different tokens by SentencePiece.
+        token_ids = tokens.tolist()
+        pg = self._paligemma_tokenizer
+        stop = next((i for i, token in enumerate(token_ids) if token in (pg.eos_id(), pg.pad_id())), len(token_ids))
+        token_ids = token_ids[:stop]
+        start_marker = pg.encode("Action: ")
+        end_marker = pg.encode("|")
+        start = next(
+            (
+                i + len(start_marker)
+                for i in range(len(token_ids))
+                if token_ids[i : i + len(start_marker)] == start_marker
+            ),
+            None,
+        )
+        if start is None:
             return np.zeros((action_horizon, action_dim), dtype=np.float32)
 
-        # Extract actions from decoded tokens
-        raw_action_tokens = np.array(
-            self._paligemma_tokenizer.encode(decoded_tokens.split("Action: ")[1].split("|")[0].strip())
+        # Accept an unterminated payload, as before (e.g. at the decoding step limit).
+        end = next(
+            (i for i in range(start, len(token_ids)) if token_ids[i : i + len(end_marker)] == end_marker),
+            len(token_ids),
         )
+        raw_action_tokens = np.asarray(token_ids[start:end], dtype=np.int32)
         action_tokens = self._act_tokens_to_paligemma_tokens(raw_action_tokens)
         return self._fast_tokenizer.decode(
             [action_tokens.tolist()], time_horizon=action_horizon, action_dim=action_dim
