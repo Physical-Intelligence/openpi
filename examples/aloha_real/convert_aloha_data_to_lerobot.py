@@ -10,9 +10,9 @@ import shutil
 from typing import Literal
 
 import h5py
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+from huggingface_hub import snapshot_download
+from lerobot.common.constants import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
 import numpy as np
 import torch
 import tqdm
@@ -109,8 +109,8 @@ def create_empty_dataset(
             ],
         }
 
-    if Path(LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    if Path(HF_LEROBOT_HOME / repo_id).exists():
+        shutil.rmtree(HF_LEROBOT_HOME / repo_id)
 
     return LeRobotDataset.create(
         repo_id=repo_id,
@@ -209,6 +209,7 @@ def populate_dataset(
             frame = {
                 "observation.state": state[i],
                 "action": action[i],
+                "task": task,
             }
 
             for camera, img_array in imgs_per_cam.items():
@@ -221,7 +222,7 @@ def populate_dataset(
 
             dataset.add_frame(frame)
 
-        dataset.save_episode(task=task)
+        dataset.save_episode()
 
     return dataset
 
@@ -238,15 +239,26 @@ def port_aloha(
     mode: Literal["video", "image"] = "image",
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ):
-    if (LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    # Creating the dataset replaces the output directory. Never let that remove
+    # the input files, including when raw_dir reaches them through a symlink.
+    output_dir = HF_LEROBOT_HOME / repo_id
+    if raw_dir.resolve().is_relative_to(output_dir.resolve()):
+        raise ValueError("raw_dir must not be the output dataset directory or a directory inside it")
 
     if not raw_dir.exists():
         if raw_repo_id is None:
             raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        download_raw(raw_dir, repo_id=raw_repo_id)
+        snapshot_download(repo_id=raw_repo_id, repo_type="dataset", local_dir=raw_dir)
 
     hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
+    if not hdf5_files:
+        raise ValueError(f"No episode_*.hdf5 files found in {raw_dir}")
+    if episodes is not None:
+        if not episodes:
+            raise ValueError("episodes must contain at least one episode index")
+        for episode_index in episodes:
+            if not 0 <= episode_index < len(hdf5_files):
+                raise ValueError(f"Episode index {episode_index} is out of range for {len(hdf5_files)} input episodes")
 
     dataset = create_empty_dataset(
         repo_id,
@@ -262,7 +274,6 @@ def port_aloha(
         task=task,
         episodes=episodes,
     )
-    dataset.consolidate()
 
     if push_to_hub:
         dataset.push_to_hub()
