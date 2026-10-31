@@ -1,6 +1,7 @@
 import logging
 import time
 from typing import Dict, Optional, Tuple
+import urllib.parse
 
 from typing_extensions import override
 import websockets.sync.client
@@ -16,12 +17,19 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     """
 
     def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None) -> None:
-        if host.startswith("ws"):
+        if host.startswith(("ws://", "wss://")):
             self._uri = host
         else:
             self._uri = f"ws://{host}"
         if port is not None:
-            self._uri += f":{port}"
+            parsed = urllib.parse.urlsplit(self._uri)
+            hostname = parsed.hostname
+            if hostname is None:
+                raise ValueError("WebSocket host must include a hostname.")
+            authority = f"[{hostname}]" if ":" in hostname else hostname
+            if "@" in parsed.netloc:
+                authority = parsed.netloc.rsplit("@", 1)[0] + "@" + authority
+            self._uri = urllib.parse.urlunsplit(parsed._replace(netloc=f"{authority}:{port}"))
         self._packer = msgpack_numpy.Packer()
         self._api_key = api_key
         self._ws, self._server_metadata = self._wait_for_server()
