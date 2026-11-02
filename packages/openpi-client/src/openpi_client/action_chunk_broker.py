@@ -35,6 +35,14 @@ class ActionChunkBroker(_base_policy.BasePolicy):
                         f"Array at {path} must contain at least action_horizon={self._action_horizon} steps; "
                         f"got shape {value.shape}."
                     )
+                if (
+                    isinstance(value, np.ndarray)
+                    and np.issubdtype(value.dtype, np.floating)
+                    and not np.isfinite(value[: self._action_horizon]).all()
+                ):
+                    raise ValueError(
+                        f"Array at {path} contains non-finite values within action_horizon={self._action_horizon}."
+                    )
             self._last_results = results
             self._cur_step = 0
 
