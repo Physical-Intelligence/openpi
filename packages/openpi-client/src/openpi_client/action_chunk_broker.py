@@ -12,11 +12,17 @@ class ActionChunkBroker(_base_policy.BasePolicy):
 
     Assumes that the first dimension of all action fields is the chunk size.
 
+    Floating-point array leaves are checked for finite values in the first
+    ``action_horizon`` steps before a new result is cached or any action is
+    returned. Values in the unused tail are not checked.
+
     A new inference call to the inner policy is only made when the current
     list of chunks is exhausted.
     """
 
     def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int):
+        if isinstance(action_horizon, bool) or not isinstance(action_horizon, (int, np.integer)) or action_horizon <= 0:
+            raise ValueError("action_horizon must be a positive integer.")
         self._policy = policy
         self._action_horizon = action_horizon
         self._cur_step: int = 0
@@ -26,7 +32,22 @@ class ActionChunkBroker(_base_policy.BasePolicy):
     @override
     def infer(self, obs: Dict) -> Dict:  # noqa: UP006
         if self._last_results is None:
-            self._last_results = self._policy.infer(obs)
+            results = self._policy.infer(obs)
+            for path, value in tree.flatten_with_path(results):
+                if isinstance(value, np.ndarray) and (value.ndim == 0 or value.shape[0] < self._action_horizon):
+                    raise ValueError(
+                        f"Array at {path} must contain at least action_horizon={self._action_horizon} steps; "
+                        f"got shape {value.shape}."
+                    )
+                if (
+                    isinstance(value, np.ndarray)
+                    and np.issubdtype(value.dtype, np.floating)
+                    and not np.isfinite(value[: self._action_horizon]).all()
+                ):
+                    raise ValueError(
+                        f"Array at {path} contains non-finite values within action_horizon={self._action_horizon}."
+                    )
+            self._last_results = results
             self._cur_step = 0
 
         def slicer(x):
