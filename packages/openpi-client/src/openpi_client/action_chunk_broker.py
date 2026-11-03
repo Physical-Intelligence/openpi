@@ -12,6 +12,10 @@ class ActionChunkBroker(_base_policy.BasePolicy):
 
     Assumes that the first dimension of all action fields is the chunk size.
 
+    Floating-point array leaves are checked for finite values in the first
+    ``action_horizon`` steps before a new result is cached or any action is
+    returned. Values in the unused tail are not checked.
+
     A new inference call to the inner policy is only made when the current
     list of chunks is exhausted.
     """
