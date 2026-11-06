@@ -58,18 +58,18 @@ class Runtime:
         self._in_episode = True
         self._episode_steps = 0
         step_time = 1 / self._max_hz if self._max_hz > 0 else 0
-        last_step_time = time.time()
+        last_step_time = time.monotonic()
 
         while self._in_episode:
             self._step()
             self._episode_steps += 1
 
             # Sleep to maintain the desired frame rate
-            now = time.time()
+            now = time.monotonic()
             dt = now - last_step_time
             if dt < step_time:
                 time.sleep(step_time - dt)
-                last_step_time = time.time()
+                last_step_time = time.monotonic()
             else:
                 last_step_time = now
 
