@@ -128,8 +128,14 @@ class PolicyRecorder(_base_policy.BasePolicy):
         data = {"inputs": obs, "outputs": results}
         data = flax.traverse_util.flatten_dict(data, sep="/")
 
-        output_path = self._record_dir / f"step_{self._record_step}"
-        self._record_step += 1
-
-        np.save(output_path, np.asarray(data))
+        while True:
+            output_path = self._record_dir / f"step_{self._record_step}.npy"
+            self._record_step += 1
+            try:
+                record = output_path.open("xb")
+            except FileExistsError:
+                continue
+            with record:
+                np.save(record, np.asarray(data))
+            break
         return results
