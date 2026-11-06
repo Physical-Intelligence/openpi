@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import time
 import urllib.parse
 
@@ -88,11 +89,14 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
                 # Route openpi-assets through gsutil to avoid gcsfs auth issues with this bucket.
                 # All other gs:// URLs (e.g. big_vision) continue to use gcsfs as normal.
                 if parsed.scheme == "gs" and parsed.netloc == "openpi-assets":
-                    _download_gsutil(url, scratch_path, **kwargs)
+                    # gsutil treats an existing directory as a different kind of destination.
+                    with tempfile.TemporaryDirectory(dir=local_path.parent) as staging:
+                        target = pathlib.Path(staging) / "download"
+                        _download_gsutil(url, target, **kwargs)
+                        target.rename(local_path)
                 else:
                     _download_fsspec(url, scratch_path, **kwargs)
-
-                shutil.move(scratch_path, local_path)
+                    shutil.move(scratch_path, local_path)
                 _ensure_permissions(local_path)
 
     except PermissionError as e:
@@ -113,9 +117,13 @@ def _download_gsutil(url: str, local_path: pathlib.Path, **kwargs) -> None:
         )
         _download_fsspec(url, local_path, **kwargs)
         return
+    # Object URLs (for example the DROID sample-range JSON) need a file destination.
+    if not url.endswith("/") and subprocess.run(["gsutil", "-q", "stat", url], check=False).returncode == 0:
+        subprocess.run(["gsutil", "cp", url, str(local_path)], check=True)
+        return
     local_path.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["gsutil", "-m", "cp", "-r", f"{url}/*", str(local_path)],
+        ["gsutil", "-m", "cp", "-r", f"{url.rstrip('/')}/*", str(local_path)],
         check=True,
     )
 
