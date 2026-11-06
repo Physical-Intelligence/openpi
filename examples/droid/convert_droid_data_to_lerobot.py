@@ -226,7 +226,7 @@ class MP4Reader:
             return
 
         if index < self._index:
-            self._mp4_reader.set(cv2.CAP_PROP_POS_FRAMES, index - 1)
+            self._mp4_reader.set(cv2.CAP_PROP_POS_FRAMES, index)
             self._index = index
 
         while self._index < index:
