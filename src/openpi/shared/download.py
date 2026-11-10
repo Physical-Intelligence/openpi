@@ -1,5 +1,6 @@
 import concurrent.futures
 import datetime
+import hashlib
 import logging
 import os
 import pathlib
@@ -44,6 +45,8 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
 
     Returns:
         Local path to the downloaded file or directory. That path is guaranteed to exist and is absolute.
+
+    URLs with different query strings use separate cache entries. URLs without a query keep their existing cache paths.
     """
     # Don't use fsspec to parse the url to avoid unnecessary connection to the remote filesystem.
     parsed = urllib.parse.urlparse(url)
@@ -58,6 +61,9 @@ def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathl
     cache_dir = get_cache_dir()
 
     local_path = cache_dir / parsed.netloc / parsed.path.strip("/")
+    if parsed.query:
+        query_hash = hashlib.sha256(parsed.query.encode()).hexdigest()
+        local_path = local_path.with_name(f"{local_path.stem}-query-{query_hash}{local_path.suffix}")
     local_path = local_path.resolve()
 
     # Check if the cache should be invalidated.
@@ -131,7 +137,10 @@ def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
         total_size = info["size"]
     with tqdm.tqdm(total=total_size, unit="iB", unit_scale=True, unit_divisor=1024) as pbar:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(fs.get, url, local_path, recursive=is_dir)
+        if is_dir:
+            future = executor.submit(fs.get, url, str(local_path), recursive=True)
+        else:
+            future = executor.submit(fs.get_file, url, str(local_path))
         while not future.done():
             current_size = sum(f.stat().st_size for f in [*local_path.rglob("*"), local_path] if f.is_file())
             pbar.update(current_size - pbar.n)
