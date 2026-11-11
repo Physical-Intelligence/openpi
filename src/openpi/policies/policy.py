@@ -21,6 +21,19 @@ from openpi.shared import nnx_utils
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
 
+@jax.jit
+def _batch_and_convert(inputs: dict) -> dict:
+    """Move the observation onto the device and fold the uint8 image rescale into the same program.
+
+    Eagerly this is one dispatch per leaf plus four per uint8 image -- 21 dispatches for a three-camera
+    observation -- and all of it is host-side latency before the model starts. Fusing it costs one dispatch and
+    moves the images while they are still uint8. `Observation.from_dict` keeps its eager path for other callers.
+    """
+    inputs = jax.tree.map(lambda x: jnp.asarray(x)[None], inputs)
+    inputs["image"] = jax.tree.map(_model.rescale_uint8_image, inputs["image"])
+    return inputs
+
+
 class Policy(BasePolicy):
     def __init__(
         self,
@@ -70,8 +83,7 @@ class Policy(BasePolicy):
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
         if not self._is_pytorch_model:
-            # Make a batch and convert to jax.Array.
-            inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+            inputs = _batch_and_convert(inputs)
             self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
         else:
             # Convert inputs to PyTorch tensors and move to correct device

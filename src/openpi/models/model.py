@@ -78,6 +78,19 @@ IMAGE_RESOLUTION = (224, 224)
 #   s = state dimension
 #   l = sequence length
 #
+
+
+def rescale_uint8_image(image: ArrayT) -> ArrayT:
+    """Map a uint8 image to [-1, 1] float32; other dtypes pass through unchanged.
+
+    Both `Observation.from_dict` and the jitted batching in `Policy.infer` need exactly this mapping, so it lives
+    here rather than being spelled out twice.
+    """
+    if image.dtype == np.uint8:
+        return image.astype(np.float32) / 255.0 * 2.0 - 1.0
+    return image
+
+
 @at.typecheck
 @struct.dataclass
 class Observation(Generic[ArrayT]):
@@ -115,7 +128,7 @@ class Observation(Generic[ArrayT]):
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
-                data["image"][key] = data["image"][key].astype(np.float32) / 255.0 * 2.0 - 1.0
+                data["image"][key] = rescale_uint8_image(data["image"][key])
             elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
                 data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
         return cls(
