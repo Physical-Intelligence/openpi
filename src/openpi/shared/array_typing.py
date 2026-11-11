@@ -1,7 +1,9 @@
+from collections.abc import Callable
 import contextlib
+import dataclasses
 import functools as ft
 import inspect
-from typing import TypeAlias, TypeVar, cast
+from typing import TypeAlias, TypeVar, cast, get_args, get_origin
 
 import beartype
 import jax
@@ -30,13 +32,50 @@ _original_check_dataclass_annotations = jaxtyping._decorator._check_dataclass_an
 # Redefine Array to include both JAX arrays and PyTorch tensors
 Array = jax.Array | torch.Tensor
 
+# jaxtyping builds a synthetic signature and runs `beartype` over it on *every* dataclass instantiation, which is
+# ~1.4 ms per construct for `Observation` and lands squarely on the serving path. The signature and the checker only
+# depend on the class, so build them once per (class, typechecker) and reuse them.
+_dataclass_checkers: dict[tuple[type, object], tuple[Callable[..., None], tuple[str, ...]]] = {}
+
+
+def _build_dataclass_checker(cls: type, typechecker) -> tuple[Callable[..., None], tuple[str, ...]]:
+    params = [inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    for field in dataclasses.fields(cls):
+        if isinstance(field.type, str):
+            # Stringified annotations cannot be resolved reliably; jaxtyping skips them too.
+            continue
+        if get_origin(field.type) is type and (args := get_args(field.type)) and isinstance(args[0], str):
+            # The same partially-stringified annotation jaxtyping special-cases for Equinox < 0.11.1.
+            continue
+        params.append(inspect.Parameter(field.name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=field.type))
+    fn = jaxtyping._decorator._make_fn_with_signature(  # noqa: SLF001
+        cls.__name__, cls.__qualname__, cls.__module__, inspect.Signature(params), output=False
+    )
+    return jaxtyped(fn, typechecker=typechecker), tuple(p.name for p in params[1:])
+
+
+def _cached_check(self, typechecker):
+    key = (type(self), typechecker)
+    if (entry := _dataclass_checkers.get(key)) is None:
+        entry = _dataclass_checkers[key] = _build_dataclass_checker(type(self), typechecker)
+    checker, names = entry
+    values = {}
+    for name in names:
+        try:
+            values[name] = getattr(self, name)
+        except AttributeError:
+            # Uninitialised fields are legal on dataclasses; take jaxtyping's per-call path instead.
+            return _original_check_dataclass_annotations(self, typechecker)
+    checker(self, **values)
+    return None
+
 
 def _check_dataclass_annotations(self, typechecker):
     if not any(
         frame.frame.f_globals.get("__name__") in {"jax._src.tree_util", "flax.nnx.transforms.compilation"}
         for frame in inspect.stack()
     ):
-        return _original_check_dataclass_annotations(self, typechecker)
+        return _cached_check(self, typechecker)
     return None
 
 
