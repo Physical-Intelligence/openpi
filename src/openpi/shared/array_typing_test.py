@@ -44,6 +44,16 @@ def test_dataclass_annotations_are_still_checked():
         _Sample(**_invalid())
 
 
+def test_stack_walk_finds_the_frames_it_skips_on():
+    # The walk replaces inspect.stack(); looking at the wrong frame or attribute would not raise anywhere, it would
+    # quietly re-enable type checking while jax unflattens a custom PyTree node (jaxtyping#277).
+    assert at._tracing_frames_on_stack() is False  # noqa: SLF001
+
+    module = {"__name__": "jax._src.tree_util", "_walk": at._tracing_frames_on_stack}  # noqa: SLF001
+    exec("def caller():\n    return _walk()", module)
+    assert module["caller"]() is True
+
+
 def test_cached_checker_still_honours_disable_typechecking():
     _Sample(**_valid())  # warm the cache
 

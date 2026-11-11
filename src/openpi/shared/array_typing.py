@@ -3,6 +3,7 @@ import contextlib
 import dataclasses
 import functools as ft
 import inspect
+import sys
 from typing import TypeAlias, TypeVar, cast, get_args, get_origin
 
 import beartype
@@ -70,13 +71,25 @@ def _cached_check(self, typechecker):
     return None
 
 
+# Frames whose presence means a custom PyTree node is being unflattened; see the comment on the patch above.
+_SKIP_TYPECHECK_FRAMES = {"jax._src.tree_util", "flax.nnx.transforms.compilation"}
+
+
+def _tracing_frames_on_stack() -> bool:
+    # `inspect.stack()` builds a FrameInfo (source line lookup included) for every frame: under a served request that
+    # is ~0.3 ms per observation. Only `__name__` is read, so walk the frames directly.
+    frame = sys._getframe()  # noqa: SLF001
+    while frame is not None:
+        if frame.f_globals.get("__name__") in _SKIP_TYPECHECK_FRAMES:
+            return True
+        frame = frame.f_back
+    return False
+
+
 def _check_dataclass_annotations(self, typechecker):
-    if not any(
-        frame.frame.f_globals.get("__name__") in {"jax._src.tree_util", "flax.nnx.transforms.compilation"}
-        for frame in inspect.stack()
-    ):
-        return _cached_check(self, typechecker)
-    return None
+    if _tracing_frames_on_stack():
+        return None
+    return _cached_check(self, typechecker)
 
 
 jaxtyping._decorator._check_dataclass_annotations = _check_dataclass_annotations  # noqa: SLF001
