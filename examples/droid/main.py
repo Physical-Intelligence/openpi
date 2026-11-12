@@ -170,10 +170,11 @@ def main(args: Args):
                 success = 1.0
             elif success == "n":
                 success = 0.0
-
-            success = float(success) / 100
-            if not (0 <= success <= 1):
-                print(f"Success must be a number in [0, 100] but got: {success * 100}")
+            else:
+                success = float(success) / 100
+                if not (0 <= success <= 1):
+                    print(f"Success must be a number in [0, 100] but got: {success * 100}")
+                    success = None  # ask again
 
         df = df.append(
             {
