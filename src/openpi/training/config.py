@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.galbot_policy as galbot_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -65,6 +66,10 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional local LeRobot dataset directory (must contain meta/, data/, videos/).
+    # When set, LeRobot loads from this path instead of downloading from the Hub root.
+    # repo_id is still used as a stable asset/norm-stats identifier.
+    root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -352,6 +357,59 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotGalbotDataConfig(DataConfigFactory):
+    """
+    Config for Galbot-Mobile LeRobot datasets (77D state, 20D absolute actions, 3 cameras).
+
+    Actions remain absolute (no delta conversion). Model padding 20D -> action_dim is done by
+    PadStatesAndActions inside ModelTransformFactory. GalbotOutputs slices back to 20D.
+
+    The HF dataset robotedge/ecm2027_lerobot stores LeRobot datasets under batch1/ and batch2/.
+    Download one subset locally and pass its directory via ``root`` (or ``--data.root=...``).
+    """
+
+    # Local path to a LeRobot dataset directory (e.g. .../batch2). None = Hub root load.
+    root: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Map LeRobot keys (dots) onto the inference-style keys consumed by GalbotInputs.
+        # Dataset action key is ``action`` (singular); after repack it becomes ``actions``.
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/first_person_image": "observation.images.first_person_camera_rgb",
+                        "observation/left_wrist_image": "observation.images.left_hand_camera_rgb",
+                        "observation/right_wrist_image": "observation.images.right_hand_camera_rgb",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[galbot_policy.GalbotInputs(model_type=model_config.model_type)],
+            outputs=[galbot_policy.GalbotOutputs()],
+        )
+
+        # Absolute EE / gripper / wheel actions — do not convert to deltas.
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # LeRobot dataset stores the action sequence under ``action``.
+            action_sequence_keys=("action",),
+            root=self.root,
         )
 
 
@@ -759,6 +817,46 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        num_train_steps=30_000,
+    ),
+    #
+    # Fine-tuning Galbot-Mobile configs.
+    #
+    TrainConfig(
+        name="pi05_galbot",
+        # Pi0.5 LoRA fine-tune for Galbot-Mobile (patterned on pi0_libero_low_mem_finetune).
+        # Keep action_dim=32 to match pi05_base action proj weights; dataset actions are 20D
+        # and are padded by PadStatesAndActions. discrete_state_input=True so the full 77D
+        # state is tokenized before padding (pi05 does not use continuous state_proj).
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotGalbotDataConfig(
+            repo_id="robotedge/ecm2027_lerobot",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        # Match model LoRA variants so base LLM weights are frozen and adapters train.
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA fine-tuning (saves VRAM; same as pi0_libero_low_mem_finetune).
+        ema_decay=None,
+        # JAX training uses weight_loader only; CheckpointWeightLoader merges missing LoRA params.
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
     ),
     #
