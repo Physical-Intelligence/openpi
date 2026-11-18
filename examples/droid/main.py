@@ -171,7 +171,12 @@ def main(args: Args):
             elif success == "n":
                 success = 0.0
             else:
-                success = float(success) / 100
+                try:
+                    success = float(success) / 100
+                except ValueError:
+                    print(f"Success must be y, n or a number in [0, 100] but got: {success!r}")
+                    success = None  # ask again
+                    continue
                 if not (0 <= success <= 1):
                     print(f"Success must be a number in [0, 100] but got: {success * 100}")
                     success = None  # ask again
