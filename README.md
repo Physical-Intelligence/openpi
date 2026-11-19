@@ -192,7 +192,6 @@ We provide more examples for how to fine-tune and run inference with our models 
 openpi now provides PyTorch implementations of π₀ and π₀.₅ models alongside the original JAX versions! The PyTorch implementation has been validated on the LIBERO benchmark (both inference and finetuning). A few features are currently not supported (this may change in the future):
 
 - The π₀-FAST model
-- Mixed precision training
 - FSDP (fully-sharded data parallelism) training
 - LoRA (low-rank adaptation) training
 - EMA (exponential moving average) weights during training
@@ -302,7 +301,7 @@ JAX and PyTorch implementations handle precision as follows:
 
 **PyTorch:**
 1. Inference: matches JAX -- most weights and computations in bfloat16, with a few weights converted to float32 for stability
-2. Training: supports either full bfloat16 (default) or full float32. You can change it by setting `pytorch_training_precision` in the config. bfloat16 uses less memory but exhibits higher losses compared to float32. Mixed precision is not yet supported.
+2. Training: supports full bfloat16 (default), mixed precision, or full float32. You can change it by setting `pytorch_training_precision` in the config. `"bfloat16"` stores most weights in bfloat16 with no float32 copy, so AdamW updates smaller than about 0.2-0.4% of a weight are rounded away; it uses the least memory but exhibits higher losses compared to float32. `"mixed"` matches the JAX default: weights, gradients and optimizer states in float32, (most) computations in bfloat16 under `torch.autocast`. `"mixed"` and `"float32"` need twice the memory of `"bfloat16"` for the weights, gradients and AdamW states (about 52 GB instead of 26 GB for π₀), and twice the disk space per checkpoint.
 
 With torch.compile, inference speed is comparable between JAX and PyTorch.
 
