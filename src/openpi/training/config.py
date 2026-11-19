@@ -482,8 +482,11 @@ class TrainConfig:
     # Optional path to a PyTorch checkpoint to load weights from.
     pytorch_weight_path: str | None = None
 
-    # Precision for PyTorch training.
-    pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # Precision for PyTorch training. "bfloat16" stores most weights in bfloat16 with no float32 copy, so AdamW updates
+    # smaller than about 0.2-0.4% of a weight are rounded away. "mixed" keeps the weights (and so the gradients and
+    # optimizer state) in float32 and computes in bfloat16 under torch.autocast, like the JAX trainer. "float32" stores
+    # and computes everything in float32.
+    pytorch_training_precision: Literal["bfloat16", "float32", "mixed"] = "bfloat16"
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)

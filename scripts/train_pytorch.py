@@ -390,10 +390,14 @@ def train_loop(config: _config.TrainConfig):
         logging.info("Cleared sample batch and data loader from memory")
 
     # Build model
+    # "mixed" stores the weights in float32, so they double as the optimizer's master copy, and runs the forward pass in
+    # bfloat16 under autocast.
+    use_autocast = config.pytorch_training_precision == "mixed"
+    weight_dtype = "float32" if use_autocast else config.pytorch_training_precision
     if not isinstance(config.model, openpi.models.pi0_config.Pi0Config):
         # Convert dataclass to Pi0Config if needed
         model_cfg = openpi.models.pi0_config.Pi0Config(
-            dtype=config.pytorch_training_precision,
+            dtype=weight_dtype,
             action_dim=config.model.action_dim,
             action_horizon=config.model.action_horizon,
             max_token_len=config.model.max_token_len,
@@ -404,7 +408,7 @@ def train_loop(config: _config.TrainConfig):
     else:
         model_cfg = config.model
         # Update dtype to match pytorch_training_precision
-        object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
+        object.__setattr__(model_cfg, "dtype", weight_dtype)
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
 
@@ -497,7 +501,7 @@ def train_loop(config: _config.TrainConfig):
             f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, clip_norm={config.optimizer.clip_gradient_norm}"
         )
         logging.info("EMA is not supported for PyTorch training")
-        logging.info(f"Training precision: {model_cfg.dtype}")
+        logging.info(f"Training precision: {config.pytorch_training_precision}")
 
     # Training loop - iterate until we reach num_train_steps
     pbar = (
@@ -526,7 +530,8 @@ def train_loop(config: _config.TrainConfig):
                 pg["lr"] = lr_schedule(global_step)
 
             # Forward pass
-            losses = model(observation, actions)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_autocast):
+                losses = model(observation, actions)
             # Ensure losses is a tensor and handle different return types
             if isinstance(losses, list | tuple):
                 losses = torch.stack(losses)
